@@ -15,6 +15,9 @@ from plugins.llm_common.model_dialects import warn_unwired
 
 from .anthropic_client import AnthropicAsyncClient
 
+#: The ``output_config.effort`` levels the Messages API takes.
+ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 if TYPE_CHECKING:
     from agent_system.config.models import LLMModelConfig
     from agent_system.llm.batch.base import BatchProviderClient
@@ -27,15 +30,15 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY is required when provider=anthropic")
 
-    if cfg.thinking_level:
-        # Visible instead of silently dropped: Anthropic thinking is driven by
-        # include_thoughts/thinking_budget here — a thinking_level set on a
-        # Claude model (e.g. via an llm_params "*" overlay) has no effect at
-        # all, and every other provider says so when it drops a field.
+    # thinking_level is output_config.effort here. A level Anthropic does not
+    # know (an llm_params "*" overlay meant for another provider) is a 400 on
+    # every call: dropped, and said so.
+    effort = cfg.thinking_level
+    if effort and effort not in ANTHROPIC_EFFORTS:
         logging.getLogger(__name__).warning(
-            "thinking_level is not wired for provider=anthropic and will be "
-            "ignored (model=%s) — use include_thoughts/thinking_budget.",
-            cfg.model)
+            "thinking_level=%s is no Anthropic effort (%s) and is not sent (model=%s).",
+            effort, ", ".join(ANTHROPIC_EFFORTS), cfg.model)
+        effort = None
 
     warn_unwired(cfg, provider="anthropic", logger=logging.getLogger(__name__),
                  wired=("reasoning_details_mode", "thinking_request_shape"))
@@ -64,6 +67,7 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
         prompt_cache_mode=cfg.prompt_cache_mode,
         reasoning_details_mode=cfg.reasoning_details_mode,
         thinking_request_shape=cfg.thinking_request_shape,
+        thinking_level=effort,  # output_config.effort
         capabilities=cfg.capabilities,
     )
 

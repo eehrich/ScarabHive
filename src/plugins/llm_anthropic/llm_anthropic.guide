@@ -58,9 +58,10 @@ base_url | the SDK's: ANTHROPIC_BASE_URL, else https://api.anthropic.com | the e
 context_window | 200000 | only reported to the core (compaction, context sizing), never sent
 request_timeout | 180 | seconds; see @{" Timeouts and streaming " link timeouts}
 max_tokens | 8192 | output cap, always sent; 0 also means 8192
-temperature | none | sent when set -- except on tool calls while thinking is on
-include_thoughts | false | turns thinking on for tool calls (see @{" Thinking " link thinking})
-thinking_request_shape | budget | budget or adaptive: the form of the thinking request
+temperature | none | sent when set -- except to a model that thinks (thinking on, or an adaptive one)
+include_thoughts | false | asks for thinking on tool calls (see @{" Thinking " link thinking})
+thinking_level | none | output_config.effort: low, medium, high, xhigh or max; another value is not sent
+thinking_request_shape | adaptive | adaptive or budget: the form of the thinking request
 thinking_budget | 8192 | budget_tokens, only with thinking_request_shape: budget
 reasoning_details_mode | keep_all | how many turns' thinking blocks travel back
 enable_prompt_caching | true | cache markers on the system prompt, the last tool and (by mode) the conversation
@@ -69,9 +70,9 @@ capabilities | all defaults | streaming decides which call the agent makes; imag
 batch_provider | none | anthropic sends this entry's batch requests here (see @{" Batch " link batch})
 @{body}
 
-@{bullet}@{tt}thinking_level@{utt} is not wired: the client logs "thinking_level
-is not wired for provider=anthropic and will be ignored" when it is built. Use
-include_thoughts and the request shape.
+@{bullet}A @{tt}thinking_level@{utt} that is no Anthropic effort (an
+llm_params "*" overlay meant for another provider) is not sent: the client
+logs "thinking_level=... is no Anthropic effort" when it is built.
 @{bullet}@{tt}tool_schema_dialect@{utt}, @{tt}assistant_reasoning_field@{utt},
 @{tt}stream_silence_timeout@{utt} and @{tt}provider_affinity_minutes@{utt} are
 logged as "not wired ... will be ignored". Other keys --
@@ -170,13 +171,16 @@ one profile) takes over where these retries end; see
 @{h2}Asking for it
 
 @{tt}include_thoughts: true@{utt} adds a thinking request to every tool call
-(the agent's steps). @{tt}chat()@{utt} never asks for thinking. The form is
-declared per entry, never guessed from the model name:
+(the agent's steps). @{tt}chat()@{utt} never asks for thinking. A 5.x model
+thinks all the same: without the field it thinks adaptively, so
+@{tt}include_thoughts: false@{utt} does not switch thinking off there.
+@{tt}thinking_level@{utt} sets how much it thinks (@{tt}output_config.effort@{utt}).
+The form is declared per entry, never guessed from the model name:
 
 @{table}
 thinking_request_shape | Sent | For
-budget (default) | thinking: {type: enabled, budget_tokens: <thinking_budget or 8192>} | models that take a fixed budget (Haiku 4.5)
-adaptive | thinking: {type: adaptive} | models that decide themselves and refuse a budget with 400 (Opus 5); thinking_budget is ignored
+adaptive (default) | thinking: {type: adaptive} | models that decide themselves and refuse a budget with 400 (every current model); thinking_budget is ignored
+budget | thinking: {type: enabled, budget_tokens: <thinking_budget or 8192>} | older models that take a fixed budget (Haiku 4.5)
 @{body}
 
 With the budget form the API requires the budget to be below
@@ -185,8 +189,9 @@ on must set @{tt}max_tokens@{utt} (or a smaller @{tt}thinking_budget@{utt}):
 an entry whose budget is not below its max_tokens is refused when the client
 is built, naming the model and both values -- not by a 400 on every call.
 
-While thinking is on, @{tt}temperature@{utt} is left out of tool calls: the
-API refuses sampling settings together with thinking.
+To a model that thinks -- thinking on, or an adaptive model -- @{tt}temperature@{utt},
+@{tt}top_p@{utt} and @{tt}top_k@{utt} are not sent: the API refuses sampling
+settings together with thinking.
 
 @{h2}Watching it
 
@@ -198,9 +203,11 @@ while the thinking still happens and is billed.
 
 The final message's thinking and redacted_thinking blocks, signatures
 included, are stored verbatim on the assistant message together with the
-model that produced them. They travel back in the order the model emitted
-them, before the text and the tool calls: the API refuses a tool round trip
-whose thinking blocks are changed or only partly sent back.
+model that produced them and their place among the answer's blocks. They
+travel back where the model wrote them -- a progress update stands before the
+tool call it introduces, a cut answer can end on one: the API refuses a tool
+round trip whose thinking blocks are changed, moved or only partly sent back.
+A block that came without a signature stays home: sent, it is always a 400.
 
 @{bullet}@{tt}reasoning_details_mode@{utt}: @{tt}keep_all@{utt} (default)
 sends every turn's blocks back and keeps the cached prefix byte-identical;
@@ -212,7 +219,15 @@ that produced it. That includes a turn still waiting for its tool results:
 Claude with preserved thinking accepts it without its thinking, but not with a block from
 before the change.
 @{bullet}Blocks from another model (a fallback profile answered that turn)
-are dropped: the API would ignore them but bill them as input.
+go back unchanged: the API drops the ones the model cannot read, unbilled, and
+a newer model reads an older one's.
+@{bullet}A tool that joins the list (a deferred tool loaded, in this run or
+in one that ended right after the load) unbinds every earlier block: each
+answer records the list size it was made under, and when the next call sends
+more, the blocks leave the history first.
+@{bullet}Refused anyway ("... bound to a different conversation"), the named
+block and every later one leave the history and the request goes out once
+more -- the recovery Anthropic documents; the same body never succeeds.
 @{bullet}A plain text turn keeps its blocks only beside non-empty text.
 
 @{h2}Usage
@@ -369,8 +384,10 @@ downloaded when it is done. The queue, its polling and its settings
 ANTHROPIC_API_KEY; without a key the backend is skipped (the core logs it).
 base_url is not used.
 @{bullet}Each request carries model, messages, system, tools and max_tokens
-(the request's, else 8192) -- nothing else: no thinking, no temperature, no
-cache markers.
+(the request's, else 8192) -- nothing else: no thinking request (a 5.x model
+thinks adaptively without one), no temperature, no cache markers.
+@{bullet}The answer's thinking blocks are kept as on the chat route and go back
+on the next request, in their place.
 @{bullet}Each HTTP call has a 60 s timeout. A 429 raises LLMRateLimitError
 (LLMQuotaExhaustedError when the body says "quota" or "insufficient"), any
 other refusal a plain error.

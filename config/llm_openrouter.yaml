@@ -153,14 +153,17 @@ llm_system:
       # renews it. 1 h (2x input per write) is not wired -- and on the Responses
       # route OpenRouter drops a cache_control that carries a ttl.
       prompt_cache_ttl_minutes: 5
-      # Claude uses cache_control, not OpenAI-style breakpoints, and OpenRouter
-      # passes it through only on Chat Completions, not on the base's Responses
-      # API. Without both, Claude runs without a cache.
+      # Claude uses cache_control, not OpenAI-style breakpoints. Chat Completions
+      # takes it per block (system prefix, tools, a ttl); the base's Responses
+      # API only one marker at the top of the body, which caches the
+      # conversation tail but leaves one-shot calls and a first turn uncached.
       provider: openai_httpx
       context_window: 1000000     # Claude 5.x: 1M at one price, no long-context tier
       prompt_cache_marker_style: anthropic
       reasoning_details_mode: keep_all   # otherwise the cache prefix breaks every round
-      include_thoughts: false     # Chat Completions returns no thoughts
+      # Signed thinking does come back here as reasoning_details (kept above);
+      # include_thoughts has no request field on this route and only warned.
+      include_thoughts: false
       capabilities:
         streaming: false
         image_input: true

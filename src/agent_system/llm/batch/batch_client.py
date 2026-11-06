@@ -13,7 +13,7 @@ import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..models import (
-    PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError,
+    CONVERTER_FIELDS, PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError,
     LLMConnectionError,
 )
 from ..status_mixin import LLMStatusMixin
@@ -375,7 +375,7 @@ class BatchLLMClient(LLMClient, LLMStatusMixin):
             if hasattr(msg, 'model_dump'):
                 # Use mode='json' to convert datetime to ISO strings
                 msg_dict = msg.model_dump(mode='json')
-                for key in PRIVATE_MESSAGE_FIELDS:  # ours, never the provider's
+                for key in PRIVATE_MESSAGE_FIELDS - CONVERTER_FIELDS:  # ours, never the provider's
                     msg_dict.pop(key, None)
                 messages_data.append(msg_dict)
             elif hasattr(msg, 'dict'):
@@ -389,8 +389,10 @@ class BatchLLMClient(LLMClient, LLMStatusMixin):
         # Get generation parameters from underlying client if available
         max_tokens = getattr(self.underlying_client, 'max_tokens', None)
         
-        # Get thinking parameters from underlying client's extra_params (Gemini only)
-        # Note: include_thoughts is always False for batch to avoid wasting tokens
+        # Thinking parameters from the underlying client's extra_params (Gemini).
+        # A thinking model thinks in a batch as well -- a Claude 5.x model
+        # whether asked or not -- and the answer's thinking goes back on the
+        # next step like on the chat route.
         extra_params = getattr(self.underlying_client, 'extra_params', {})
         thinking_budget = extra_params.get('thinking_budget')
         thinking_level = extra_params.get('thinking_level')

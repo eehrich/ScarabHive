@@ -66,11 +66,14 @@ from plugins.llm_common.model_dialects import (
 )
 from agent_system.utils.reasoning_artifacts import (
     RESPONSES_ITEMS_FORMAT,
+    BINDING_REFUSAL,
+    own_tool_call_signatures_only,
     produced_by_another_model,
     strip_all_reasoning_artifacts,
     strip_reasoning_artifacts_containing,
     thinking_text,
     thinking_text_from_details,
+    unsigned_tool_calls,
 )
 
 logger = logging.getLogger(__name__)
@@ -1011,11 +1014,28 @@ class HTTPXOpenAIClient(LLMClient):
         chunk loop and the tail-buffer parser so a fragment arriving only in
         the unterminated rest buffer is not lost (a dropped Gemini signature
         means MALFORMED_FUNCTION_CALL on the next turn).
+
+        ``index`` is optional on the wire. A fragment without one continues
+        the last block when it has the same type and no signature yet, and
+        opens a new block otherwise -- keying it as 0 merged a Claude thinking
+        block and its redacted sibling into one tampered block, and a signature
+        closes a block. A ``None`` value never
+        overwrites a field that already holds fragments.
         """
-        rd_index = rd.get("index", 0)
+        if "index" in rd:
+            rd_index = rd["index"]
+        elif accumulated:
+            last = max(accumulated)
+            open_block = (accumulated[last].get("type") == rd.get("type")
+                          and not accumulated[last].get("signature"))
+            rd_index = last if open_block else last + 1
+        else:
+            rd_index = 0
         if rd_index in accumulated:
             existing = accumulated[rd_index]
             for k, v in rd.items():
+                if v is None and existing.get(k) is not None:
+                    continue
                 # Every field that carries payload arrives as FRAGMENTS of one
                 # block and must be concatenated: ``text`` (plain thinking),
                 # ``summary`` (condensed thinking) and ``data`` (encrypted).
@@ -1054,6 +1074,8 @@ class HTTPXOpenAIClient(LLMClient):
         Returns the tool-call index the delta belongs to. Shared by the main
         chunk loop and the tail-buffer parser — an argument fragment arriving
         only in the rest buffer would otherwise leave truncated JSON args.
+        Keys beyond id/type/function (Gemini's ``extra_content`` with the
+        thought signature) are kept as they come, as on the non-streaming path.
         """
         index = tc_delta.get("index", 0)
         if index not in accumulated:
@@ -1070,6 +1092,9 @@ class HTTPXOpenAIClient(LLMClient):
                 accumulated[index]["function"]["name"] += func_delta["name"]
             if "arguments" in func_delta:
                 accumulated[index]["function"]["arguments"] += func_delta["arguments"]
+        for key, value in tc_delta.items():
+            if key not in ("index", "id", "type", "function") and value is not None:
+                accumulated[index][key] = value
         return index
 
     def _filter_audio_from_content(self, content: Any) -> Any:
@@ -1238,6 +1263,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Whitelist only API-accepted fields, sanitize tool_calls
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     self._own_reasoning_only(d, msg)
+                    own_tool_call_signatures_only(d, msg, self.model)
                     injections.add(result, d)
 
                     # A tool result's images follow the run of tool messages as a user message
@@ -1251,6 +1277,7 @@ class HTTPXOpenAIClient(LLMClient):
                         d['content'] = self._filter_audio_from_content(d['content'])
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     self._own_reasoning_only(d, msg)
+                    own_tool_call_signatures_only(d, msg, self.model)
                     injections.add(result, d)
                 else:
                     injections.add(result, dict(msg))
@@ -1481,8 +1508,9 @@ class HTTPXOpenAIClient(LLMClient):
                             # and only logs its own WARNING.
                             if response.status_code == 400 and _enc_retries < 2:
                                 _full_body = response.text or ""
-                                _enc_hit = ("encrypted content" in _full_body
-                                            and "rs_" in _full_body)
+                                _enc_hit = (("encrypted content" in _full_body
+                                             and "rs_" in _full_body)
+                                            or BINDING_REFUSAL in _full_body.lower())
                                 if _enc_hit:
                                     recovery = self._recover_encrypted_reasoning(
                                         _full_body, payload, messages, _enc_retries)
@@ -1851,6 +1879,7 @@ class HTTPXOpenAIClient(LLMClient):
                     # Whitelist only API-accepted fields, sanitize tool_calls
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     self._own_reasoning_only(d, msg)
+                    own_tool_call_signatures_only(d, msg, self.model)
                     injections.add(result, d)
 
                     # A tool result's images follow the run of tool messages as a user message
@@ -1864,6 +1893,7 @@ class HTTPXOpenAIClient(LLMClient):
                         d['content'] = self._filter_audio_from_content(d['content'])
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
                     self._own_reasoning_only(d, msg)
+                    own_tool_call_signatures_only(d, msg, self.model)
                     injections.add(result, d)
                 else:
                     injections.add(result, dict(msg))
@@ -2165,7 +2195,8 @@ class HTTPXOpenAIClient(LLMClient):
                                 # the ERROR log: the healed case is routine
                                 # self-repair and only logs its own WARNING.
                                 if response.status_code == 400 and _enc_retries < 2:
-                                    if "encrypted content" in error_text and "rs_" in error_text:
+                                    if (("encrypted content" in error_text and "rs_" in error_text)
+                                            or BINDING_REFUSAL in error_text.lower()):
                                         recovery = self._recover_encrypted_reasoning(
                                             error_text, payload, messages, _enc_retries)
                                         if recovery:
@@ -2981,6 +3012,12 @@ class HTTPXOpenAIClient(LLMClient):
 
         Note: only `reasoning.encrypted` blocks carry signatures. `reasoning.text`
         blocks are left alone - they're descriptive text, not signed material.
+        Only Google's blocks are patched: the same type carries Claude's
+        redacted_thinking (``anthropic-claude-v1``) and OpenAI's chains
+        (``openai-responses-v1``), which the token would only corrupt. A block
+        without a format is treated as Google's, the format this heal was
+        built for. Patched blocks are new dicts in a new list -- the payload
+        shares its block dicts with the caller's history.
         """
         patched = 0
         for msg in payload.get("messages") or []:
@@ -2989,15 +3026,19 @@ class HTTPXOpenAIClient(LLMClient):
             rds = msg.get("reasoning_details")
             if not rds:
                 continue
+            new_rds = []
             for block in rds:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") != "reasoning.encrypted":
-                    continue
-                if block.get("data") == cls._GEMINI_SIGNATURE_BYPASS:
-                    continue  # already patched
-                block["data"] = cls._GEMINI_SIGNATURE_BYPASS
-                patched += 1
+                fmt = block.get("format") if isinstance(block, dict) else None
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "reasoning.encrypted"
+                    and (not fmt or str(fmt).startswith("google"))
+                    and block.get("data") != cls._GEMINI_SIGNATURE_BYPASS
+                ):
+                    block = {**block, "data": cls._GEMINI_SIGNATURE_BYPASS}
+                    patched += 1
+                new_rds.append(block)
+            msg["reasoning_details"] = new_rds
         return patched
 
     @staticmethod
@@ -3043,6 +3084,13 @@ class HTTPXOpenAIClient(LLMClient):
         # error OpenRouter forwards.
         if "encrypted content" in haystack and ("rs_" in haystack or "reasoning" in haystack.lower()):
             return (f"{msg} | raw={raw[:300]}") if raw else (msg or "encrypted reasoning 400")
+        # Claude's preserved thinking: a block replayed behind an edited history
+        # (system prompt, tool list or an earlier turn changed). It names no rs_
+        # item, so the recovery strips the chain -- Anthropic's documented
+        # recovery is the named block and every later one. Retrying unchanged
+        # never clears it.
+        if BINDING_REFUSAL in haystack.lower():
+            return (f"{msg} | raw={raw[:300]}") if raw else msg
         return None
 
     @staticmethod
@@ -3064,8 +3112,15 @@ class HTTPXOpenAIClient(LLMClient):
                 blocks = msg.get("reasoning_details") or []
                 if not any(isinstance(b, dict) and b.get("id") == item_id for b in blocks):
                     continue
-            if msg.pop("reasoning_details", None) is not None:
-                stripped += 1
+            removed = msg.pop("reasoning_details", None) is not None
+            if item_id is None:
+                # The full strip matches the session's (strip_all also drops
+                # tool-call signatures).
+                calls = unsigned_tool_calls(msg.get("tool_calls"))
+                if calls is not None:
+                    msg["tool_calls"] = calls
+                    removed = True
+            stripped += removed
         return stripped
 
     def _recover_encrypted_reasoning(

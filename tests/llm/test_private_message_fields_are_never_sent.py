@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_system.llm.models import PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient
+from agent_system.llm.models import CONVERTER_FIELDS, PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient
 
 
 def test_prefixed_by_is_one_of_them():
     # The tests below check against the set itself: without this line a field
     # missing from it would pass them all.
-    assert {"injected_by", "prefixed_by"} <= PRIVATE_MESSAGE_FIELDS
+    assert {"injected_by", "prefixed_by", "tools_key"} <= PRIVATE_MESSAGE_FIELDS
 
 
 def _task() -> ChatMessage:
@@ -42,7 +42,9 @@ class _Sync(LLMClient):
 
 
 @pytest.mark.asyncio
-async def test_the_batch_queue_gets_none_of_them():
+async def test_the_batch_queue_gets_none_of_them_but_what_a_converter_reads():
+    """Whose reasoning a message carries reaches the backend's converter; it
+    sends none of it (each backend builds its request from the fields it knows)."""
     from agent_system.llm.batch.batch_client import BatchLLMClient
 
     seen = {}
@@ -55,6 +57,8 @@ async def test_the_batch_queue_gets_none_of_them():
     client = BatchLLMClient(underlying_client=_Sync(), queue_manager=Queue(),
                             batch_provider_config=SimpleNamespace(fallback_to_sync=False),
                             model_name="m", batch_provider="openai")
-    await client.chat([_task()])
+    await client.chat([_task().model_copy(update={"reasoning_model": "m-old", "injected_by": "a.hook"})])
     (msg,) = seen["messages"]
-    assert not PRIVATE_MESSAGE_FIELDS & msg.keys(), msg
+    assert not (PRIVATE_MESSAGE_FIELDS - CONVERTER_FIELDS) & msg.keys(), msg
+    assert msg["reasoning_model"] == "m-old", "the converter cannot tell another model's reasoning"
+    assert msg["injected_by"] == "a.hook", "the converter cannot tell a wake from a hook's note"

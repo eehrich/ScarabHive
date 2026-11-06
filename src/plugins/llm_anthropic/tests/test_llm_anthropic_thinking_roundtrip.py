@@ -46,7 +46,7 @@ class TestSerializeThinkingBlocks:
             _Block(type="text", text="Antwort"),
         ])
         blocks = client._serialize_thinking_blocks(msg)
-        assert blocks == [{"type": "thinking", "thinking": "weil ...", "signature": "SIG-1"}]
+        assert blocks == [{"type": "thinking", "thinking": "weil ...", "signature": "SIG-1", "_after": 0}]
 
     def test_keeps_empty_text_blocks(self, client):
         """display='omitted' is the DEFAULT on Opus 5 / Sonnet 5 / Fable 5: the
@@ -54,7 +54,7 @@ class TestSerializeThinkingBlocks:
         Dropping these is the classic partial-echo 400."""
         msg = _Message([_Block(type="thinking", thinking="", signature="SIG-EMPTY")])
         assert client._serialize_thinking_blocks(msg) == [
-            {"type": "thinking", "thinking": "", "signature": "SIG-EMPTY"}
+            {"type": "thinking", "thinking": "", "signature": "SIG-EMPTY", "_after": 0}
         ]
 
     def test_keeps_redacted_thinking(self, client):
@@ -88,10 +88,18 @@ class TestReplayGuard:
     def test_replays_for_same_model(self, client):
         assert len(client._replayable_thinking(self._msg())) == 1
 
-    def test_skips_after_model_switch(self, client):
-        """Fallback chains move messages between models. Another model ignores
-        foreign signatures but still bills them as input."""
-        assert client._replayable_thinking(self._msg("claude-sonnet-5")) == []
+    def test_another_models_blocks_go_back_unchanged(self, client):
+        """Anthropic drops what the model cannot read, unbilled, and a newer
+        model reads an older one's; removing them cost that reasoning."""
+        assert client._replayable_thinking(self._msg("claude-sonnet-5")) == [
+            {"type": "thinking", "thinking": "t", "signature": "S"}]
+
+    def test_an_unsigned_block_stays_home(self, client):
+        """No signature arrived for it: sent, it is always a 400."""
+        msg = ChatMessage(role="assistant", content="txt", thinking_model="claude-opus-5", thinking_blocks=[
+            {"type": "thinking", "thinking": "a", "signature": ""},
+            {"type": "redacted_thinking", "data": "R"}])
+        assert client._replayable_thinking(msg) == [{"type": "redacted_thinking", "data": "R"}]
 
     def test_no_blocks_is_empty(self, client):
         assert client._replayable_thinking(ChatMessage(role="assistant", content="x")) == []
@@ -114,6 +122,58 @@ class TestOutgoingOrder:
         _system, converted = client._convert_messages([msg])
         types = [b["type"] for b in converted[0]["content"]]
         assert types == ["thinking", "text", "tool_use"]
+
+    @pytest.mark.parametrize("answer", [
+        # a max_tokens stop right after a call ends on the next update
+        [("thinking", "S1"), ("text", None), ("tool_use", "A"), ("thinking", "S2")],
+        # a progress update before each tool_use it introduces
+        [("thinking", "S1"), ("tool_use", "A"), ("thinking", "S2"), ("tool_use", "B")],
+    ])
+    def test_a_turn_goes_back_in_the_order_the_model_wrote_it(self, client, answer):
+        """Captured by the real serializer, rebuilt by the real converter."""
+        content = [_Block(type="thinking", thinking="", signature=v) if kind == "thinking"
+                   else _Block(type="text", text="ok") if kind == "text"
+                   else _Block(type="tool_use", id=v, name="f", input={}) for kind, v in answer]
+        calls = [{"id": v, "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                 for kind, v in answer if kind == "tool_use"]
+        msg = ChatMessage(role="assistant", content="ok" if ("text", None) in answer else "",
+                          tool_calls=calls, thinking_model="claude-opus-5",
+                          thinking_blocks=client._serialize_thinking_blocks(_Message(content)))
+
+        _system, converted = client._convert_messages([msg])
+
+        sent = [(b["type"], b.get("signature") or b.get("id")) for b in converted[0]["content"]]
+        assert sent == answer
+        assert not any("_after" in b for b in converted[0]["content"]), "a private key went out"
+
+    def test_a_block_after_a_second_text_stays_before_its_call(self, client):
+        """The turn's text is stored as one string: counting each text block put S2 behind B."""
+        answer = [_Block(type="thinking", thinking="", signature="S1"), _Block(type="text", text="one"),
+                  _Block(type="tool_use", id="A", name="f", input={}), _Block(type="text", text="two"),
+                  _Block(type="thinking", thinking="", signature="S2"),
+                  _Block(type="tool_use", id="B", name="f", input={})]
+        calls = [{"id": v, "type": "function", "function": {"name": "f", "arguments": "{}"}} for v in "AB"]
+        msg = ChatMessage(role="assistant", content="onetwo", tool_calls=calls, thinking_model="claude-opus-5",
+                          thinking_blocks=client._serialize_thinking_blocks(_Message(answer)))
+
+        _system, converted = client._convert_messages([msg])
+
+        sent = [(b["type"], b.get("signature") or b.get("id")) for b in converted[0]["content"]]
+        assert sent == [("thinking", "S1"), ("text", None), ("tool_use", "A"), ("thinking", "S2"), ("tool_use", "B")]
+
+    def test_an_empty_text_block_takes_no_place(self, client):
+        """The replay builds no block for empty text: counted, it put S2 behind B."""
+        answer = [_Block(type="text", text=""), _Block(type="tool_use", id="A", name="f", input={}),
+                  _Block(type="thinking", thinking="", signature="S2"),
+                  _Block(type="tool_use", id="B", name="f", input={})]
+        calls = [{"id": v, "type": "function", "function": {"name": "f", "arguments": "{}"}} for v in "AB"]
+        msg = ChatMessage(role="assistant", content="", tool_calls=calls, thinking_model="claude-opus-5",
+                          thinking_blocks=client._serialize_thinking_blocks(_Message(answer)))
+
+        _system, converted = client._convert_messages([msg])
+
+        sent = [(b["type"], b.get("signature") or b.get("id")) for b in converted[0]["content"]]
+        assert sent == [("tool_use", "A"), ("thinking", "S2"), ("tool_use", "B")]
 
     def test_assistant_without_tool_calls_keeps_blocks(self, client):
         msg = ChatMessage(
@@ -165,12 +225,16 @@ class TestThinkingRequestShape:
     """Which thinking shape the model accepts is told by its entry -- not
     by its name. The wrong shape is an HTTP 400, not a silent loss."""
 
-    def test_default_is_the_budget_form(self):
-        assert _built(thinking_budget=4096)._build_thinking_param() == {
+    def test_default_is_adaptive(self):
+        """Every current Claude model refuses a budget with a 400."""
+        assert _built(thinking_budget=4096)._build_thinking_param() == {"type": "adaptive"}
+
+    def test_a_declared_budget_form_sends_the_budget(self):
+        assert _built(thinking_request_shape="budget", thinking_budget=4096)._build_thinking_param() == {
             "type": "enabled", "budget_tokens": 4096}
 
     def test_budget_falls_back_to_the_house_default(self):
-        assert _built()._build_thinking_param() == {
+        assert _built(thinking_request_shape="budget")._build_thinking_param() == {
             "type": "enabled", "budget_tokens": 8192}
 
     def test_declared_adaptive_sends_no_budget(self):
@@ -182,7 +246,7 @@ class TestThinkingRequestShape:
     def test_the_name_no_longer_decides(self):
         """Counter-check to the deleted name table: the same name, both
         shapes -- the declared key alone decides."""
-        assert _built(model="claude-opus-5")._build_thinking_param()["type"] == "enabled"
+        assert _built(model="claude-opus-5", thinking_request_shape="budget")._build_thinking_param()["type"] == "enabled"
         assert _built(model="claude-haiku-4-5-20251001",
                       thinking_request_shape="adaptive")._build_thinking_param() == {
             "type": "adaptive"}

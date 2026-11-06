@@ -19,6 +19,7 @@ import contextlib
 import copy
 import errno
 import functools
+import hashlib
 import logging
 import socket
 import ssl
@@ -29,6 +30,7 @@ import httpcore
 import httpx
 
 from .....llm.model_health import model_health
+from .....llm.message_roles import opens_a_turn
 from .....llm.models import (
     LLMConnectionError,
     LLMQuotaExhaustedError,
@@ -41,7 +43,19 @@ from .....llm.structured_output import (
 )
 from ...reasoning_loop import ReasoningLoopError
 from .llm_call import _name_the_model
+from .....utils.reasoning_artifacts import strip_tool_set_bound_reasoning
 from .state import LoopState, StepEnd, StepState
+
+
+def tools_fingerprint(tools: list) -> str:
+    """The tool list a request carries, by its names in order (ChatMessage.tools_key).
+
+    Names, not whole schemas: a description that changes per call would unbind
+    every block on every call."""
+    names = [((t.get("function") or {}).get("name") or t.get("name") or "") if isinstance(t, dict) else str(t)
+             for t in tools or []]
+    return hashlib.sha1("\n".join(names).encode("utf-8")).hexdigest()[:16]
+
 
 if TYPE_CHECKING:
     from ...server import Agent
@@ -281,9 +295,12 @@ class FallbackMixin:
             # history, and before this step's budget note, which has to stay the last
             # thing the model reads.
             messages = run.messages
+            # Once per request: a copy from an earlier request of the session
+            # (kept since the model answered it) stands far back in the history.
+            asked = max((i for i, m in enumerate(messages) if opens_a_turn(m)), default=-1)
             if (st.wire_format is None or response_format.type == JSON_OBJECT) and not any(
                     getattr(m, "injected_by", None) == FORMAT_NOTE and m.content == run.format_note_text
-                    for m in messages):
+                    for m in messages[asked + 1:]):
                 note = self._structured_output_note(run.format_note_text, FORMAT_NOTE)
                 if st.budget_note is not None and messages and messages[-1] is st.budget_note:
                     messages.insert(len(messages) - 1, note)
@@ -295,6 +312,21 @@ class FallbackMixin:
         # as appended messages may. Loads nothing when nothing is new.
         if run.context.deferred_tools is not None:
             run.context.deferred_tools.restore(run.messages, run.tools_schema)
+        # A tool that joined the list since the last answer (a deferred load,
+        # in this run or before it: a preloaded call, a run that ended right
+        # after its load) unbinds every earlier Claude thinking block from its
+        # request; sent anyway, an enforcing account refuses each later
+        # request. Gone from the history. Each answer records the list it was
+        # made under (tools_key): a tool swapped for another at the same
+        # length unbinds them as well.
+        key = tools_fingerprint(run.tools_schema)
+        made_under = next((m.tools_key for m in reversed(run.messages)
+                           if getattr(m, "tools_key", None) is not None), None)
+        if made_under is not None and key != made_under:
+            for history in {id(run.messages): run.messages,
+                            id(run.context.messages): run.context.messages}.values():
+                strip_tool_set_bound_reasoning(history)
+        run.tools_key = key
 
     async def _reasoning_progress(self: Agent, run: LoopState, st: StepState,
                                   text: str, chars: int, previous: int) -> None:

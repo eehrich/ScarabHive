@@ -19,6 +19,8 @@ from plugins.llm_common.request_end import ending_error  # noqa: F401  (re-expor
 from agent_system.llm.message_roles import DEVELOPER, USER, developer_turn, resolve_rung
 from agent_system.llm.token_utils import extract_text_from_content
 from agent_system.utils.json_utils import repair_json
+from plugins.llm_gemini.gemini_signatures import current_turn_start, replay_signatures, text_signature
+from agent_system.utils.reasoning_artifacts import produced_by_another_model
 
 from plugins.llm_common.schema_sanitize import sanitize_schema_for_gemini
 
@@ -223,6 +225,7 @@ def prepare_messages_for_gemini(
     include_critical_instruction: bool = True,
     enforce_byte_limit: bool = True,
     developer_role: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Prepare messages for Gemini API: filter unavailable tool calls and convert.
     
@@ -249,7 +252,7 @@ def prepare_messages_for_gemini(
     
     # Convert to Gemini format
     system_instruction, contents = convert_openai_messages_to_gemini(
-        filtered_messages, include_critical_instruction, developer_role
+        filtered_messages, include_critical_instruction, developer_role, model
     )
     
     # Enforce byte limit if enabled (fallback compaction)
@@ -448,6 +451,7 @@ def convert_openai_messages_to_gemini(
     messages: List[Any],
     include_critical_instruction: bool = True,
     developer_role: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Convert ChatMessage list to Gemini format.
 
@@ -457,6 +461,7 @@ def convert_openai_messages_to_gemini(
         developer_role: the model entry's ``capabilities.developer_role``, only
             so that a value this format cannot honour is said out loud rather
             than dropped in silence (see llm/message_roles.py)
+        model: the model the request goes to; another model's signatures stay home
 
     Returns:
         (system_instruction, contents) tuple where:
@@ -476,7 +481,8 @@ def convert_openai_messages_to_gemini(
             "Properly escape all special characters in JSON strings (quotes, backslashes, newlines)."
         )
 
-    for msg in messages:
+    turn_start = current_turn_start(messages)
+    for position, msg in enumerate(messages):
         if msg.role == "system":
             # Gemini uses systemInstruction separately - collect ALL system messages
             content = msg.content if isinstance(msg.content, str) else ""
@@ -560,10 +566,13 @@ def convert_openai_messages_to_gemini(
         # Handle assistant with tool_calls
         if msg.role == "assistant" and msg.tool_calls:
             parts = []
-            # Add text if present
-            if msg.content:
-                parts.append({"text": msg.content})
-            
+            # Add text if present, with the signature it came with
+            text = extract_text_from_content(msg.content) if isinstance(msg.content, list) else msg.content
+            if text:
+                parts.append(_text_part(text, text_signature(msg, model)))
+            signatures = replay_signatures(msg.tool_calls, position >= turn_start,
+                                           produced_by_another_model(msg, model))
+
             # Add function calls with thought_signature preservation
             for idx, tc in enumerate(msg.tool_calls):
                 func = tc.get("function", {})
@@ -585,32 +594,12 @@ def convert_openai_messages_to_gemini(
                     }
                 }
                 
-                # Preserve thoughtSignature if present (required for Gemini 3 Pro)
-                # The signature is stored in extra_content.google.thought_signature
-                extra_content = tc.get("extra_content", {})
-                google_extra = extra_content.get("google", {})
-                thought_sig = google_extra.get("thought_signature")
-                
-                # Also check direct thought_signature field
-                if not thought_sig:
-                    thought_sig = tc.get("thought_signature")
-                
-                # Only set thoughtSignature if we actually have one from the original response.
-                # 
-                # IMPORTANT: Do NOT set skip_thought_signature_validator for ALL function calls!
-                # Google's documentation says validation is only for the CURRENT TURN.
-                # Setting bypass tokens on historical function calls can cause MALFORMED_FUNCTION_CALL.
-                #
-                # The bypass token should ONLY be used when:
-                # 1. Switching from another model (e.g., DeepSeek to Gemini) mid-conversation
-                # 2. AND the function call is in the CURRENT turn (after last user text message)
-                # 3. AND there's no original thought_signature
-                #
-                # For now, we only restore existing signatures. The model-switch case needs
-                # more sophisticated turn detection to work properly.
-                if thought_sig:
-                    part["thoughtSignature"] = thought_sig
-                    logger.debug(f"[Gemini] Restored thoughtSignature for {func_name}")
+                # The signature where it came (the step's first call), the
+                # dummy on the first call of a current-turn step that has none
+                # (gemini_signatures.replay_signatures). The sync path behind a
+                # failed batch used to send such a step unsigned: a sure 400.
+                if signatures[idx]:
+                    part["thoughtSignature"] = signatures[idx]
                 
                 parts.append(part)
             
@@ -623,7 +612,7 @@ def convert_openai_messages_to_gemini(
             if msg.content:
                 contents.append({
                     "role": role,
-                    "parts": [{"text": msg.content}]
+                    "parts": [_text_part(msg.content, text_signature(msg, model) if msg.role == "assistant" else None)]
                 })
         elif isinstance(msg.content, list):
             # Multimodal content (text + images/etc.)
@@ -686,6 +675,11 @@ def convert_openai_messages_to_gemini(
                 part["text"] = strip_cache_breakpoints(t)
 
     return system_instruction, contents
+
+
+def _text_part(text: str, signature: Optional[str]) -> Dict[str, Any]:
+    """A text part, with the thought signature the model's text came with."""
+    return {"text": text, "thoughtSignature": signature} if signature else {"text": text}
 
 
 def _merge_consecutive_tool_responses(

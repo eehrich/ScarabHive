@@ -465,13 +465,14 @@ class TestGeminiClientMessageConversion:
         assert image_part["inlineData"]["data"] == "UklGRiQAAABXRUJQ"
 
     def test_convert_tool_calls_without_thought_signature(self, gemini_client):
-        """Test that missing thought signature is NOT replaced with bypass token.
-        
+        """A step of an earlier turn without a signature gets no dummy.
+
         Google's validation is only for the CURRENT turn, not historical function calls.
         Setting bypass tokens on ALL function calls without signatures can cause
-        MALFORMED_FUNCTION_CALL errors. We only restore existing signatures.
+        MALFORMED_FUNCTION_CALL errors.
         """
         messages = [
+            ChatMessage(role="user", content="weather?"),
             ChatMessage(
                 role="assistant",
                 content=None,
@@ -484,12 +485,15 @@ class TestGeminiClientMessageConversion:
                     }
                     # No thought_signature
                 }]
-            )
+            ),
+            ChatMessage(role="tool", tool_call_id="call_1", name="get_weather", content="sunny"),
+            ChatMessage(role="user", content="and tomorrow?"),
         ]
-        
+
         system_instruction, contents = convert_openai_messages_to_gemini(messages)
-        
-        part = contents[0]["parts"][0]
+
+        part = contents[1]["parts"][0]
+        assert "functionCall" in part, "fixture: not the call"
         # Should NOT have thoughtSignature when not present originally
         assert "thoughtSignature" not in part
 

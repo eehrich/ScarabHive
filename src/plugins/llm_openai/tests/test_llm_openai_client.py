@@ -842,3 +842,14 @@ def test_other_routes_reasoning_carriers_never_reach_this_api():
     sent = client._apply_developer_rung(dicts)
     assert not any(k in m for m in sent for k in ("reasoning_details", "thinking_blocks", "thinking_model"))
     assert all(set(m) <= {"role", "content", "name", "tool_calls", "tool_call_id"} for m in sent), sent
+
+
+def test_another_models_tool_call_signature_never_reaches_this_api():
+    """Native Gemini's thought signature rides on the tool call itself."""
+    client = OpenAIAsyncClient(model="gpt-4", api_key="test-key", base_url="https://api.openai.com/v1")
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"},
+            "extra_content": {"google": {"thought_signature": "SIG"}}}
+    dicts = [{"role": "assistant", "content": "", "reasoning_model": "gemini", "tool_calls": [call]}]
+    sent = client._apply_developer_rung(dicts)
+    assert "extra_content" not in sent[0]["tool_calls"][0]
+    assert "extra_content" in call, "the stored call was stripped"

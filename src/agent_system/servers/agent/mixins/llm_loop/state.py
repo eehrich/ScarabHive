@@ -91,6 +91,9 @@ class LoopState:
     max_outage_seconds: float = 0.0
     outage_started: Optional[float] = None
     outage_waits: int = 0
+    #: Fingerprint of the tool list the run's last call sent
+    #: (fallback._prepare_llm_call); its answer keeps it as ChatMessage.tools_key.
+    tools_key: Optional[str] = None
 
     # -- safeguards against infinite loops
     consecutive_no_tool_calls: int = 0

@@ -2449,8 +2449,10 @@ class LayeredCompactionStrategy:
             if msg.get("injected_by"):
                 archived_msg["injected_by"] = msg["injected_by"]
             # Which run it opened, which ids its calls' tools ran under: a session
-            # read back finds its sub-agents' runs by them, archived or not.
-            for stamp in ("request_id", "tool_request_ids", "step"):
+            # read back finds its sub-agents' runs by them, archived or not. And
+            # whose signatures its kept tool calls carry: untagged, every model
+            # took them as its own.
+            for stamp in ("request_id", "tool_request_ids", "step", "reasoning_model"):
                 if msg.get(stamp):
                     archived_msg[stamp] = msg[stamp]
 

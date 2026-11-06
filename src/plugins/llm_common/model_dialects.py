@@ -104,8 +104,10 @@ def resolve_reasoning_details_mode(value: Optional[str], *, model: str,
 
 
 def resolve_thinking_request_shape(value: Optional[str], *, model: str,
-                                   default: str = "budget") -> str:
-    """Declared thinking request shape, or the long-standing budget form."""
+                                   default: str = "adaptive") -> str:
+    """Declared thinking request shape, else adaptive: every current Claude model
+    (Opus 4.6 on, the 5.x family) refuses a budget with a 400; an older model is
+    the one that declares ``budget``."""
     return declared_choice(value, default=default, allowed=THINKING_REQUEST_SHAPES,
                            field="thinking_request_shape", model=model)
 

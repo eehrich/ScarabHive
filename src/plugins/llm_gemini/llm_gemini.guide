@@ -57,7 +57,6 @@ base_url | used | ignored: always Google's endpoint
 timeouts | connect, read, write, pool | only read (see @{" Timeouts and streaming " link timeouts})
 TLS verification | follows the app's setting | the SDK's default
 request in the message debugger | the full request body | only counts: contents_count, has_tools, has_system
-tool call without a thought signature in the history | sent without one | sent with Google's bypass token
 MALFORMED_FUNCTION_CALL | retried when streamed or not | retried only when streamed
 rate-limit retries | up to 3, sharing the attempts | up to 2, with 0-50 % jitter
 @{body}
@@ -264,7 +263,7 @@ agent server's thinking deltas): the chat shows them apart from the answer,
 and the agent server's reasoning-loop watch and llm_progress hooks see them.
 The stored message keeps them apart too: the answer as its content,
 the thinking as @{tt}reasoning_content@{utt}. Thinking is not sent back on
-later turns; the thought signatures on tool calls are (see
+later turns; the thought signatures are (see
 @{" What the model sees " link model}).
 
 @{h2}Usage
@@ -418,12 +417,26 @@ with the task."
 
 @{h2}Thought signatures
 
-Gemini 3 marks each tool call with a thought signature that must come back
-on the next turn. It is stored on the tool call
-(@{tt}extra_content.google.thought_signature@{utt}); parallel calls without
-one get the first call's. gemini sends back the signatures it has;
-gemini_sdk sends Google's bypass token for a call without one, e.g. after a
-switch from another model.
+Gemini 3 signs its steps, and the signature must come back in the part it
+came in. All three routes (gemini, gemini_sdk, the batch) keep and send it
+the same way:
+
+@{bullet}A step's signature sits on its first tool call only
+(@{tt}extra_content.google.thought_signature@{utt}); its parallel calls
+carry none, as Google sends them.
+@{bullet}The answer text's signature (often an empty last part when
+streaming) is kept as a @{tt}reasoning.encrypted@{utt} block in
+@{tt}reasoning_details@{utt} and goes back on the text part. Without it the
+model loses its previous reasoning; the request still succeeds.
+@{bullet}A step of the current turn (since the last user message) without a
+signature, e.g. after a switch from another model, gets Google's bypass token
+on its first call. Earlier steps go without one.
+
+A signature is bound to the model that made it: after a switch to another
+Gemini model the stored ones stay home (the message names its producer,
+@{tt}reasoning_model@{utt}), and the current turn's steps take the bypass token.
+Another provider's request leaves them out too, and a full reset of the
+reasoning (after a provider refused it) removes them.
 
 @{h2}Tools
 

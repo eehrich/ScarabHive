@@ -453,6 +453,8 @@ class TestReasoningRejectionDetection:
         "Corrupted thought signature.",
         "Your request contains encrypted reasoning or compaction content",
         "content that was produced under a different model",
+        # Claude's thinking replayed behind an edited history
+        "Invalid `signature` in `thinking` block. The block is bound to a different conversation.",
     ])
     def test_known_rejections_are_recognised(self, body):
         assert OpenAIResponsesClient._is_reasoning_artifact_rejection(body)
@@ -464,3 +466,59 @@ class TestReasoningRejectionDetection:
     ])
     def test_unrelated_errors_are_not(self, body):
         assert not OpenAIResponsesClient._is_reasoning_artifact_rejection(body)
+
+
+class TestAReleasedPinHealsOnlyWhatItsBackendSigned:
+    """Gemini behind OpenRouter: a Vertex fallback pins the next call to Vertex,
+    which 404s on flex; the released retry goes to AI Studio, which refuses the
+    Vertex-signed items. The full reset also threw away the AI Studio chain the
+    retry's backend could still read."""
+
+    @staticmethod
+    def _history():
+        def turn(served_by, item_id, call_id):
+            output = [{**SAMPLE_OUTPUT[0], "id": item_id}, {**SAMPLE_OUTPUT[1], "call_id": call_id}]
+            assistant = _client(model="google/gemini-x")._format_response({"output": output})["assistant"]
+            return [ChatMessage(**{**assistant, "served_by": served_by}),
+                    ChatMessage(role="tool", content="r", tool_call_id=call_id)]
+        return [ChatMessage(role="user", content="hi"),
+                *turn("Google AI Studio", "rs_studio", "call_1"),
+                *turn("Google Vertex", "rs_vertex", "call_2")]
+
+    @pytest.fixture
+    def pinned(self, monkeypatch):
+        from plugins.llm_openai_compat import openai_responses_client as module
+
+        async def pin(routing, messages, base_url, verify, recent_backend=None):
+            return {"order": ["google-vertex"], "allow_fallbacks": False}
+        monkeypatch.setattr(module, "routing_pinned_to_last_backend", pin)
+
+    @staticmethod
+    def _items(payload):
+        return [i.get("id") for i in payload["input"] if i.get("type") == "reasoning"]
+
+    async def test_the_released_backends_items_go_and_the_rest_stays(self, transport, pinned):
+        msgs = self._history()
+        t = transport([_rejection(404, '{"error":{"message":"No endpoints found"}}'),
+                       _rejection(400, "Corrupted thought signature."),
+                       httpx.Response(200, json=OK_BODY)])
+
+        await _client(model="google/gemini-x").chat_tools(msgs, [])
+
+        assert t.calls == 3
+        assert self._items(t.payloads[1]) == ["rs_studio", "rs_vertex"], "fixture: the retry carried no items"
+        assert self._items(t.payloads[2]) == ["rs_studio"]
+        assert msgs[1].reasoning_details and not msgs[3].reasoning_details
+
+    async def test_a_second_refusal_still_gets_the_full_reset(self, transport, pinned):
+        msgs = self._history()
+        t = transport([_rejection(404, '{"error":{"message":"No endpoints found"}}'),
+                       _rejection(400, "Corrupted thought signature."),
+                       _rejection(400, "Corrupted thought signature."),
+                       httpx.Response(200, json=OK_BODY)])
+
+        await _client(model="google/gemini-x").chat_tools(msgs, [])
+
+        assert t.calls == 4
+        assert self._items(t.payloads[3]) == []
+        assert not any(m.reasoning_details for m in msgs)

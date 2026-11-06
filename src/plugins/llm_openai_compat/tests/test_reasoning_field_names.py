@@ -125,6 +125,54 @@ def test_streamed_summary_fragments_are_concatenated_too():
     assert accumulated[0]["summary"] == "In short: read, then write."
 
 
+def test_index_less_fragments_of_another_type_open_a_new_block():
+    """``index`` is optional on the wire; keying it as 0 merged a thinking block
+    and its redacted sibling into one tampered block."""
+    accumulated: dict[int, dict] = {}
+    for rd in ({"type": "reasoning.text", "text": "abc"},
+               {"type": "reasoning.text", "text": "def", "signature": "S1"},
+               {"type": "reasoning.encrypted", "data": "RED"}):
+        HTTPXOpenAIClient._accumulate_reasoning_detail(accumulated, rd)
+    blocks = [accumulated[i] for i in sorted(accumulated)]
+    assert blocks == [{"type": "reasoning.text", "text": "abcdef", "signature": "S1"},
+                      {"type": "reasoning.encrypted", "data": "RED"}]
+
+
+def test_a_signature_closes_an_index_less_block():
+    """Two Claude thinking blocks in a row: merged, they were one block with the wrong signature."""
+    accumulated: dict[int, dict] = {}
+    for rd in ({"type": "reasoning.text", "text": "one"},
+               {"type": "reasoning.text", "signature": "S1"},
+               {"type": "reasoning.text", "text": "two"},
+               {"type": "reasoning.text", "signature": "S2"}):
+        HTTPXOpenAIClient._accumulate_reasoning_detail(accumulated, rd)
+    blocks = [accumulated[i] for i in sorted(accumulated)]
+    assert blocks == [{"type": "reasoning.text", "text": "one", "signature": "S1"},
+                      {"type": "reasoning.text", "text": "two", "signature": "S2"}]
+
+
+def test_a_null_fragment_does_not_overwrite_the_text_so_far():
+    accumulated: dict[int, dict] = {}
+    for rd in ({"index": 0, "type": "reasoning.text", "text": "the plan"},
+               {"index": 0, "type": "reasoning.text", "text": None, "signature": "SIG"}):
+        HTTPXOpenAIClient._accumulate_reasoning_detail(accumulated, rd)
+    assert accumulated[0]["text"] == "the plan"
+    assert accumulated[0]["signature"] == "SIG"
+
+
+def test_a_streamed_tool_call_keeps_its_extra_content():
+    """Gemini's thought signature rides on the tool call; the non-streaming path
+    kept it, the stream lost it, and the next tool round was refused."""
+    accumulated: dict[int, dict] = {}
+    signature = {"google": {"thought_signature": "SIG"}}
+    for delta in ({"index": 0, "id": "c1", "function": {"name": "read", "arguments": ""}},
+                  {"index": 0, "function": {"arguments": "{}"}, "extra_content": signature}):
+        HTTPXOpenAIClient._accumulate_tool_call_delta(accumulated, delta)
+    assert accumulated[0] == {"id": "c1", "type": "function",
+                              "function": {"name": "read", "arguments": "{}"},
+                              "extra_content": signature}
+
+
 # --- the block types disagree on WHERE the text sits ------------------------
 
 def test_reasoning_text_from_details_reads_the_summary_field():

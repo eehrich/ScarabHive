@@ -108,7 +108,8 @@ from plugins.llm_common.openai_utils import convert_audio_to_input_audio
 from plugins.llm_common.structured_output import responses_text_format
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.utils.reasoning_artifacts import (
-    RESPONSES_ITEMS_FORMAT, carries_proof, strip_all_reasoning_artifacts)
+    BINDING_REFUSAL, RESPONSES_ITEMS_FORMAT, carries_proof, last_served_by, strip_all_reasoning_artifacts,
+    strip_reasoning_artifacts_served_by)
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,7 @@ class OpenAIResponsesClient(LLMClient):
         tool_schema_dialect: Optional[str] = None,
         reasoning_details_mode: Optional[str] = None,
         thinking_level: Optional[str] = None,
+        include_thoughts: bool = False,
         max_tokens: Optional[int] = None,
         service_tier: Optional[str] = None,
         provider_routing: Optional[dict] = None,
@@ -359,6 +361,7 @@ class OpenAIResponsesClient(LLMClient):
         self.reasoning_details_mode = resolve_reasoning_details_mode(
             reasoning_details_mode, model=model, default="keep_all")
         self.thinking_level = thinking_level
+        self.include_thoughts = include_thoughts
         self.max_tokens = max_tokens
         self.service_tier = service_tier
         self.provider_routing = provider_routing
@@ -627,6 +630,14 @@ class OpenAIResponsesClient(LLMClient):
                         and isinstance((tc.get("function") or {}).get("arguments"), str)
                     }
                     for item in verbatim:
+                        # OpenAI keeps nothing with store=False: a reasoning item
+                        # without its payload names an id it cannot find (400
+                        # "Item with id 'rs_…' not found"). OpenRouter's text-only
+                        # reasoning (DeepSeek) is wanted back and stays.
+                        if (not self._is_openrouter and isinstance(item, dict)
+                                and item.get("type") == "reasoning"
+                                and not item.get("encrypted_content")):
+                            continue
                         if isinstance(item, dict) and item.get("type") == "function_call":
                             args = safe_args.get(item.get("call_id") or item.get("id"))
                             if args is not None and args != item.get("arguments"):
@@ -871,8 +882,18 @@ class OpenAIResponsesClient(LLMClient):
             "input": self._messages_to_input(messages, model),
             "store": False,
         }
+        if not self._is_openrouter:
+            # With store=False OpenAI hands the reasoning back only when asked;
+            # the next tool step must replay it. OpenRouter adds it itself.
+            payload["include"] = ["reasoning.encrypted_content"]
         if self.thinking_level:
             payload["reasoning"] = {"effort": self.thinking_level}
+            # OpenAI models return their reasoning only encrypted unless a
+            # summary is asked for (summary: null in the echo, measured over
+            # every stored GPT item). DeepSeek and Gemini take the field and
+            # answer as before (live 06.11.2026, replay with the summary 200).
+            if self.include_thoughts and self.thinking_level != "none":
+                payload["reasoning"]["summary"] = "auto"
         # Sampling temperature only without reasoning: the o-/gpt-5.x series
         # does not accept the param (400 "temperature is not supported"),
         # reasoning.effort steers there. 0.0 is valid -> check for None.
@@ -1120,7 +1141,8 @@ class OpenAIResponsesClient(LLMClient):
                "invalid_encrypted_content" in body_text or \
                "thought signature" in lowered or \
                "encrypted reasoning" in lowered or \
-               "produced under a different model" in lowered
+               "produced under a different model" in lowered or \
+               BINDING_REFUSAL in lowered
 
     @staticmethod
     def _is_transient_body_error(body_err: Any) -> bool:
@@ -1337,9 +1359,13 @@ class OpenAIResponsesClient(LLMClient):
 
         payload = build_payload()
 
+        # The backend a released pin pointed at: what it signed, the retry's
+        # backend cannot verify. A heal strips that first, not the whole chain.
+        released_backend: Optional[str] = None
+
         def release_pin_after_refusal() -> bool:
             """A refusal sends the retry out as the model entry is configured."""
-            nonlocal pinned, provider, model
+            nonlocal pinned, provider, model, released_backend
             released = model != self.model
             if released:
                 # The input stays as built: the alias most likely answers with the same model.
@@ -1349,6 +1375,7 @@ class OpenAIResponsesClient(LLMClient):
                 return released
             pinned = False
             provider = self.provider_routing
+            released_backend = last_served_by(messages)
             self.forget_backend()
             release_provider_pin(payload, self.provider_routing)
             logger.info("Provider pin released after a refusal (model=%s)", self.model)
@@ -1356,6 +1383,24 @@ class OpenAIResponsesClient(LLMClient):
 
         url = f"{self.base_url}/responses"
         _enc_retried = False
+        _enc_scoped = False
+
+        def heal_reasoning() -> int:
+            """Strip the session's rejected reasoning; returns messages touched.
+
+            After a released pin, only what the released backend signed first
+            (Gemini: Vertex items refused by AI Studio); should the retry be
+            refused again, the full reset follows. The heal is spent once that
+            ran, and it costs no retry slot.
+            """
+            nonlocal _enc_retried, _enc_scoped
+            if released_backend and not _enc_scoped:
+                _enc_scoped = True
+                n = strip_reasoning_artifacts_served_by(messages, released_backend)
+                if n:
+                    return n
+            _enc_retried = True
+            return strip_all_reasoning_artifacts(messages)
         # Must stand BEFORE the loop: it is only set in the 429 branches but
         # read in the encrypted-reasoning 400 recovery -- a 400 without a
         # prior 429 otherwise ran into an UnboundLocalError (found live
@@ -1537,8 +1582,7 @@ class OpenAIResponsesClient(LLMClient):
                         # also "no such model", which must keep reaching the chain.
                         if (response.status_code in (400, 404) and not _enc_retried
                                 and self._is_reasoning_artifact_rejection(body_text)):
-                            _enc_retried = True
-                            n = strip_all_reasoning_artifacts(messages)
+                            n = heal_reasoning()
                             payload = build_payload()
                             if _tier_dropped:
                                 payload.pop("service_tier", None)
@@ -1661,8 +1705,7 @@ class OpenAIResponsesClient(LLMClient):
                     # 2) Defective encrypted reasoning item reported body-level.
                     if body_err and not _enc_retried and \
                             self._is_reasoning_artifact_rejection(json.dumps(body_err, ensure_ascii=False)):
-                        _enc_retried = True
-                        n = strip_all_reasoning_artifacts(messages)
+                        n = heal_reasoning()
                         payload = build_payload()
                         if _tier_dropped:
                             payload.pop("service_tier", None)

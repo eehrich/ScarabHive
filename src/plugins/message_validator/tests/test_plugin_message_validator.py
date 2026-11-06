@@ -522,6 +522,44 @@ class TestMessageSequence:
         assert len(result.repaired_messages) == 2
         assert result.repaired_messages[1].reasoning_model == expected
 
+    @pytest.mark.parametrize("first_tag, expected", [("gem", "gem"), ("small", "gem")])
+    def test_merge_names_the_producer_of_signed_tool_calls(self, first_tag, expected):
+        """Tool-call signatures are artifacts too: untagged, every model took them as its own.
+        With two producers the newer half stays, as for reasoning_details."""
+        call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"},
+                "extra_content": {"google": {"thought_signature": "U0lH"}}}
+        messages = [ChatMessage(role="user", content="Think"),
+                    ChatMessage(role="assistant", content="A", reasoning_model=first_tag,
+                                reasoning_details=[{"type": "reasoning.encrypted", "data": "A"}]),
+                    ChatMessage(role="assistant", content=None, tool_calls=[call], reasoning_model="gem",
+                                tools_key="k4"),
+                    ChatMessage(role="tool", tool_call_id="c1", name="f", content="ok")]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        merged = result.repaired_messages[1]
+        assert merged.tool_calls and merged.tool_calls[0]["extra_content"], "fixture: the merge lost the call"
+        assert merged.reasoning_model == expected
+        assert merged.tools_key == "k4", "the merge forgot the tool list the newer turn was made under"
+
+    def test_merge_drops_the_older_models_call_signatures(self):
+        """Tagged with the newer model, the older one's signatures counted as the newer one's own."""
+        call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"},
+                "extra_content": {"google": {"thought_signature": "U0lH"}}}
+        messages = [ChatMessage(role="user", content="Think"),
+                    ChatMessage(role="assistant", content=None, tool_calls=[call], reasoning_model="gem"),
+                    ChatMessage(role="assistant", content="B", reasoning_model="claude",
+                                reasoning_details=[{"type": "reasoning.encrypted", "data": "B"}]),
+                    ChatMessage(role="tool", tool_call_id="c1", name="f", content="ok")]
+
+        result = InternalMessageValidator().validate_and_repair(messages, "test")
+
+        merged = next(m for m in result.repaired_messages if m.role == "assistant")
+        assert merged.tool_calls and merged.tool_calls[0]["id"] == "c1", "fixture: the merge lost the call"
+        assert merged.reasoning_model == "claude"
+        assert "extra_content" not in merged.tool_calls[0]
+        assert "extra_content" in call, "the stored call was changed in place"
+
     def test_merge_reasoning_details_from_different_models_keeps_newer(self):
         """A merge foreign to both models sent the newer one's open tool turn without its signature."""
         older = ChatMessage(role="assistant", content="A", reasoning_model="small",

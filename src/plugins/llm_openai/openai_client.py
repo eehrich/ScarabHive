@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.llm.tls import httpx_verify
 from agent_system.utils.id import short_id
+from agent_system.utils.reasoning_artifacts import own_tool_call_signatures_only
 from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, as_note, conversation_opener, notes_that_ask, resolve_rung,
     rung_for_position,
@@ -213,7 +214,9 @@ class OpenAIAsyncClient(LLMClient):
             # list): the whole ChatMessage was dumped, so other routes' reasoning
             # carriers -- kept in the history across a model switch
             # (reasoning_artifacts.produced_by_another_model) -- and bookkeeping
-            # such as timestamp and content_format reached this API.
+            # such as timestamp and content_format reached this API. Another model's
+            # tool-call signatures go first, while reasoning_model still says whose.
+            own_tool_call_signatures_only(d, d, self.model)
             for key in [k for k in d if k not in openai_utils.CHAT_MESSAGE_FIELDS]:
                 d.pop(key)
             if d.get("role") != DEVELOPER:

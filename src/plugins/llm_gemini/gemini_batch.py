@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 from agent_system.llm.message_roles import DEVELOPER, USER, as_note
 from agent_system.llm.token_utils import extract_text_from_content
 from agent_system.utils.json_utils import repair_json
+from agent_system.utils.reasoning_artifacts import produced_by_another_model
 
 try:
     from google import genai
@@ -41,6 +42,10 @@ from agent_system.llm.retry_utils import is_rate_limit_error, parse_retry_delay
 from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common.schema_sanitize import sanitize_schema_for_gemini
 
+from .gemini_signatures import (
+    current_turn_start, replay_signatures, signature_b64, signature_bytes, signed_call,
+    text_signature, text_signature_details,
+)
 from .gemini_utils import (
     build_thinking_config,
     extract_available_tool_names,
@@ -153,6 +158,13 @@ async def _retry_async_operation(
     raise RuntimeError(f"{operation_name} failed unexpectedly")
 
 
+def _text_part(text: str, signature: Optional[str]) -> "types.Part":
+    """A text part, with the thought signature the model's text came with."""
+    if signature:
+        return types.Part(text=text, thought_signature=signature_bytes(signature))
+    return types.Part(text=text)
+
+
 class GeminiBatchClient(BatchProviderClient):
     """Client for Gemini Batch API operations using Google GenAI SDK.
     
@@ -235,7 +247,7 @@ class GeminiBatchClient(BatchProviderClient):
             
             # Extract system instruction from messages
             system_instruction = self._extract_system_instruction(filtered_messages)
-            contents = self._convert_messages_to_contents(filtered_messages)
+            contents = self._convert_messages_to_contents(filtered_messages, req.model)
             
             request_dict: Dict[str, Any] = {
                 'contents': contents,
@@ -393,6 +405,7 @@ class GeminiBatchClient(BatchProviderClient):
     def _convert_messages_to_contents(
         self,
         messages: List[Dict[str, Any]],
+        model: Optional[str] = None,
     ) -> List[types.Content]:
         """Convert OpenAI-style messages to Gemini SDK Content format.
         
@@ -407,11 +420,12 @@ class GeminiBatchClient(BatchProviderClient):
         - system messages → skipped (handled separately via system_instruction)
         """
         contents: List[types.Content] = []
-        
-        for msg in messages:
+        turn_start = current_turn_start(messages)
+
+        for position, msg in enumerate(messages):
             role = msg.get("role")
             content = msg.get("content")
-            
+
             if role == "system":
                 # Gemini handles system messages differently
                 # Should be passed as system_instruction, not in contents
@@ -467,10 +481,14 @@ class GeminiBatchClient(BatchProviderClient):
                 # Part(text=[...]) fails validation)
                 text = extract_text_from_content(content) if isinstance(content, list) else content
                 if text:
-                    parts.append(types.Part(text=text))
-                
-                # Add function calls with thought_signature preservation
-                for tc in msg.get("tool_calls", []):
+                    parts.append(_text_part(text, text_signature(msg, model)))
+
+                # The signature where it came (the step's first call), the dummy
+                # only on the first call of a current-turn step without one
+                # (gemini_signatures.replay_signatures).
+                signatures = replay_signatures(msg.get("tool_calls", []), position >= turn_start,
+                                               produced_by_another_model(msg, model))
+                for tc, thought_sig in zip(msg.get("tool_calls", []), signatures):
                     func = tc.get("function", {})
                     func_name = func.get("name", "")
                     func_args = func.get("arguments", "{}")
@@ -483,43 +501,10 @@ class GeminiBatchClient(BatchProviderClient):
                             repaired = repair_json(func_args)
                             func_args = repaired if repaired is not None and isinstance(repaired, dict) else {}
                     
-                    # Get thought_signature - required for Gemini 3 Pro
-                    # The signature is stored in extra_content.google.thought_signature
-                    thought_sig = None
-                    extra_content = tc.get("extra_content")
-                    if extra_content:
-                        google_extra = extra_content.get("google")
-                        if google_extra:
-                            thought_sig = google_extra.get("thought_signature")
-                    
-                    # Also check direct thought_signature field
-                    if not thought_sig:
-                        thought_sig = tc.get("thought_signature")
-                    
-                    # Convert thought_signature to bytes if it's a base64 string
-                    # (happens when messages were JSON-serialized via gemini_sdk_client)
-                    if thought_sig and isinstance(thought_sig, str):
-                        try:
-                            thought_sig = base64.b64decode(thought_sig)
-                        except Exception:
-                            # If decoding fails, try encoding as UTF-8 bytes
-                            thought_sig = thought_sig.encode('utf-8')
-                    
-                    # CRITICAL: For Gemini 3 Pro, all function calls in current turn MUST have
-                    # a thought_signature. If we don't have one (e.g., from a different model,
-                    # or from older sessions), use Google's documented bypass token to skip validation.
-                    # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
-                    if not thought_sig:
-                        thought_sig = b"skip_thought_signature_validator"
-                    
-                    # Create SDK Part with function_call and thought_signature
-                    parts.append(types.Part(
-                        function_call=types.FunctionCall(
-                            name=func_name,
-                            args=func_args
-                        ),
-                        thought_signature=thought_sig
-                    ))
+                    function_call = types.FunctionCall(name=func_name, args=func_args)
+                    parts.append(types.Part(function_call=function_call,
+                                            thought_signature=signature_bytes(thought_sig))
+                                 if thought_sig else types.Part(function_call=function_call))
                 
                 if parts:
                     contents.append(types.Content(role="model", parts=parts))
@@ -541,7 +526,7 @@ class GeminiBatchClient(BatchProviderClient):
             if isinstance(content, str):
                 contents.append(types.Content(
                     role=gemini_role,
-                    parts=[types.Part(text=content)]
+                    parts=[_text_part(content, text_signature(msg, model) if role == "assistant" else None)]
                 ))
             elif isinstance(content, list):
                 # Multimodal content
@@ -732,22 +717,27 @@ class GeminiBatchClient(BatchProviderClient):
                             content = ""
                             thoughts = ""
                             tool_calls = []
-                            
+                            text_sig = None
+
                             if hasattr(response_obj, "candidates") and response_obj.candidates:
                                 candidate = response_obj.candidates[0]
                                 if hasattr(candidate, "content") and candidate.content and hasattr(candidate.content, "parts") and candidate.content.parts:
                                     for part in candidate.content.parts:
+                                        if not getattr(part, "function_call", None) and not getattr(part, "thought", None):
+                                            text_sig = signature_b64(part) or text_sig
                                         if hasattr(part, "function_call") and part.function_call:
-                                            # Extract function call
+                                            # Extract function call, with the signature it
+                                            # came with: dropping it put the dummy on every
+                                            # call of the next batch request.
                                             fc = part.function_call
-                                            tool_calls.append({
+                                            tool_calls.append(signed_call({
                                                 "id": f"call_{fc.name}_{len(tool_calls)}",
                                                 "type": "function",
                                                 "function": {
                                                     "name": fc.name,
                                                     "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
                                                 }
-                                            })
+                                            }, signature_b64(part)))
                                         elif getattr(part, "thought", None) is True and part.text:
                                             # Thinking is no part of the answer.
                                             thoughts += part.text
@@ -763,7 +753,9 @@ class GeminiBatchClient(BatchProviderClient):
                                 message["reasoning_content"] = thoughts
                             if tool_calls:
                                 message["tool_calls"] = tool_calls
-                            
+                            if text_signature_details(text_sig):
+                                message["reasoning_details"] = text_signature_details(text_sig)
+
                             # The same shape as the chat clients: thinking
                             # counts as output (extract_usage_from_metadata).
                             usage = extract_usage_from_metadata(getattr(response_obj, "usage_metadata", None))

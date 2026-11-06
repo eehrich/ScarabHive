@@ -13,7 +13,7 @@ provides = ["openai_httpx", "openai_responses"]
 # here with the other httpx clients, under the SAME name as the client it
 # belongs to. llm_openai's SDK client declares its own `openai` backend and
 # reaches this one through the registry.
-provides_batch = ["openai_httpx"]
+provides_batch = ["openai_httpx", "openai_responses"]
 provides_tts = ["openai_speech"]
 # Endpoint each factory falls back to when the model entry names none. The
 # resolver reads this to tell whether a base_url-less entry actually talks to

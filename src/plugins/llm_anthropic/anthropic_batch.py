@@ -29,11 +29,12 @@ from agent_system.llm.message_roles import DEVELOPER, USER, as_note
 from agent_system.llm.tls import httpx_verify
 
 from agent_system.utils.json_utils import repair_json
+from agent_system.utils.reasoning_artifacts import RD_ORPHANED_FLAG
 
 from agent_system.llm.batch.base import BatchProviderClient
 from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
-from . import anthropic_utils
+from . import anthropic_utils, thinking_layout
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,15 @@ class AnthropicBatchClient(BatchProviderClient):
             
             # Handle assistant messages with tool_calls
             tool_calls = msg.get("tool_calls", [])
+            # The turn's thinking, back where the model wrote it: a 5.x model
+            # thinks in a batch whether asked or not, and a tool loop that never
+            # got its thinking back re-reasoned every step. A turn an edit
+            # orphaned (rd_orphaned: the batch queue keeps it for the converter)
+            # goes without them, as on the sync route: they are bound to the
+            # history before the edit. Every turn's blocks go back otherwise --
+            # the sync route's keep_all default.
+            thinking = (thinking_layout.sendable(msg.get("thinking_blocks"))
+                        if role == "assistant" and not msg.get(RD_ORPHANED_FLAG) else [])
             if role == "assistant" and tool_calls:
                 content_blocks: List[Dict[str, Any]] = []
                 
@@ -228,7 +238,7 @@ class AnthropicBatchClient(BatchProviderClient):
                 
                 anthropic_messages.append({
                     "role": "assistant",
-                    "content": content_blocks
+                    "content": thinking_layout.interleave(thinking, content_blocks)
                 })
                 continue
             
@@ -239,6 +249,11 @@ class AnthropicBatchClient(BatchProviderClient):
                 anthropic_messages.append({
                     "role": anthropic_role,
                     "content": content_blocks
+                })
+            elif thinking and content:
+                anthropic_messages.append({
+                    "role": anthropic_role,
+                    "content": thinking_layout.interleave(thinking, [{"type": "text", "text": str(content)}]),
                 })
             else:
                 # Simple text
@@ -539,6 +554,12 @@ class AnthropicBatchClient(BatchProviderClient):
                     
                     if tool_calls:
                         response_body["choices"][0]["message"]["tool_calls"] = tool_calls
+                    # The thinking blocks, signatures and positions kept, as the
+                    # chat client stores them: they go back on the next step.
+                    thinking_blocks = thinking_layout.capture(content_parts)
+                    if thinking_blocks:
+                        response_body["choices"][0]["message"]["thinking_blocks"] = thinking_blocks
+                        response_body["choices"][0]["message"]["thinking_model"] = message.get("model")
                     
                     results.append({
                         "custom_id": custom_id,

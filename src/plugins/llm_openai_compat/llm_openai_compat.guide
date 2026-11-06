@@ -18,7 +18,8 @@ a profile.
 Provider name | Kind | Endpoint
 openai_httpx | chat | POST <base_url>/chat/completions
 openai_responses | chat | POST <base_url>/responses
-openai_httpx | batch | the OpenAI Batch API at api.openai.com
+openai_httpx | batch | the OpenAI Batch API at api.openai.com, lines to /v1/chat/completions
+openai_responses | batch | the same, lines to /v1/responses
 openai_speech | text to speech | POST <base_url>/audio/speech
 @{body}
 
@@ -60,8 +61,10 @@ endpoint is OpenRouter.
 
 @{b}openai_httpx@{ub} speaks Chat Completions. Take it for everything that
 is not an OpenAI-style reasoning chain: DeepSeek, local servers, and Claude
-behind OpenRouter -- OpenRouter forwards Claude's @{tt}cache_control@{utt}
-markers only on Chat Completions (see @{" Prompt caching " link caching}).
+behind OpenRouter -- only Chat Completions takes Claude's @{tt}cache_control@{utt}
+markers per block (system prefix, tools, ttl); Responses takes one marker at
+the top of the body, which leaves one-shot calls and a first turn uncached
+(see @{" Prompt caching " link caching}).
 Its default endpoint is api.openai.com.
 
 @{table}
@@ -302,7 +305,13 @@ over where these retries end; see
 on both routes. On openai_httpx, @{tt}thinking_budget@{utt} is sent as
 @{tt}reasoning: {max_tokens: <n>}@{utt} -- only without a level, because
 OpenRouter takes one or the other. Without either, no reasoning field is sent
-and the model's default applies. @{tt}temperature@{utt} is left out whenever
+and the model's default applies. On openai_responses, @{tt}include_thoughts@{utt}
+adds @{tt}summary: auto@{utt} to a level: OpenAI models return their reasoning
+only encrypted unless a summary is asked for. Sent to OpenAI itself (not
+OpenRouter), every request asks for @{tt}include: [reasoning.encrypted_content]@{utt}:
+with @{tt}store: false@{utt} OpenAI keeps nothing, and a reasoning item replayed
+without its payload is a 400 ("Item with id 'rs_...' not found"); such an
+item stays home there. @{tt}temperature@{utt} is left out whenever
 a reasoning field is sent, @{tt}none@{utt} included: OpenAI's hybrid models
 refuse it.
 
@@ -312,7 +321,7 @@ Streamed thinking reaches the chat live: Chat Completions deltas named
 @{tt}reasoning_content@{utt} (DeepSeek) or @{tt}reasoning@{utt} (OpenRouter),
 Responses events @{tt}response.reasoning_text.delta@{utt} and
 @{tt}response.reasoning_summary_text.delta@{utt} (OpenAI models only send the
-summary). The text is stored once: inside the reasoning blocks where the
+summary, and only when asked for, see above). The text is stored once: inside the reasoning blocks where the
 provider sent it there, else as @{tt}reasoning_content@{utt} on the message.
 
 @{h2}Sending it back
@@ -521,6 +530,11 @@ file uploaded to @{tt}/files@{utt}, a batch on
 when it is done. The batch always goes to api.openai.com -- a gateway has no
 batch API, and base_url is not used. Each request carries model, messages,
 max_tokens and tools, nothing else: no reasoning level, no temperature.
+With @{tt}batch_provider: openai_responses@{utt} the lines go to
+@{tt}/v1/responses@{utt} instead, built and read by the Responses client:
+OpenAI's reasoning models take function calls only there. Those lines carry
+the reasoning level too, and the answer keeps its reasoning items like a
+synchronous one.
 Network errors while uploading the input or downloading the results are
 retried three times (1 s doubling, at most 30 s). The queue and its settings (@{tt}llm_system.batch.providers.openai_httpx@{utt})
 belong to the core; see @{" Batch Monitor " link batch_monitor/main}.
@@ -613,7 +627,7 @@ misspelt provider name fails when the configuration loads.
 @{table}
 Manifest key | Names
 provides | openai_httpx, openai_responses
-provides_batch | openai_httpx
+provides_batch | openai_httpx, openai_responses
 provides_tts | openai_speech
 default_base_url | openai_httpx: https://api.openai.com/v1, openai_responses: https://openrouter.ai/api/v1
 @{body}

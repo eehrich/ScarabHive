@@ -40,6 +40,7 @@ from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, L
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from plugins.llm_common.quota import quota_exhausted
+from .gemini_signatures import signature_b64, signature_bytes, signed_call, text_signature_details
 from .gemini_utils import (
     RequestEnd,
     adjust_thinking_for_retry,
@@ -220,7 +221,8 @@ class GeminiSDKClient(LLMClient):
         # Debug: log input messages
         # Use shared conversion utility to get plain dicts
         system_instruction, dict_contents = convert_openai_messages_to_gemini(
-            messages, developer_role=getattr(self.capabilities, 'developer_role', None))
+            messages, developer_role=getattr(self.capabilities, 'developer_role', None),
+            model=getattr(self, "model", None))
         
         # Apply byte-limit compaction as fallback (in case Context Engineer wasn't enough)
         dict_contents, bytes_removed = compact_contents_for_byte_limit(dict_contents)
@@ -245,39 +247,22 @@ class GeminiSDKClient(LLMClient):
                     if text_val is None or text_val == "":
                         logger.debug("[GeminiSDK] Skipping empty text part")
                         continue
-                    sdk_parts.append(types.Part(text=text_val))
+                    text_sig = part_dict.get("thoughtSignature")
+                    sdk_parts.append(types.Part(text=text_val, thought_signature=signature_bytes(text_sig))
+                                     if text_sig else types.Part(text=text_val))
                 
                 elif "functionCall" in part_dict:
                     fc = part_dict["functionCall"]
-                    # Restore thought_signature if present (required for Gemini 3 Pro)
-                    # thoughtSignature is stored directly in the part_dict
+                    # The dict converter decided which part carries what
+                    # (gemini_signatures.replay_signatures): the step's own
+                    # signature on its first call, the dummy only on the first
+                    # call of a current-turn step without one. A dummy on every
+                    # unsigned call, history included, is not the documented shape.
                     thought_sig = part_dict.get("thoughtSignature")
-                    
-                    # Convert thought_signature to bytes if it's a base64 string
-                    # (happens when messages were JSON-serialized from session storage)
-                    if thought_sig and isinstance(thought_sig, str):
-                        try:
-                            import base64
-                            thought_sig = base64.b64decode(thought_sig)
-                        except Exception:
-                            # If decoding fails, try encoding as UTF-8 bytes
-                            thought_sig = thought_sig.encode('utf-8')
-                    
-                    # CRITICAL: For Gemini 3 Pro, all function calls in current turn MUST have
-                    # a thought_signature. If we don't have one (e.g., from a different model,
-                    # or from older sessions), use Google's documented bypass token.
-                    # See: https://ai.google.dev/gemini-api/docs/thought-signatures#faqs
-                    if not thought_sig:
-                        thought_sig = b"skip_thought_signature_validator"
-                    
-                    # Create Part with function_call and thought_signature
-                    sdk_parts.append(types.Part(
-                        function_call=types.FunctionCall(
-                            name=fc["name"],
-                            args=fc["args"]
-                        ),
-                        thought_signature=thought_sig
-                    ))
+                    function_call = types.FunctionCall(name=fc["name"], args=fc["args"])
+                    sdk_parts.append(types.Part(function_call=function_call,
+                                                thought_signature=signature_bytes(thought_sig))
+                                     if thought_sig else types.Part(function_call=function_call))
                 
                 elif "functionResponse" in part_dict:
                     fr = part_dict["functionResponse"]
@@ -721,8 +706,9 @@ class GeminiSDKClient(LLMClient):
             accumulated_thoughts = []  # Thought summaries
             accumulated_tool_calls = {}  # id -> tool call
             accumulated_usage = end.usage = None
-            # For parallel function calls: the first thought_signature, propagated to all calls
-            first_thought_signature = None
+            # The signature of the answer's text part (Google: often an empty
+            # last part when streaming); a call's signature stays on that call.
+            text_sig = None
             loop_detector.reset()
             progress_tracker.reset()
 
@@ -908,6 +894,8 @@ class GeminiSDKClient(LLMClient):
                         chunk_has_progress = False
                     
                         for part in candidate.content.parts:
+                            if not getattr(part, 'function_call', None) and not getattr(part, 'thought', None):
+                                text_sig = signature_b64(part) or text_sig
                             # Handle thought parts
                             if hasattr(part, 'thought') and part.thought:
                                 text = part.text if hasattr(part, 'text') else ""
@@ -938,20 +926,6 @@ class GeminiSDKClient(LLMClient):
                                 tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
                                 chunk_has_progress = True  # Tool call = progress
                             
-                                # Extract thought signature if present on this part
-                                thought_signature = None
-                                if hasattr(part, 'thought_signature') and part.thought_signature:
-                                    # Convert bytes to base64 for JSON serialization
-                                    thought_signature = base64.b64encode(part.thought_signature).decode('utf-8')
-                                    # Store as the first thought_signature for this turn
-                                    # (parallel FC: only first functionCall has the signature)
-                                    if first_thought_signature is None:
-                                        first_thought_signature = thought_signature
-                                        logger.debug(f"[GeminiSDK] Captured first thoughtSignature from {func_call.name}")
-                            
-                                # For parallel function calls: use first_thought_signature if this part has none
-                                effective_signature = thought_signature or first_thought_signature
-                            
                                 tool_call = {
                                     "id": tool_call_id,
                                     "type": "function",
@@ -961,17 +935,10 @@ class GeminiSDKClient(LLMClient):
                                     }
                                 }
                             
-                                # Store thought signature for round-trip (Gemini 3 Pro requirement)
-                                # Use effective_signature to ensure all parallel calls get the signature
-                                if effective_signature:
-                                    tool_call["extra_content"] = {
-                                        "google": {"thought_signature": effective_signature}
-                                    }
-                                    if thought_signature:
-                                        logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (original)")
-                                    else:
-                                        logger.debug(f"[GeminiSDK] Including thoughtSignature for {func_call.name} (propagated from first)")
-                            
+                                # Only the step's first call carries a signature, and it goes
+                                # back on that call alone (gemini_signatures).
+                                signed_call(tool_call, signature_b64(part))
+
                                 accumulated_tool_calls[tool_call_id] = tool_call
                             
                                 logger.debug(f"[GeminiSDK] Function call: {func_call.name}")
@@ -1121,7 +1088,9 @@ class GeminiSDKClient(LLMClient):
 
                 if accumulated_tool_calls:
                     assistant["tool_calls"] = list(accumulated_tool_calls.values())
-                
+                if text_signature_details(text_sig):
+                    assistant["reasoning_details"] = text_signature_details(text_sig)
+
                 final_result = {"assistant": assistant}
                 if accumulated_usage:
                     final_result["usage"] = accumulated_usage
@@ -1368,10 +1337,11 @@ class GeminiSDKClient(LLMClient):
                 tool_calls = []
                 text_parts = []
                 thought_parts = []
-                # For parallel function calls: track first thought_signature
-                first_thought_signature = None
-                
+                text_sig = None
+
                 for part in candidate.content.parts:
+                    if not getattr(part, 'function_call', None) and not getattr(part, 'thought', None):
+                        text_sig = signature_b64(part) or text_sig
                     # Handle text
                     if hasattr(part, 'text') and part.text:
                         # Thinking belongs in reasoning_content, answer text in
@@ -1397,28 +1367,8 @@ class GeminiSDKClient(LLMClient):
                             }
                         }
                         
-                        # Extract thought signature if present on this part
-                        thought_sig_b64 = None
-                        if hasattr(part, 'thought_signature') and part.thought_signature:
-                            # Convert bytes to base64 for JSON serialization
-                            thought_sig_b64 = base64.b64encode(part.thought_signature).decode('utf-8')
-                            # Store as first thought_signature for parallel FC
-                            if first_thought_signature is None:
-                                first_thought_signature = thought_sig_b64
-                                logger.debug(f"[GeminiSDK] Non-streaming: captured first thought_signature from {func_call.name}")
-                        
-                        # For parallel function calls: use first_thought_signature if this part has none
-                        effective_signature = thought_sig_b64 or first_thought_signature
-                        
-                        if effective_signature:
-                            tool_call["extra_content"] = {
-                                "google": {"thought_signature": effective_signature}
-                            }
-                            if thought_sig_b64:
-                                logger.debug(f"[GeminiSDK] Non-streaming: stored thought_signature for {func_call.name} (original)")
-                            else:
-                                logger.debug(f"[GeminiSDK] Non-streaming: stored thought_signature for {func_call.name} (propagated)")
-                        
+                        # Only the step's first call carries one (gemini_signatures).
+                        signed_call(tool_call, signature_b64(part))
                         tool_calls.append(tool_call)
                 
                 assistant["content"] = "".join(text_parts)
@@ -1426,7 +1376,9 @@ class GeminiSDKClient(LLMClient):
                     assistant["reasoning_content"] = "".join(thought_parts)
                 if tool_calls:
                     assistant["tool_calls"] = tool_calls
-                
+                if text_signature_details(text_sig):
+                    assistant["reasoning_details"] = text_signature_details(text_sig)
+
                 await end.report(usage=usage, finish_reason="tool_calls" if tool_calls else "stop")
 
                 return {"assistant": assistant, "usage": usage}

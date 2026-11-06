@@ -292,6 +292,28 @@ class TestMessagesToInput:
         assert items[1]["arguments"] == repaired
         assert output[1]["arguments"] == broken  # stored block untouched
 
+    @pytest.mark.parametrize("base_url, asked", [("https://api.openai.com/v1", True),
+                                                 ("https://openrouter.ai/api/v1", False)])
+    def test_openai_direct_asks_for_the_encrypted_reasoning(self, base_url, asked):
+        """With store=False OpenAI returns the reasoning only when asked; the
+        next tool step replayed an item it could not find (OpenRouter adds it)."""
+        p = _client(base_url=base_url)._build_payload([ChatMessage(role="user", content="hi")], None)
+        assert ("include" in p) is asked
+        if asked:
+            assert p["include"] == ["reasoning.encrypted_content"]
+
+    @pytest.mark.parametrize("base_url, replayed", [("https://api.openai.com/v1", ["function_call"]),
+                                                    ("https://openrouter.ai/api/v1", ["reasoning", "function_call"])])
+    def test_a_reasoning_item_without_its_payload_stays_home_at_openai(self, base_url, replayed):
+        """OpenAI answers such an item with 400 "Item with id 'rs_…' not found";
+        OpenRouter's text-only reasoning (DeepSeek) is wanted back."""
+        c = _client(base_url=base_url)
+        output = [{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "t"}]},
+                  {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "f", "arguments": "{}"}]
+        assistant = c._format_response({"output": output})["assistant"]
+        items = c._messages_to_input([ChatMessage(**assistant)])
+        assert [i["type"] for i in items] == replayed
+
     def test_foreign_history_reconstructed_without_artifacts(self):
         """Chat-route sessions (openai-responses-v1 blocks) and Gemini blocks
         are ignored -- the chain starts fresh, calls/content stay."""
@@ -633,6 +655,23 @@ class TestRegistryDispatch:
         assert isinstance(c, OpenAIResponsesClient)
         assert c.thinking_level == "max"
         assert c.provider_routing["order"] == ["openai"]
+
+    @pytest.mark.parametrize("include_thoughts, level, expected", [
+        (True, "low", {"effort": "low", "summary": "auto"}),
+        (False, "low", {"effort": "low"}),
+        (True, "none", {"effort": "none"}),
+    ])
+    def test_include_thoughts_asks_for_the_summary(self, include_thoughts, level, expected):
+        """OpenAI models return their reasoning only encrypted unless a summary
+        is asked for; include_thoughts was dropped at the factory."""
+        from agent_system.config.models import LLMModelConfig
+        from agent_system.llm import registry
+        build = getattr(registry, "_orig_build_client", registry.build_client)
+        c = build(LLMModelConfig(
+            provider="openai_responses", model="openai/gpt-x", api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1", thinking_level=level, include_thoughts=include_thoughts))
+        p = c._build_payload([ChatMessage(role="user", content="hi")], None)
+        assert p["reasoning"] == expected
 
 
 class TestRdOrphanedHandling:

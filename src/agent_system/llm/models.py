@@ -147,7 +147,13 @@ ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextF
 #: Fields of a ChatMessage that are ours, not the conversation's: never sent to a provider.
 #: A client that serialises the whole message pops these (a list per client drifted).
 PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "prefixed_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
-                                    "tool_request_ids", "step"})
+                                    "tool_request_ids", "step", "tools_key"})
+#: The private fields a provider's converter reads before it builds its wire
+#: format: whose reasoning a message carries, whether its chain is broken, and
+#: who wrote a note (a wake opens a conversation, a hook's block does not).
+#: The batch queue keeps them on the way to a backend; every backend builds
+#: its request from the fields it knows and sends none of them.
+CONVERTER_FIELDS = frozenset({"reasoning_model", "rd_orphaned", "injected_by"})
 
 
 class ChatMessage(BaseModel):
@@ -221,11 +227,11 @@ class ChatMessage(BaseModel):
     # and rewritten by the chain repairs there -- both would corrupt these.
     # A history mutation drops them whole like reasoning_details
     # (utils/reasoning_artifacts): a block is bound to the conversation
-    # that produced it. Sent only by anthropic_client.
+    # that produced it. Sent only by the native Anthropic client and batch.
     thinking_blocks: Optional[List[Dict[str, Any]]] = None
-    # Model that produced them. Signatures are model-bound: another model
-    # ignores them silently but still bills them as input, so replay is
-    # skipped on mismatch (fallback chains DO move messages between models).
+    # Model that produced them; a record, not a filter. Another Claude model
+    # takes them back unchanged (Anthropic: a different model's blocks are
+    # accepted, the API handles them), so a fallback switch sends them too.
     thinking_model: Optional[str] = None
     # OpenRouter backend that served this turn (display name from
     # openrouter_metadata). The next request of the
@@ -236,6 +242,10 @@ class ChatMessage(BaseModel):
     # the NEW model's own backend list, so a stale name matches nothing or
     # picks among backends that model may use anyway.
     served_by: Optional[str] = None
+    # Fingerprint of the tool list the request that produced this answer
+    # carried. Claude 5.x binds its thinking to that list; another list later
+    # unbinds it (llm_loop.fallback). Never sent to a provider.
+    tools_key: Optional[str] = None
     # Hook injection tracking: identifies which plugin injected this message.
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.

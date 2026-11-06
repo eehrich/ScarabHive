@@ -116,17 +116,6 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
             "and will be ignored (model=%s) — use thinking_level instead.",
             cfg.model,
         )
-    if cfg.include_thoughts:
-        # debug only: config sets this on every OpenRouter model; the
-        # gateway returns reasoning summaries on its own, so the intent
-        # roughly holds without a request field.
-        logger.debug(
-            "include_thoughts has no request field on provider="
-            "openai_responses (model=%s) — reasoning summaries arrive "
-            "at the provider's discretion.",
-            cfg.model,
-        )
-
     warn_unwired(cfg, provider="openai_responses", logger=logger,
                  wired=("tool_schema_dialect", "reasoning_details_mode", "stream_silence_timeout",
                         "provider_affinity_minutes"))
@@ -143,6 +132,7 @@ def build_openai_responses(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = N
         capabilities=cfg.capabilities,
         parallel_tool_calls=cfg.parallel_tool_calls,
         thinking_level=cfg.thinking_level,
+        include_thoughts=bool(cfg.include_thoughts),  # reasoning.summary
         max_tokens=cfg.max_tokens,
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
@@ -168,7 +158,14 @@ def build_openai_speech_tts(cfg):
     return build_openai_speech(cfg)
 
 
-def make_batch_backend(cfg: "LLMModelConfig"):
+def make_responses_batch_backend(cfg: "LLMModelConfig"):
+    """Batch backend on /v1/responses (``batch_provider: openai_responses``):
+    OpenAI's reasoning models take function calls only there."""
+    from .openai_batch import RESPONSES
+    return make_batch_backend(cfg, endpoint=RESPONSES)
+
+
+def make_batch_backend(cfg: "LLMModelConfig", endpoint: Optional[str] = None):
     """Batch backend for the httpx OpenAI client.
 
     The OpenAI Batch API is plain HTTP (/v1/batches) — this implementation
@@ -196,6 +193,8 @@ def make_batch_backend(cfg: "LLMModelConfig"):
     # /v1/batches. Sending an OpenAI key to one of them is exactly what the
     # key-follows-endpoint rule exists to prevent, so the batch client keeps
     # its own default (api.openai.com).
+    if endpoint:
+        return OpenAIBatchClient(api_key=api_key, endpoint=endpoint, model_config=cfg)
     return OpenAIBatchClient(api_key=api_key)
 
 
@@ -203,5 +202,6 @@ PROVIDERS = {
     "openai_httpx": build_openai_httpx,
     "openai_responses": build_openai_responses,
 }
-BATCH_BACKENDS = {"openai_httpx": make_batch_backend}
+BATCH_BACKENDS = {"openai_httpx": make_batch_backend,
+                  "openai_responses": make_responses_batch_backend}
 TTS_PROVIDERS = {"openai_speech": build_openai_speech_tts}

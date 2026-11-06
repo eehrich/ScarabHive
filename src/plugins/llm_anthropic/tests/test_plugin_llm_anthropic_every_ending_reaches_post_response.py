@@ -95,6 +95,7 @@ class Upstream:
     def __init__(self, *scripts):
         self.scripts = list(scripts)
         self.hits = 0
+        self.bodies: list = []  # each request's JSON body, in order
         self._tasks: set = set()
 
     async def __aenter__(self):
@@ -113,7 +114,8 @@ class Upstream:
         head = await reader.readuntil(b"\r\n\r\n")
         length = next((int(line.split(b":")[1]) for line in head.split(b"\r\n")
                        if line.lower().startswith(b"content-length:")), 0)
-        await reader.readexactly(length)
+        body = await reader.readexactly(length)
+        self.bodies.append(json.loads(body) if body else None)
         script = self.scripts[min(self.hits, len(self.scripts) - 1)]
         self.hits += 1
         try:
@@ -405,9 +407,10 @@ def test_the_provider_defaults_apply_unless_the_entry_sets_the_key(entry, timeou
 
 
 @pytest.mark.parametrize("entry, refused", [
-    ({"include_thoughts": True}, True),
-    ({"include_thoughts": True, "max_tokens": 16384, "thinking_budget": 16384}, True),
-    ({"include_thoughts": True, "max_tokens": 16384}, False),
+    ({"include_thoughts": True, "thinking_request_shape": "budget"}, True),
+    ({"include_thoughts": True, "thinking_request_shape": "budget", "max_tokens": 16384,
+      "thinking_budget": 16384}, True),
+    ({"include_thoughts": True, "thinking_request_shape": "budget", "max_tokens": 16384}, False),
     ({"include_thoughts": True, "thinking_request_shape": "adaptive"}, False),
     ({}, False),
 ], ids=["defaults", "equal", "room", "adaptive", "no thinking"])
@@ -481,3 +484,78 @@ async def test_a_long_retry_after_goes_to_the_server_instead_of_being_slept(monk
         assert upstream.hits == 1
     assert limited.value.retry_after == 86400.0
     assert [info.get("finish_reason") for info in hooks.post] == [None]
+
+
+# ------------------------------------------------- thinking bound to an edited history
+
+def _binding_refusal(n: int):
+    return api_error(400, "invalid_request_error", (
+        f"messages.{n}.content.0: Invalid `signature` in `thinking` block. The block is bound to "
+        "a different conversation. Remove the block, or set "
+        "`thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\"."))
+
+
+def _thinking_history():
+    def turn(signature):
+        return ChatMessage(role="assistant", content=f"answer {signature}", thinking_model="m",
+                           thinking_blocks=[{"type": "thinking", "thinking": signature, "signature": signature}])
+    return [ChatMessage(role="user", content="a"), turn("S1"), ChatMessage(role="user", content="b"),
+            turn("S2"), ChatMessage(role="user", content="c"), turn("S3"), ChatMessage(role="user", content="d")]
+
+
+def _signatures(body):
+    return [b.get("signature") for m in body["messages"] if isinstance(m["content"], list)
+            for b in m["content"] if b.get("type") == "thinking"]
+
+
+@pytest.mark.parametrize("call", ["chat_tools", "chat"])
+async def test_a_refused_binding_strips_the_named_block_and_every_later_one_and_retries(call):
+    """Anthropic's documented recovery; the same body never clears the 400."""
+    history = _thinking_history()
+    answer = ANSWER if call == "chat_tools" else status(200, json.dumps({
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+        "content": [{"type": "text", "text": "da"}], "stop_reason": "end_turn", "stop_sequence": None,
+        "usage": {"input_tokens": 7, "output_tokens": 3}}))
+    async with Upstream(_binding_refusal(3), answer) as upstream:
+        client = client_for(upstream.url, retries=1)
+        if call == "chat_tools":
+            await client.chat_tools(history, [])
+        else:
+            await client.chat(history)
+    assert _signatures(upstream.bodies[0]) == ["S1", "S2", "S3"], "fixture: the blocks did not go out"
+    assert upstream.bodies[0]["messages"][3]["content"][0]["signature"] == "S2", "fixture: wrong block named"
+    assert _signatures(upstream.bodies[1]) == ["S1"]
+    assert [bool(m.thinking_blocks) for m in history if m.role == "assistant"] == [True, False, False]
+    assert history[3].reasoning_content == "S2", "the thinking text went with the blocks"
+
+
+async def test_a_second_refusal_is_no_endless_strip():
+    async with Upstream(_binding_refusal(1)) as upstream:
+        client = client_for(upstream.url, retries=2)
+        with pytest.raises(Exception):
+            await client.chat_tools(_thinking_history(), [])
+    assert upstream.hits == 2
+
+
+# ------------------------------------------------- sampling and effort
+
+@pytest.mark.parametrize("entry, sent", [
+    ({"thinking_request_shape": "adaptive"}, None),          # a 5.x model thinks unasked
+    ({"thinking_request_shape": "budget"}, 0.2),
+    ({"thinking_request_shape": "budget", "include_thoughts": True, "max_tokens": 16384}, None),
+])
+async def test_temperature_reaches_only_a_model_that_does_not_think(entry, sent):
+    async with Upstream(ANSWER) as upstream:
+        client = build_anthropic(LLMModelConfig(provider="anthropic", model="m", api_key="k",
+                                                base_url=upstream.url, temperature=0.2, **entry))
+        await client.chat_tools(MESSAGES, [])
+    assert upstream.bodies[0].get("temperature") == sent
+
+
+@pytest.mark.parametrize("level, effort", [("high", "high"), ("minimal", None), (None, None)])
+async def test_thinking_level_is_the_effort_when_anthropic_knows_it(level, effort):
+    async with Upstream(ANSWER) as upstream:
+        client = build_anthropic(LLMModelConfig(provider="anthropic", model="m", api_key="k",
+                                                base_url=upstream.url, thinking_level=level))
+        await client.chat_tools(MESSAGES, [])
+    assert (upstream.bodies[0].get("output_config") or {}).get("effort") == effort

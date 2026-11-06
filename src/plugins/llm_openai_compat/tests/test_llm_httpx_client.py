@@ -1471,6 +1471,26 @@ class TestAnthropicViaOpenRouterCaching:
         ]}
         assert non_anthropic_or_client._inject_signature_bypass(payload) == 0
 
+    def test_inject_signature_bypass_leaves_claude_and_openai_blocks_alone(self, non_anthropic_or_client):
+        """The same block type carries Claude's redacted thinking and OpenAI's
+        chains; the Google token only corrupts them."""
+        claude = {"type": "reasoning.encrypted", "data": "RED", "format": "anthropic-claude-v1"}
+        openai = {"type": "reasoning.encrypted", "data": "ENC", "format": "openai-responses-v1"}
+        unformatted = {"type": "reasoning.encrypted", "data": "SIG"}
+        payload = {"messages": [{"role": "assistant", "reasoning_details": [claude, openai, unformatted]}]}
+        assert non_anthropic_or_client._inject_signature_bypass(payload) == 1
+        sent = payload["messages"][0]["reasoning_details"]
+        assert [b["data"] for b in sent] == ["RED", "ENC", "skip_thought_signature_validator"]
+
+    def test_inject_signature_bypass_does_not_write_into_the_callers_blocks(self, non_anthropic_or_client):
+        """The payload's block dicts are shared with a dict-shaped caller history."""
+        block = {"type": "reasoning.encrypted", "data": "REAL", "format": "google-gemini-v1"}
+        history_blocks = [block]
+        payload = {"messages": [{"role": "assistant", "reasoning_details": history_blocks}]}
+        assert non_anthropic_or_client._inject_signature_bypass(payload) == 1
+        assert block["data"] == "REAL"
+        assert history_blocks == [block]
+
     def test_reasoning_details_kept_when_only_one_assistant(self, non_anthropic_or_client):
         """Single assistant message keeps its reasoning_details (it IS the current turn)."""
         msgs = [
@@ -1610,6 +1630,107 @@ class TestAnthropicViaOpenRouterCaching:
             {"error": {"code": 429, "message": "rate limit"}}
         ) is None
         assert client._detect_openai_encrypted_reasoning_400({"choices": []}) is None
+
+    def test_claudes_refused_binding_heals_like_the_encrypted_400(self, non_anthropic_or_client):
+        """Claude via OpenRouter: thinking replayed behind an edited history.
+        The same body never clears it; it names no rs_ item, so the chain goes."""
+        client = non_anthropic_or_client
+        body = {"error": {"code": 400, "message": "Provider returned error", "metadata": {"raw": (
+            "messages.3.content.0: Invalid `signature` in `thinking` block. The block is bound "
+            "to a different conversation.")}}}
+        detail = client._detect_openai_encrypted_reasoning_400(body)
+        assert detail
+        session = [{"role": "assistant", "content": "a", "reasoning_details": [
+            {"type": "reasoning.text", "text": "t", "signature": "S", "format": "anthropic-claude-v1"}]}]
+        payload = {"messages": [dict(session[0])]}
+        assert "full strip" in client._recover_encrypted_reasoning(detail, payload, session, 0)
+        assert "reasoning_details" not in session[0] and "reasoning_details" not in payload["messages"][0]
+
+    async def test_claudes_refused_binding_heals_as_an_http_status_400_too(self):
+        """OpenRouter hands the refusal back as an HTTP 400; only the body-level shape healed."""
+        client = create_test_client()
+        url = "https://api.openai.com/v1/chat/completions"
+        refusal = {"error": {"code": 400, "message": "Provider returned error", "metadata": {"raw": (
+            "messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound "
+            "to a different conversation.")}}}
+        answers = [httpx.Response(400, json=refusal, request=httpx.Request("POST", url)),
+                   httpx.Response(200, request=httpx.Request("POST", url), json={
+                       "choices": [{"message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                       "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})]
+        session = [{"role": "user", "content": "hi"},
+                   {"role": "assistant", "content": "a", "reasoning_details": [
+                       {"type": "reasoning.text", "text": "t", "signature": "S",
+                        "format": "anthropic-claude-v1"}]},
+                   {"role": "user", "content": "go on"}]
+        sent = []
+
+        async def post(**kwargs):
+            sent.append(json.loads(json.dumps(kwargs["json"])))
+            return answers[len(sent) - 1]
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.post = post
+            mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            await client._make_request_non_streaming(session, tools=[])
+        assert len(sent) == 2, "the refusal was not retried"
+        assert "reasoning_details" in sent[0]["messages"][1], "fixture: the block never went out"
+        assert "reasoning_details" not in sent[1]["messages"][1]
+        assert "reasoning_details" not in session[1], "the session keeps the refused block"
+
+    async def test_claudes_refused_binding_heals_as_a_streamed_http_400_too(self):
+        client = create_test_client()
+        refusal = json.dumps({"error": {"code": 400, "message": "Provider returned error", "metadata": {"raw": (
+            "messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound "
+            "to a different conversation.")}}}).encode("utf-8")
+        session = [{"role": "user", "content": "hi"},
+                   {"role": "assistant", "content": "a", "reasoning_details": [
+                       {"type": "reasoning.text", "text": "t", "signature": "S",
+                        "format": "anthropic-claude-v1"}]},
+                   {"role": "user", "content": "go on"}]
+        sent = []
+
+        def response(status, lines=(), body=b""):
+            r = AsyncMock()
+            r.status_code = status
+            r.headers = {}
+            r.aread = AsyncMock(return_value=body)
+
+            async def chunks():
+                for line in lines:
+                    yield (line + "\n").encode("utf-8")
+            r.aiter_bytes = chunks
+            r.__aenter__.return_value = r
+            r.__aexit__.return_value = None
+            return r
+
+        answers = [response(400, body=refusal),
+                   response(200, [_CONTENT % "ok", _FINISH, "data: [DONE]"])]
+
+        def stream(*args, **kwargs):
+            sent.append(json.loads(json.dumps(kwargs["json"])))
+            return answers[len(sent) - 1]
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.stream = Mock(side_effect=stream)
+            mock_async_client.return_value = mock_client
+            [e async for e in client.chat_tools_streaming(session, tools=[])]
+        assert len(sent) == 2, "the refusal was not retried"
+        assert "reasoning_details" in sent[0]["messages"][1], "fixture: the block never went out"
+        assert "reasoning_details" not in sent[1]["messages"][1]
+        assert "reasoning_details" not in session[1], "the session keeps the refused block"
+
+    def test_the_full_strip_drops_tool_call_signatures_in_the_payload_too(self, non_anthropic_or_client):
+        """The session half already did; the retry then sent what the session no longer held."""
+        call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"},
+                "extra_content": {"google": {"thought_signature": "U0lH"}}}
+        payload = {"messages": [{"role": "assistant", "content": None, "tool_calls": [dict(call)]}]}
+        assert non_anthropic_or_client._strip_reasoning_details(payload) == 1
+        assert "extra_content" not in payload["messages"][0]["tool_calls"][0]
 
     def test_strip_reasoning_details_removes_from_all_assistants(self, non_anthropic_or_client):
         """Recovery drops reasoning_details from every assistant message and
@@ -2019,6 +2140,35 @@ class TestOnlyThisModelsReasoningTravels:
         history = [m.model_dump(exclude_none=True) for m in self._history()]
         payload = await captured_payload(client, messages=history)
         assert self._sent(payload) == [None, [{"type": "reasoning.text", "text": "mine", "signature": "T"}]]
+
+    @staticmethod
+    def _signed_history(signer):
+        from agent_system.llm.models import ChatMessage
+        call = {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"},
+                "extra_content": {"google": {"thought_signature": "SIG"}}}
+        return [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content="", reasoning_model=signer, tool_calls=[call]),
+            ChatMessage(role="tool", tool_call_id="c1", content="ok"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_another_models_tool_call_signature_stays_home(self):
+        """Native Gemini keeps its signature on the tool call; the chat route
+        forwarded it to every provider after a switch."""
+        history = self._signed_history("gemini/native")
+        client = HTTPXOpenAIClient(model="own/model", api_key="k", base_url="https://openrouter.ai/api/v1")
+        payload = await captured_payload(client, messages=history)
+        sent = [m for m in payload["messages"] if m.get("tool_calls")]
+        assert sent and "extra_content" not in sent[0]["tool_calls"][0]
+        assert history[1].tool_calls[0]["extra_content"], "the request stripped the stored history"
+
+    @pytest.mark.asyncio
+    async def test_its_own_tool_call_signature_travels(self):
+        client = HTTPXOpenAIClient(model="own/model", api_key="k", base_url="https://openrouter.ai/api/v1")
+        payload = await captured_payload(client, messages=self._signed_history("own/model"))
+        sent = [m for m in payload["messages"] if m.get("tool_calls")]
+        assert sent[0]["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "SIG"}}
 
     @pytest.mark.asyncio
     async def test_the_streaming_request_leaves_them_out_too(self):

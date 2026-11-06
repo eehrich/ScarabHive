@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from .....llm.message_roles import DEVELOPER
 from .....llm.models import ChatMessage
 from .....utils.json_utils import history_safe_tool_calls
+from .....utils.reasoning_artifacts import unsigned_tool_calls
 from .state import LoopState, StepEnd, StepState, broken_answer_asked_again
 
 if TYPE_CHECKING:
@@ -239,7 +240,10 @@ class StepMixin:
             tool_calls=history_safe_tool_calls(st.tool_calls) if st.tool_calls else None,
             reasoning_content=assistant.get("reasoning_content"),
             reasoning_details=reasoning_details,
-            reasoning_model=(answering_model if reasoning_details
+            # Whose artifacts these are: reasoning_details, or a provider's
+            # signature on the tool calls (native Gemini). A client leaves
+            # another model's out (reasoning_artifacts.produced_by_another_model).
+            reasoning_model=(answering_model if (reasoning_details or unsigned_tool_calls(st.tool_calls) is not None)
                              and isinstance(answering_model, str) else None),
             # Anthropic thinking blocks (+ the model that signed them).
             # Same contract as reasoning_content above: with tool use they
@@ -249,6 +253,8 @@ class StepMixin:
             thinking_model=assistant.get("thinking_model"),
             # OpenRouter backend of this turn: the next request pins to it.
             served_by=assistant.get("served_by"),
+            # the tool list this answer was made under (fallback._prepare_llm_call)
+            tools_key=run.tools_key,
             # the step as the live events number it (ChatMessage.step)
             step=st.step + 1,
             timestamp=datetime.now(timezone.utc)

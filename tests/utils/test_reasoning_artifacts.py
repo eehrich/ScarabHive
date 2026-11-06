@@ -13,7 +13,11 @@ from agent_system.utils.reasoning_artifacts import (
     RD_ORPHANED_FLAG,
     invalidate_reasoning_artifacts,
     strip_all_reasoning_artifacts,
+    CLAUDE_DETAILS_FORMAT,
+    own_tool_call_signatures_only,
+    strip_tool_set_bound_reasoning,
     produced_by_another_model,
+    unsigned_tool_calls,
     strip_reasoning_artifacts_containing,
     thinking_text,
     thinking_text_from_details,
@@ -284,6 +288,36 @@ class TestProducedByAnotherModel:
         assert produced_by_another_model({"reasoning_model": "small"}, None) is False
 
 
+class TestToolCallSignatures:
+    """Native Gemini keeps its thought signature on the tool call (``extra_content``)."""
+
+    @staticmethod
+    def _signed():
+        return {"role": "assistant", "content": "", "reasoning_model": "gemini",
+                "tool_calls": [{"id": "a", "extra_content": {"google": {"thought_signature": "S"}}}]}
+
+    def test_the_full_reset_reaches_them(self):
+        msg = self._signed()
+        calls = msg["tool_calls"]
+        assert strip_all_reasoning_artifacts([msg]) == 1
+        assert msg["tool_calls"] == [{"id": "a"}]
+        assert "extra_content" in calls[0], "the reset wrote into the old call dicts"
+
+    def test_a_request_for_another_model_leaves_them_out(self):
+        msg = self._signed()
+        d = dict(msg)
+        own_tool_call_signatures_only(d, msg, "deepseek")
+        assert d["tool_calls"] == [{"id": "a"}]
+        assert "extra_content" in msg["tool_calls"][0], "the request stripped the stored history"
+        same = dict(msg)
+        own_tool_call_signatures_only(same, msg, "gemini")
+        assert same["tool_calls"] is msg["tool_calls"]
+
+    def test_unsigned_calls_are_left_as_they_are(self):
+        assert unsigned_tool_calls([{"id": "a"}]) is None
+        assert unsigned_tool_calls(None) is None
+
+
 class TestInvalidationCoversAnthropicThinkingBlocks:
     """The native Anthropic route keeps its thinking in ``thinking_blocks``, not
     ``reasoning_details`` -- a mutation invalidates those just the same."""
@@ -325,3 +359,21 @@ class TestInvalidationCoversAnthropicThinkingBlocks:
         invalidate_reasoning_artifacts(msgs)
         strip_all_reasoning_artifacts(msgs)
         assert RD_ORPHANED_FLAG not in msgs[3]
+
+
+class TestToolSetBoundReasoning:
+    """Claude binds its thinking to the tool list; other providers' reasoning is not bound so."""
+
+    def test_claude_thinking_goes_and_the_rest_stays(self):
+        native = {"role": "assistant", "content": "",
+                  "thinking_blocks": [{"type": "thinking", "thinking": "plan", "signature": "S"}],
+                  "thinking_model": "claude-x"}
+        chat = {"role": "assistant", "content": "", "reasoning_details": [
+            {"type": "reasoning.text", "text": "via OR", "signature": "T", "format": CLAUDE_DETAILS_FORMAT}]}
+        other = {"role": "assistant", "content": "", "reasoning_details": [
+            {"type": "reasoning.encrypted", "data": "G", "format": "google-gemini-v1"}]}
+        assert strip_tool_set_bound_reasoning([native, chat, other]) == 2
+        assert "thinking_blocks" not in native and native["reasoning_content"] == "plan"
+        assert "thinking_model" not in native, "a model is named for blocks that are gone"
+        assert "reasoning_details" not in chat and chat["reasoning_content"] == "via OR"
+        assert other["reasoning_details"] == [{"type": "reasoning.encrypted", "data": "G", "format": "google-gemini-v1"}]

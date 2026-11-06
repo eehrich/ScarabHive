@@ -26,9 +26,15 @@ from agent_system.llm.tls import httpx_verify
 from agent_system.llm.batch.base import BatchProviderClient
 from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUSES
 from agent_system.llm.batch.job_tracker import get_job_tracker
+from agent_system.llm.models import ChatMessage
+from agent_system.utils.reasoning_artifacts import own_tool_call_signatures_only
 from plugins.llm_common import openai_utils
 
 logger = logging.getLogger(__name__)
+
+#: The two endpoints a batch line can go to.
+CHAT_COMPLETIONS = "/v1/chat/completions"
+RESPONSES = "/v1/responses"
 
 # Type variable for retry function
 T = TypeVar("T")
@@ -143,17 +149,25 @@ class OpenAIBatchClient(BatchProviderClient):
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 60.0,
+        endpoint: str = CHAT_COMPLETIONS,
+        model_config: Any = None,
     ):
         """Initialize the OpenAI batch client.
-        
+
         Args:
             api_key: OpenAI API key
             base_url: Base URL for OpenAI API
             timeout: Request timeout in seconds
+            endpoint: ``CHAT_COMPLETIONS`` or ``RESPONSES``. OpenAI's reasoning
+                models take function calls only on the Responses API; there
+                the bodies are built and read by the Responses client itself.
+            model_config: the model entry (LLMModelConfig) that client takes its settings from.
         """
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.endpoint = endpoint
+        self.model_config = model_config
         
         # Don't set Content-Type in default headers - let httpx set it per request
         # (multipart/form-data for file uploads, application/json for JSON requests)
@@ -168,6 +182,25 @@ class OpenAIBatchClient(BatchProviderClient):
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()
+
+    def _responses_client(self, model: str, max_tokens: Optional[int] = None,
+                          thinking_level: Optional[str] = None):
+        """The Responses client that builds and reads this batch's bodies (no I/O).
+
+        Built from the model entry the backend was made for (capabilities,
+        include_thoughts, reasoning_details_mode ...), with the request's own
+        model and limits, aimed at this batch's endpoint.
+        """
+        from .openai_responses_client import OpenAIResponsesClient
+        if self.model_config is None:
+            return OpenAIResponsesClient(model=model, api_key=self.api_key, base_url=self.base_url,
+                                         max_tokens=max_tokens, thinking_level=thinking_level)
+        from .provider import build_openai_responses
+        cfg = self.model_config
+        return build_openai_responses(cfg.model_copy(update={
+            "model": model, "base_url": self.base_url, "api_key": self.api_key, "service_tier": None,
+            "max_tokens": max_tokens or cfg.max_tokens,
+            "thinking_level": thinking_level or cfg.thinking_level}))
 
     def _raise_for_status(
         self, response: httpx.Response, operation: str, model: str = "unknown"
@@ -233,25 +266,38 @@ class OpenAIBatchClient(BatchProviderClient):
             
         with open(file_path, "w", encoding="utf-8") as f:
             for request in requests:
-                # Normalize messages for OpenAI API compatibility
-                normalized_messages = openai_utils.normalize_messages(request.messages)
-                
-                body: Dict[str, Any] = {
-                    "model": request.model,
-                    "messages": normalized_messages,
-                }
-                
-                # Add max_tokens if specified in request
-                if request.max_tokens is not None:
-                    body["max_tokens"] = request.max_tokens
-                
-                if request.tools:
-                    body["tools"] = request.tools
-                
+                if self.endpoint == RESPONSES:
+                    body = self._responses_client(
+                        request.model, request.max_tokens, request.thinking_level,
+                    )._build_payload([ChatMessage.model_validate(m) for m in request.messages],
+                                     request.tools or None)
+                else:
+                    # Another model's tool-call signatures stay home, as on the
+                    # sync route (the queue keeps reasoning_model for this).
+                    messages = []
+                    for msg in request.messages:
+                        msg = dict(msg)
+                        own_tool_call_signatures_only(msg, msg, request.model)
+                        messages.append(msg)
+                    # Normalize messages for OpenAI API compatibility
+                    normalized_messages = openai_utils.normalize_messages(messages)
+
+                    body: Dict[str, Any] = {
+                        "model": request.model,
+                        "messages": normalized_messages,
+                    }
+
+                    # Add max_tokens if specified in request
+                    if request.max_tokens is not None:
+                        body["max_tokens"] = request.max_tokens
+
+                    if request.tools:
+                        body["tools"] = request.tools
+
                 line = {
                     "custom_id": request.custom_id,
                     "method": "POST",
-                    "url": "/v1/chat/completions",
+                    "url": self.endpoint,
                     "body": body,
                 }
                 
@@ -309,7 +355,7 @@ class OpenAIBatchClient(BatchProviderClient):
         
         payload = {
             "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
+            "endpoint": self.endpoint,
             "completion_window": "24h",
         }
         
@@ -407,14 +453,22 @@ class OpenAIBatchClient(BatchProviderClient):
         content = await self._download_file(output_file_id)
         
         # Parse JSONL results
+        models = {r.custom_id: r.model for r in (job.requests or [])}
         results = []
         for line in content.strip().split("\n"):
             if not line:
                 continue
             try:
                 data = json.loads(line)
-                response_body = data.get("response", {}).get("body")
-                
+                response_body = (data.get("response") or {}).get("body")
+                if self.endpoint == RESPONSES and isinstance(response_body, dict):
+                    # {"assistant": ..., "usage": ...}: the batch client takes it
+                    # as is. Tagged with the model asked for, as the sync client
+                    # tags its items (the body names a dated snapshot).
+                    response_body = self._responses_client(
+                        models.get(data.get("custom_id")) or response_body.get("model") or "",
+                    )._format_response(response_body)
+
                 # Extract usage from response body if available
                 usage = {}
                 if response_body and isinstance(response_body, dict):

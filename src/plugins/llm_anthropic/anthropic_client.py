@@ -40,8 +40,9 @@ from agent_system.llm.models import (
 from agent_system.llm.structured_output import JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay
 from agent_system.llm.tls import httpx_verify
+from agent_system.utils.reasoning_artifacts import BINDING_REFUSAL
 
-from . import anthropic_utils
+from . import anthropic_utils, thinking_layout
 from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common import cancellation
 from plugins.llm_common.model_dialects import (
@@ -213,6 +214,7 @@ class AnthropicAsyncClient(LLMClient):
         prompt_cache_mode: Optional[str] = None,
         reasoning_details_mode: Optional[str] = None,
         thinking_request_shape: Optional[str] = None,
+        thinking_level: Optional[str] = None,
         capabilities=None,
         ssl_verify: Optional[bool] = None,
         **extra_params
@@ -251,6 +253,8 @@ class AnthropicAsyncClient(LLMClient):
         self.max_tokens = max_tokens
         self.include_thinking = include_thinking
         self.thinking_budget = thinking_budget
+        # output_config.effort: how much a 5.x model thinks (a budget is refused there).
+        self.thinking_level = thinking_level
         self.enable_prompt_caching = enable_prompt_caching
         # Anthropic cache policy (shared with the OpenRouter httpx path):
         # controls whether the growing conversation tail is marked as a
@@ -324,45 +328,25 @@ class AnthropicAsyncClient(LLMClient):
             return {"type": "adaptive"}
         return {"type": "enabled", "budget_tokens": self.thinking_budget or 8192}
 
-    #: Both thinking block types. `redacted_thinking` carries encrypted
-    #: reasoning and is just as mandatory on replay as a plain `thinking` block.
-    _THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
-
     @staticmethod
     def _serialize_thinking_blocks(message: Any) -> List[Dict[str, Any]]:
-        """Verbatim copy of every thinking/redacted_thinking block, in order.
+        """Verbatim copy of every thinking/redacted_thinking block, in order and
+        with its position among the answer's blocks (thinking_layout.capture).
 
-        Two filters that look reasonable and are NOT allowed here:
-
-        * dropping blocks whose ``thinking`` text is empty — with
-          ``display="omitted"`` (the default on Opus 5 / Sonnet 5 / Fable 5) the
-          text is always empty while the *signature* still carries the encrypted
-          reasoning;
-        * keeping only ``type == "thinking"`` — that silently drops
-          ``redacted_thinking``.
-
-        Either one turns a complete echo into a PARTIAL one, which Anthropic
-        rejects with 400 ("...blocks in the latest assistant message cannot be
-        modified"). Copy everything, in order, unchanged.
+        A partial echo is a 400 ("...blocks in the latest assistant message
+        cannot be modified"), and so is a block moved: copy everything, unchanged.
         """
-        blocks: List[Dict[str, Any]] = []
-        for block in getattr(message, "content", None) or []:
-            if getattr(block, "type", None) not in AnthropicAsyncClient._THINKING_BLOCK_TYPES:
-                continue
-            dump = getattr(block, "model_dump", None)
-            if callable(dump):
-                blocks.append(dump(mode="json", exclude_none=True))
-            elif isinstance(block, dict):
-                blocks.append(dict(block))
-        return blocks
+        return thinking_layout.capture(getattr(message, "content", None))
 
     def _replayable_thinking(self, msg: ChatMessage,
                              allowed: bool = True) -> List[Dict[str, Any]]:
-        """This message's thinking blocks, if they may be replayed to THIS model.
+        """This message's thinking blocks, if they may be replayed (positions kept).
 
-        Signatures are model-bound. Replaying them to a different model does not
-        error — the blocks are ignored but still billed as input — so a fallback
-        chain that switched models would silently pay for dead weight.
+        Another model's blocks go back unchanged: Anthropic drops the ones the
+        model cannot read, unbilled, and a newer model reads an older one's
+        (Opus 5.5 reads Sonnet/Haiku 5.5, Fable 5.1 reads Opus 5.5). Removing
+        them here cost that reasoning and, per the docs, risks ordering or
+        signature 400s. They used to be dropped on a refuted billing premise.
 
         ``allowed`` is this turn's verdict from ``reasoning_details_mode``
         (keep_all / keep_last / strip): thinking blocks ARE this route's
@@ -379,14 +363,7 @@ class AnthropicAsyncClient(LLMClient):
         # Claude models with preserved thinking accept without it.
         if getattr(msg, RD_ORPHANED_FLAG, None):
             return []
-        origin = getattr(msg, "thinking_model", None)
-        if origin and origin != self.model:
-            logger.debug(
-                "Dropping %d thinking block(s) from %s (current model: %s)",
-                len(blocks), origin, self.model,
-            )
-            return []
-        return [dict(b) for b in blocks if isinstance(b, dict)]
+        return thinking_layout.sendable(blocks)
 
     def _convert_messages(
         self, messages: List[ChatMessage]
@@ -488,14 +465,6 @@ class AnthropicAsyncClient(LLMClient):
             if role == "assistant" and msg.tool_calls:
                 content_blocks: List[Dict[str, Any]] = []
 
-                # Thinking blocks FIRST — that is the order the model emitted
-                # them in ([thinking, text, tool_use]), and the order the
-                # "must match what the model generated" check validates against.
-                # Required when returning tool results: the blocks have to come
-                # back complete and unmodified or the turn is rejected.
-                content_blocks.extend(
-                    self._replayable_thinking(msg, may_replay[index]))
-
                 # Add text content if present
                 text_content = msg.content if isinstance(msg.content, str) else msg.get_text_content()
                 if text_content:
@@ -518,12 +487,16 @@ class AnthropicAsyncClient(LLMClient):
                         "input": args
                     })
                 
+                # The thinking blocks back where the model wrote them (a
+                # progress update sits before the tool_use it introduces): they
+                # have to come back complete and unmodified, order included.
                 converted_messages.append({
                     "role": "assistant",
-                    "content": content_blocks
+                    "content": thinking_layout.interleave(
+                        self._replayable_thinking(msg, may_replay[index]), content_blocks)
                 })
                 continue
-            
+
             # Handle multimodal content
             if isinstance(msg.content, list):
                 content_blocks = anthropic_utils.normalize_content_list(msg.content)
@@ -544,7 +517,8 @@ class AnthropicAsyncClient(LLMClient):
                 if replay and isinstance(msg.content, str) and msg.content:
                     converted_messages.append({
                         "role": anthropic_role,
-                        "content": replay + [{"type": "text", "text": msg.content}],
+                        "content": thinking_layout.interleave(
+                            replay, [{"type": "text", "text": msg.content}]),
                     })
                 else:
                     converted_messages.append({
@@ -706,6 +680,38 @@ class AnthropicAsyncClient(LLMClient):
             converted_messages,
         ])
 
+    def _add_sampling(self, request_kwargs: Dict[str, Any], *also: str) -> None:
+        """temperature/top_p/top_k where the model takes them.
+
+        A thinking model refuses sampling changes with a 400, and an adaptive
+        one (the 5.x models) thinks whether asked or not -- omitting the
+        ``thinking`` field there means adaptive thinking, not none. The guard
+        used to ask include_thinking only, so a "no thinking" entry forwarded a
+        temperature its model refuses.
+        """
+        thinks = self.include_thinking or self.thinking_request_shape == "adaptive"
+        for key in ("temperature", "top_p", "top_k", *also):
+            if key not in self.extra_params:
+                continue
+            if thinks and key in ("temperature", "top_p", "top_k"):
+                logger.debug("%s=%s dropped (the model thinks, model=%s)",
+                             key, self.extra_params[key], self.model)
+                continue
+            request_kwargs[key] = self.extra_params[key]
+
+    def _add_output_config(self, request_kwargs: Dict[str, Any],
+                           response_format: Optional[ResponseFormat]) -> None:
+        """``output_config``: the structured answer's format, and ``effort``
+        from the entry's ``thinking_level`` -- the knob that sets how much a 5.x
+        model thinks, where a budget is refused."""
+        config: Dict[str, Any] = {}
+        if self.thinking_level:
+            config["effort"] = self.thinking_level
+        if response_format is not None:
+            config.update(self._output_config(response_format))
+        if config:
+            request_kwargs["output_config"] = config
+
     @staticmethod
     def _output_config(response_format: ResponseFormat) -> Dict[str, Any]:
         """``output_config`` for a structured answer. The schema goes as the caller wrote it:
@@ -729,12 +735,8 @@ class AnthropicAsyncClient(LLMClient):
         if system_prompt:
             request_kwargs["system"] = system_prompt
 
-        # Add extra params (temperature, top_p, etc.)
-        for key in ("temperature", "top_p", "top_k"):
-            if key in self.extra_params:
-                request_kwargs[key] = self.extra_params[key]
-        if response_format is not None:
-            request_kwargs["output_config"] = self._output_config(response_format)
+        self._add_sampling(request_kwargs)
+        self._add_output_config(request_kwargs, response_format)
 
         # Reported like chat_tools: callers of chat() (llm_router, summaries)
         # were invisible to the message debugger and the cost figures.
@@ -759,19 +761,28 @@ class AnthropicAsyncClient(LLMClient):
         try:
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled by user")
-            try:
-                if cancellation_token:
-                    # The token has to be watched while the call runs; without it a
-                    # cancelled request kept billing until the answer arrived.
-                    call = asyncio.create_task(self._client.messages.create(**request_kwargs))
-                    response = await cancellation.await_call(call, cancellation_token)
-                else:
-                    response = await self._client.messages.create(**request_kwargs)
-            except Exception as e:
-                typed = _typed_error(e, _error_kind(e), self.model, _retry_after(e))
-                if typed is e:
-                    raise
-                raise typed from e
+            for healing in (True, False):
+                try:
+                    if cancellation_token:
+                        # The token has to be watched while the call runs; without it a
+                        # cancelled request kept billing until the answer arrived.
+                        call = asyncio.create_task(self._client.messages.create(**request_kwargs))
+                        response = await cancellation.await_call(call, cancellation_token)
+                    else:
+                        response = await self._client.messages.create(**request_kwargs)
+                    break
+                except Exception as e:
+                    # A refused thinking binding heals once, as in chat_tools_streaming.
+                    if healing and BINDING_REFUSAL in str(e).lower():
+                        thinking_layout.strip_from_refused(messages, request_kwargs["messages"], str(e))
+                        system_prompt, converted_messages = self._convert_messages(messages)
+                        self._cap_anthropic_cache(system_prompt, converted_messages)
+                        request_kwargs["messages"] = converted_messages
+                        continue
+                    typed = _typed_error(e, _error_kind(e), self.model, _retry_after(e))
+                    if typed is e:
+                        raise
+                    raise typed from e
 
             text = "".join(block.text for block in response.content if hasattr(block, "text"))
             await report_end(
@@ -846,28 +857,13 @@ class AnthropicAsyncClient(LLMClient):
         if anthropic_tools:
             request_kwargs["tools"] = anthropic_tools
         
-        # Add extra params. With extended/adaptive thinking active, Anthropic
-        # rejects sampling modifications (temperature/top_p/top_k) with 400 —
-        # drop them instead of forwarding. NOTE: gated on include_thinking,
-        # so an adaptive-only model configured with include_thoughts=false
-        # (thinks server-side anyway) and the no-tools chat() path are NOT
-        # covered — both pre-existing, no such config exists today.
-        for key in ("temperature", "top_p", "top_k", "stop_sequences"):
-            if key in self.extra_params:
-                if self.include_thinking and key != "stop_sequences":
-                    logger.debug(
-                        "%s=%s dropped (extended thinking active, model=%s)",
-                        key, self.extra_params[key], self.model,
-                    )
-                    continue
-                request_kwargs[key] = self.extra_params[key]
+        self._add_sampling(request_kwargs, "stop_sequences")
 
         # Handle extended thinking
         if self.include_thinking:
             request_kwargs["thinking"] = self._build_thinking_param()
 
-        if response_format is not None:
-            request_kwargs["output_config"] = self._output_config(response_format)
+        self._add_output_config(request_kwargs, response_format)
         
         # Notify pre-request hook (LLM-client level)
         url = str(getattr(self._client, "_base_url", _DEFAULT_URL))
@@ -900,6 +896,7 @@ class AnthropicAsyncClient(LLMClient):
         wait_for_cancel = getattr(cancellation_token, "wait_for_cancellation", None)
         cancelled = asyncio.ensure_future(wait_for_cancel()) if callable(wait_for_cancel) else None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
+        binding_healed = False
         try:
             rate_limit_waits = 0  # the 429 waits this call slept itself: LLMRateLimitError.retried
             for attempt in range(_effective_max + 1):
@@ -1074,6 +1071,25 @@ class AnthropicAsyncClient(LLMClient):
                         )
                         await self._notify_retry("anthropic", self.model, url, True, f"{label}: {error_str[:200]}", attempt, self.max_retries + 1)
                         await self._cancellable_sleep(wait_time, cancellation_token)
+                        continue
+
+                    # Claude's preserved thinking: a block replayed behind an edited
+                    # history (system prompt, tool list, an earlier turn) is refused
+                    # on an enforcing account, on every later request too -- the
+                    # same body never clears it. Anthropic's recovery: strip the
+                    # named block and every thinking block after it, from the
+                    # session as well, and retry once.
+                    if (not binding_healed and attempt < _effective_max
+                            and BINDING_REFUSAL in error_str.lower()):
+                        binding_healed = True
+                        n = thinking_layout.strip_from_refused(messages, request_kwargs["messages"], error_str)
+                        system_prompt, converted_messages = self._convert_messages(messages)
+                        self._cap_anthropic_cache(system_prompt, converted_messages, anthropic_tools)
+                        request_kwargs["messages"] = converted_messages
+                        logger.warning("[Anthropic] Thinking bound to an edited history refused: "
+                                       "stripped it from %d message(s), retrying. model=%s", n, self.model)
+                        await self._notify_retry("anthropic", self.model, url, True,
+                                                 "thinking-binding strip", attempt, _effective_max + 1)
                         continue
 
                     # Non-recoverable error

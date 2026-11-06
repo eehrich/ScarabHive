@@ -27,7 +27,8 @@ from agent_system.hooks import (
 )
 from agent_system.llm.message_roles import INSTRUCTION_ROLES, is_input
 from agent_system.llm.models import ChatMessage
-from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts, thinking_text_from_details
+from agent_system.utils.reasoning_artifacts import (
+    invalidate_reasoning_artifacts, thinking_text_from_details, unsigned_tool_calls)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,11 @@ def _tool_call_id(tool_call: Any) -> Optional[str]:
     if isinstance(tool_call, dict):
         return tool_call.get("id")
     return getattr(tool_call, "id", None)
+
+
+def _carries_artifacts(msg: Any) -> bool:
+    """Whether *msg* holds reasoning artifacts its model made: reasoning_details or signed tool calls."""
+    return bool(getattr(msg, 'reasoning_details', None)) or unsigned_tool_calls(msg.tool_calls) is not None
 
 
 def _tool_call_id_of(msg: ChatMessage) -> Optional[str]:
@@ -595,23 +601,23 @@ class InternalMessageValidator:
                 else:
                     merged_content = second_content
 
+            # Two models' artifacts (reasoning_details, signed tool calls)
+            # cannot travel as one: the merge would be foreign to both, and the
+            # newer model's open tool turn would go without its signature. Keep
+            # the newer half, as for thinking_blocks below; the older half's
+            # text moves to reasoning_content, its calls lose their signatures.
+            first_rd_model = getattr(first_msg, 'reasoning_model', None)
+            second_rd_model = getattr(second_msg, 'reasoning_model', None)
+            drop_first_rd = bool(_carries_artifacts(first_msg) and _carries_artifacts(second_msg)
+                                 and first_rd_model != second_rd_model)
+
             # Merge tool_calls: combine both lists
             merged_tool_calls = []
             if first_msg.tool_calls:
-                merged_tool_calls.extend(first_msg.tool_calls)
+                unsigned = unsigned_tool_calls(first_msg.tool_calls) if drop_first_rd else None
+                merged_tool_calls.extend(unsigned if unsigned is not None else first_msg.tool_calls)
             if second_msg.tool_calls:
                 merged_tool_calls.extend(second_msg.tool_calls)
-
-            # Two models' reasoning_details cannot travel as one: the merge
-            # would be foreign to both, and the newer model's open tool turn
-            # would go without its signature. Keep the newer half, as for
-            # thinking_blocks below; the older half's text moves to
-            # reasoning_content.
-            first_rd_model = getattr(first_msg, 'reasoning_model', None)
-            second_rd_model = getattr(second_msg, 'reasoning_model', None)
-            drop_first_rd = bool(getattr(first_msg, 'reasoning_details', None)
-                                 and getattr(second_msg, 'reasoning_details', None)
-                                 and first_rd_model != second_rd_model)
 
             # Merge reasoning_content (important for Gemini "thinking")
             first_reasoning = getattr(first_msg, 'reasoning_content', None) or (
@@ -671,13 +677,15 @@ class InternalMessageValidator:
                 # One producer is left either way (see drop_first_rd).
                 "reasoning_model": (second_rd_model if drop_first_rd else "|".join(dict.fromkeys(
                     m.reasoning_model for m in (first_msg, second_msg)
-                    if getattr(m, 'reasoning_details', None)
-                    and getattr(m, 'reasoning_model', None))) or None),
+                    if _carries_artifacts(m) and getattr(m, 'reasoning_model', None))) or None),
                 "thinking_blocks": merged_tb,
                 "thinking_model": merged_tm if merged_tb else None,
                 # The later turn's backend is the one holding the cache.
                 "served_by": (getattr(second_msg, 'served_by', None)
                               or getattr(first_msg, 'served_by', None)),
+                "tools_key": (getattr(second_msg, 'tools_key', None)
+                                if getattr(second_msg, 'tools_key', None) is not None
+                                else getattr(first_msg, 'tools_key', None)),
             }))
 
             # The second message now lives in the first. The first is kept

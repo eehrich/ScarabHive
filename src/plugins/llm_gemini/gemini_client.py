@@ -20,6 +20,7 @@ from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, L
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from plugins.llm_common.quota import quota_exhausted
+from .gemini_signatures import signature_b64, signed_call, text_signature_details
 from .gemini_utils import (
     RequestEnd,
     adjust_thinking_for_retry,
@@ -149,7 +150,7 @@ class GeminiClient(LLMClient):
         # enforce_byte_limit=True enables fallback compaction if Context Engineer didn't run
         system_instruction, contents = prepare_messages_for_gemini(
             messages, tools, enforce_byte_limit=True,
-            developer_role=getattr(self.capabilities, 'developer_role', None))
+            developer_role=getattr(self.capabilities, 'developer_role', None), model=self.model)
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
@@ -232,8 +233,8 @@ class GeminiClient(LLMClient):
             accumulated_tool_calls = {}  # id -> tool call
             accumulated_usage = end.usage = None
             last_finish_reason = None  # Gemini's, reported with the answer
-            # For parallel function calls: the first thought_signature, propagated to all calls
-            first_thought_signature = None
+            # The signature of the answer's text part; a call's stays on that call.
+            text_sig = None
             loop_detector.reset()
             progress_tracker.reset()
 
@@ -374,6 +375,8 @@ class GeminiClient(LLMClient):
                             chunk_has_progress = False
 
                             for part in parts:
+                                if "functionCall" not in part and not part.get("thought"):
+                                    text_sig = signature_b64(part) or text_sig
                                 # Handle text (both normal content and thought summaries)
                                 if "text" in part:
                                     text_delta = part["text"]
@@ -416,18 +419,7 @@ class GeminiClient(LLMClient):
                                     func_name = func_call.get("name", "")
                                     func_args = func_call.get("args", {})
                                     
-                                    # Extract thoughtSignature if present (Gemini 3 Pro)
-                                    thought_signature = part.get("thoughtSignature")
-                                    
-                                    # For parallel function calls: capture first signature and propagate
-                                    if thought_signature and first_thought_signature is None:
-                                        first_thought_signature = thought_signature
-                                        logger.debug(f"Gemini: captured first thoughtSignature from {func_name}")
-                                    
-                                    # Use effective signature (original or propagated from first)
-                                    effective_signature = thought_signature or first_thought_signature
-                                    
-                                    logger.debug(f"Gemini function call: {func_name}, has_thought_sig={effective_signature is not None}")
+                                    logger.debug(f"Gemini function call: {func_name}")
                                     
                                     # Generate stable unique ID for this tool call (UUID4 ensures no collisions)
                                     tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
@@ -441,19 +433,10 @@ class GeminiClient(LLMClient):
                                         }
                                     }
                                     
-                                    # Store thoughtSignature for round-trip (Gemini 3 Pro requirement)
-                                    # Using OpenAI-compatible format: extra_content.google.thought_signature
-                                    if effective_signature:
-                                        tool_call["extra_content"] = {
-                                            "google": {
-                                                "thought_signature": effective_signature
-                                            }
-                                        }
-                                        if thought_signature:
-                                            logger.debug(f"Including thoughtSignature for {func_name} (original)")
-                                        else:
-                                            logger.debug(f"Including thoughtSignature for {func_name} (propagated from first)")
-                                    
+                                    # Only the step's first call carries a signature, and it
+                                    # goes back on that call alone (gemini_signatures).
+                                    signed_call(tool_call, signature_b64(part))
+
                                     accumulated_tool_calls[tool_call_id] = tool_call
                                     chunk_has_progress = True  # Tool call = progress
                                     
@@ -533,6 +516,8 @@ class GeminiClient(LLMClient):
 
                         if accumulated_tool_calls:
                             assistant["tool_calls"] = list(accumulated_tool_calls.values())
+                        if text_signature_details(text_sig):
+                            assistant["reasoning_details"] = text_signature_details(text_sig)
 
                         final_result = {"assistant": assistant}
                         if accumulated_usage:
@@ -673,7 +658,7 @@ class GeminiClient(LLMClient):
         # enforce_byte_limit=True enables fallback compaction if Context Engineer didn't run
         system_instruction, contents = prepare_messages_for_gemini(
             messages, tools, enforce_byte_limit=True,
-            developer_role=getattr(self.capabilities, 'developer_role', None))
+            developer_role=getattr(self.capabilities, 'developer_role', None), model=self.model)
         function_declarations = convert_openai_tools_to_gemini(tools)
 
         # Build generationConfig
@@ -840,10 +825,11 @@ class GeminiClient(LLMClient):
                     tool_calls = []
                     text_parts = []
                     thought_parts = []
-                    # For parallel function calls: track first thought_signature
-                    first_thought_signature = None
+                    text_sig = None
 
                     for part in parts:
+                        if "functionCall" not in part and not part.get("thought"):
+                            text_sig = signature_b64(part) or text_sig
                         if "text" in part:
                             # Thinking parts are marked and must NOT go into the
                             # answer: unlike the streaming path (and unlike the
@@ -860,17 +846,6 @@ class GeminiClient(LLMClient):
                             func_name = func_call.get("name", "")
                             func_args = func_call.get("args", {})
                             
-                            # Extract thoughtSignature (Gemini 3 Pro requirement)
-                            thought_signature = part.get("thoughtSignature")
-                            
-                            # For parallel function calls: capture first and propagate
-                            if thought_signature and first_thought_signature is None:
-                                first_thought_signature = thought_signature
-                                logger.debug(f"Non-streaming: captured first thoughtSignature from {func_name}")
-                            
-                            # Use effective signature (original or propagated)
-                            effective_signature = thought_signature or first_thought_signature
-                            
                             # Generate stable unique ID for this tool call (UUID4 ensures no collisions)
                             tool_call_id = f"call_{uuid.uuid4().hex[:16]}"
                             tool_call = {
@@ -882,18 +857,8 @@ class GeminiClient(LLMClient):
                                 }
                             }
                             
-                            # Store thoughtSignature for round-trip
-                            if effective_signature:
-                                tool_call["extra_content"] = {
-                                    "google": {
-                                        "thought_signature": effective_signature
-                                    }
-                                }
-                                if thought_signature:
-                                    logger.debug(f"Non-streaming: stored thought_signature for {func_name} (original)")
-                                else:
-                                    logger.debug(f"Non-streaming: stored thought_signature for {func_name} (propagated)")
-                            
+                            # Only the step's first call carries one (gemini_signatures).
+                            signed_call(tool_call, signature_b64(part))
                             tool_calls.append(tool_call)
 
                     assistant["content"] = "".join(text_parts)
@@ -901,6 +866,8 @@ class GeminiClient(LLMClient):
                         assistant["reasoning_content"] = "".join(thought_parts)
                     if tool_calls:
                         assistant["tool_calls"] = tool_calls
+                    if text_signature_details(text_sig):
+                        assistant["reasoning_details"] = text_signature_details(text_sig)
 
                     await end.report(usage=usage, finish_reason=finish_reason, response_data=data)
 

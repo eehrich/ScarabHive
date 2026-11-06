@@ -470,3 +470,46 @@ def test_a_tools_image_follows_the_whole_run_of_results(anthropic_batch_client, 
 
     kinds = [m["content"][0]["type"] if isinstance(m["content"], list) else m["role"] for m in converted]
     assert kinds == ["tool_result", "tool_result", "text", "assistant", "tool_result", "text"]
+
+
+class TestThinkingRoundTrip:
+    """A 5.x model thinks in a batch whether asked or not; the thinking was
+    billed and dropped, and every step of a tool loop re-reasoned."""
+
+    ANSWER = [{"type": "thinking", "thinking": "", "signature": "S1"},
+              {"type": "tool_use", "id": "A", "name": "f", "input": {}},
+              {"type": "thinking", "thinking": "", "signature": "S2"}]
+
+    def test_a_result_keeps_its_thinking_and_the_next_request_sends_it_back_in_place(self, anthropic_batch_client):
+        line = json.dumps({"custom_id": "r1", "result": {"type": "succeeded", "message": {
+            "model": "claude-opus-5-5", "content": self.ANSWER, "stop_reason": "max_tokens", "usage": {}}}})
+        [result] = anthropic_batch_client._parse_results(line)
+        message = result["response"]["choices"][0]["message"]
+        assert message["thinking_model"] == "claude-opus-5-5"
+
+        history = [{"role": "user", "content": "go"}, message,
+                   {"role": "tool", "tool_call_id": "A", "content": "ok"}]
+        _system, converted = anthropic_batch_client._convert_openai_messages_to_anthropic(history)
+
+        sent = [(b["type"], b.get("signature") or b.get("id")) for b in converted[1]["content"]]
+        assert sent == [("thinking", "S1"), ("tool_use", "A"), ("thinking", "S2")]
+        assert not any("_after" in b for b in converted[1]["content"])
+
+    def test_a_plain_answer_keeps_its_thinking_beside_the_text(self, anthropic_batch_client):
+        history = [{"role": "user", "content": "go"},
+                   {"role": "assistant", "content": "done",
+                    "thinking_blocks": [{"type": "thinking", "thinking": "", "signature": "S", "_after": 0}]}]
+        _system, converted = anthropic_batch_client._convert_openai_messages_to_anthropic(history)
+        assert converted[1]["content"] == [{"type": "thinking", "thinking": "", "signature": "S"},
+                                           {"type": "text", "text": "done"}]
+
+    def test_an_orphaned_turn_goes_without_its_thinking(self, anthropic_batch_client):
+        """The batch queue keeps rd_orphaned for the converter: bound to the history before an edit."""
+        turn = {"role": "assistant", "content": "done",
+                "thinking_blocks": [{"type": "thinking", "thinking": "", "signature": "S", "_after": 0}]}
+        for orphaned, sent in ((False, ["thinking", "text"]), (True, ["text"])):
+            history = [{"role": "user", "content": "go"}, {**turn, "rd_orphaned": orphaned}]
+            _system, converted = anthropic_batch_client._convert_openai_messages_to_anthropic(history)
+            content = converted[1]["content"]
+            kinds = [b["type"] for b in content] if isinstance(content, list) else ["text"]
+            assert kinds == sent

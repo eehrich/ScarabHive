@@ -445,3 +445,69 @@ def test_restore_keeps_answers_that_share_an_id_or_have_none():
                *search_turn("b_three"), *search_turn("b_four"),
                {"role": "tool", "name": TOOL_SEARCH, "tool_call_id": "x", "content": json.dumps({"loaded": 5})}]
     assert deferred.restore(history, tools) == ["b_one", "b_two", "b_three", "b_four"]
+
+
+class _ThinkingLLM(_ScriptedLLM):
+    """Answers like Claude: every answer carries a signed thinking block, and
+    the blocks the history still holds are recorded per call."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.history_blocks = []
+
+    async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
+        self.history_blocks.append([b["signature"] for m in messages for b in (m.thinking_blocks or [])])
+        async for chunk in super().chat_tools_streaming(messages, tools, cancellation_token, status_scope):
+            n = len(self.sent_tools)
+            chunk["assistant"]["thinking_blocks"] = [{"type": "thinking", "thinking": f"t{n}", "signature": f"S{n}"}]
+            chunk["assistant"]["thinking_model"] = self.model
+            yield chunk
+
+
+@pytest.mark.asyncio
+async def test_a_tool_joining_the_list_unbinds_the_thinking_before_it():
+    """Claude 5.x binds each block to its request's tool list; sent behind a
+    longer list, an enforcing account refuses every later request."""
+    llm = _ThinkingLLM([[("kit_read", {})],
+                        [(TOOL_SEARCH, {"query": "select:kit_deploy"})],
+                        [("kit_deploy", {"text": "v1"})],
+                        "deployed"])
+    await _run(_agent(_Server(), ["kit/kit_deploy"]), llm, "s_bound")
+
+    assert "kit_deploy" in llm.sent_tools[2], "fixture: the tool was not loaded"
+    assert llm.history_blocks[1] == ["S1"], "a call on an unchanged list lost its thinking"
+    assert llm.history_blocks[2] == [], "thinking made under the shorter list went out"
+    assert llm.history_blocks[3] == ["S3"]
+
+
+@pytest.mark.asyncio
+async def test_thinking_made_under_another_list_stays_home_in_the_next_run():
+    """The list changed between two runs (here the agent's deferred patterns,
+    at the same length: tool_search out, kit_deploy in). The next run's first
+    call never saw the old list, so only the stored answer can tell."""
+    agent = _agent(_Server(), ["kit/kit_deploy"])
+    first = _ThinkingLLM(["hello"])
+    await _run(agent, first, "s_bound_next")
+    stored = agent._session_tracker.get_session_messages("s_bound_next")
+    assert any(m.thinking_blocks for m in stored), "fixture: the session kept no thinking"
+
+    agent.agent_config.tools.deferred = []
+    second = _ThinkingLLM(["again"])
+    await _run(agent, second, "s_bound_next", task="again")
+    assert sorted(second.sent_tools[0]) == ["kit_deploy", "kit_read"], "fixture: the list did not change"
+    assert len(second.sent_tools[0]) == len(first.sent_tools[0]), "fixture: the lists differ in length"
+    assert second.history_blocks[0] == [], "thinking made under the other list went out"
+
+
+def test_a_tool_swapped_at_the_same_length_is_another_list():
+    """Claude binds its thinking to the list, not to its length."""
+    from agent_system.servers.agent.mixins.llm_loop.fallback import tools_fingerprint
+
+    def tools(*names):
+        return [{"type": "function", "function": {"name": n, "description": f"changes {i}"}}
+                for i, n in enumerate(names)]
+
+    assert tools_fingerprint(tools("a", "b")) != tools_fingerprint(tools("a", "c"))
+    assert tools_fingerprint(tools("a", "b")) == tools_fingerprint(
+        [{**t, "function": {**t["function"], "description": "another text"}} for t in tools("a", "b")]), \
+        "a description that changes per call would unbind every block on every call"

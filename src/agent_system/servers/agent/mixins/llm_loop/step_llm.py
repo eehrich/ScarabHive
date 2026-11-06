@@ -28,8 +28,9 @@ class StepLLMMixin:
     llm_selection.py for the clients (``_get_escalation_llm``, ``_fallback_client``).
 
     A switch leaves the history's reasoning where it is. Each client sends only
-    what its own model wrote (``reasoning_model`` on the chat route, the block's
-    ``model`` on the Responses route, ``thinking_model`` on Anthropic). Stripping
+    what its own model wrote (``reasoning_model`` on the chat route and native
+    Gemini, the block's ``model`` on the Responses route); Anthropic takes
+    another Claude model's thinking back as it is. Stripping
     it here lost the first model's chain for a switch back, also when the pick
     was refused before it answered or was the same model on another profile.
     """

@@ -736,3 +736,29 @@ async def test_each_answer_names_the_model_that_gave_it(system_config):
                 if e.get("type") == "thinking_complete"]
     assert answered, "fixture: no call answered"
     assert set(answered) == {("m-fallback", False)}
+
+
+class _SignedToolCallLLM(_ScriptedLLM):
+    """Native Gemini: the thought signature rides on the tool call, no reasoning_details."""
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        result = await super().chat_tools(messages, tools, cancellation_token, status_scope)
+        for call in result["assistant"].get("tool_calls") or []:
+            call["extra_content"] = {"google": {"thought_signature": "SIG"}}
+        return result
+
+
+@pytest.mark.asyncio
+async def test_a_signed_tool_call_names_the_model_that_signed_it(system_config):
+    """Untagged artifacts count as every model's own, so a switch sent native
+    Gemini's signatures to the next provider."""
+    original = _SignedToolCallLLM("original", 1_000_000, model="m-gemini")
+    agent = _agent(system_config, original)
+    seen = _record_hooks(agent)
+
+    await _run(agent)
+
+    answered = [m for m in seen["pre"][-1][2] if m.role == "assistant" and m.tool_calls]
+    assert answered, "fixture: the tool turn is not in the history"
+    assert answered[0].tool_calls[0]["extra_content"], "fixture: the signature was not kept"
+    assert answered[0].reasoning_model == "m-gemini"

@@ -30,7 +30,18 @@ llm_system:
       # Each LLM client brings its own batch backend under ITS name:
       # openai_httpx = the httpx client, openai = the SDK client. Both speak the
       # same /v1/batches API; `batch_provider` in a model entry picks the pair.
+      # openai_responses sends its lines to /v1/responses.
       openai_httpx:
+        enabled: true
+        collection_window_seconds: 10
+        max_requests_per_batch: 100
+        poll_interval_seconds: 10
+        max_wait_hours: 4
+        max_retries: 3
+        cancel_on_startup: true
+        fallback_to_sync: true
+
+      openai_responses:
         enabled: true
         collection_window_seconds: 10
         max_requests_per_batch: 100
@@ -136,6 +147,9 @@ llm_system:
 
     # Anthropic has no -latest aliases: the entries are named by family and
     # name its newest model; the next one is a `model:` line.
+    # The entries without -thinking leave the thinking request out, and a 5.x
+    # model then thinks adaptively all the same (billed as output; Opus cannot
+    # switch it off). How much it thinks is thinking_level (output_config.effort).
     claude-sonnet:
       extends: claude-opus-thinking
       model: claude-sonnet-5-5
@@ -191,18 +205,19 @@ llm_system:
       model: claude-haiku-5-5
       context_window: 100000      # window 1M, but above 100K prompt tokens it costs 5x
       request_timeout: 120
-      max_tokens: 8192
+      # max_tokens as the base: Haiku 5.5 thinks inside it, 8192 cut tool turns
       thinking_budget: null
       include_thoughts: false
 
     claude-sonnet-batch:
       extends: claude-opus-batch
       model: claude-sonnet-5-5
-      max_tokens: 8192
 
     claude-opus-batch:
       provider: batch
       thinking_request_shape: adaptive   # budget_tokens returns 400 here
+      # A 5.x model thinks in a batch too, inside max_tokens; the answer's
+      # thinking goes back on the next step.
       model: claude-opus-5-5
       api_key: ${ANTHROPIC_API_KEY}
       batch_provider: anthropic
@@ -219,12 +234,15 @@ llm_system:
       extends: claude-opus-batch         # adaptive: budget_tokens returns 400 on Haiku 5.5
       model: claude-haiku-5-5
       context_window: 100000      # as claude-haiku: above 100K prompt tokens it costs 5x
-      max_tokens: 8192
 
     # OpenAI direct. It has no -latest aliases (OpenRouter does), so each
     # family names its newest model; the next one is a `model:` line.
+    # The Responses API: OpenAI's reasoning models take function calls only
+    # there (Astra and 6.1 Sol refuse them on Chat Completions, Luna loses its
+    # reasoning between calls), and it carries the reasoning round trip.
     gpt-luna:
-      provider: openai_httpx
+      provider: openai_responses
+      base_url: https://api.openai.com/v1   # the route's default is OpenRouter
       prompt_cache_ttl_minutes: 30  # fixed for GPT-5.6+/6 ("30m" is the only ttl OpenAI accepts); every hit renews it
       model: gpt-6-luna
       api_key: ${OPENAI_API_KEY}
@@ -273,7 +291,8 @@ llm_system:
       provider: batch
       model: gpt-6.1-sol
       api_key: ${OPENAI_API_KEY}
-      batch_provider: openai_httpx
+      batch_provider: openai_responses   # function calls only there, as for gpt-luna
+      base_url: https://api.openai.com/v1   # the sync fallback's endpoint (the route's default is OpenRouter)
       context_window: 272000      # double price above 272K prompt tokens
       request_timeout: 240
       capabilities:

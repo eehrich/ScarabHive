@@ -64,7 +64,7 @@ Anthropic client builds its payload from named fields and never sends it.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,36 @@ def strip_reasoning_artifacts_containing(messages: list, item_id: str) -> int:
     return touched
 
 
+def strip_reasoning_artifacts_served_by(messages: list, backend: str) -> int:
+    """Remove the reasoning artifacts of the messages *backend* answered.
+
+    For a refusal after a provider pin was released: the backend that takes
+    the retry cannot verify what the released one signed (measured 102 of 102
+    refused) and accepts its own (135 of 135). The full reset threw away the
+    chain the new backend could still read. Returns number of messages touched.
+    """
+    touched = 0
+    for msg in messages:
+        if (_get(msg, "role") == "assistant" and _get(msg, "served_by") == backend
+                and _get(msg, "reasoning_details")):
+            _keep_thinking_text(msg)
+            _pop(msg, "reasoning_details")
+            _pop(msg, RD_ORPHANED_FLAG)
+            touched += 1
+    if touched:
+        logger.info("Reasoning artifacts stripped from %d message(s) served by %s "
+                    "(the rest of the chain preserved)", touched, backend)
+    return touched
+
+
+def last_served_by(messages: list) -> Optional[str]:
+    """The backend that answered the latest assistant turn naming one."""
+    for msg in reversed(messages):
+        if _get(msg, "role") == "assistant" and _get(msg, "served_by"):
+            return _get(msg, "served_by")
+    return None
+
+
 def strip_all_reasoning_artifacts(messages: list) -> int:
     """Remove ALL provider reasoning artifacts from *messages* — full reset.
 
@@ -249,10 +279,13 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
       the session still carries the broken chain. Strip the ORIGINAL message
       objects so the healing persists with the session.
 
+    Tool calls lose their ``extra_content`` too: native Gemini keeps its thought
+    signature there, not in ``reasoning_details``.
+
     Also clears ``rd_orphaned`` flags where nothing is left to guard. Anthropic
-    ``thinking_blocks`` stay: the client drops another model's blocks by
-    ``thinking_model`` itself, and after a switch back they still belong to
-    the same history -- except on an orphaned turn, whose flag therefore
+    ``thinking_blocks`` stay: another Claude model takes them back as they are,
+    and after a switch back they still belong to the same history -- except
+    on an orphaned turn, whose flag therefore
     stays, or its invalidated blocks would travel again.
     Works on dicts and message objects. Returns number of messages touched.
     """
@@ -262,6 +295,10 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
             continue
         _keep_thinking_text(msg)
         had = _pop(msg, "reasoning_details") is not None
+        calls = unsigned_tool_calls(_get(msg, "tool_calls"))
+        if calls is not None:
+            _set(msg, "tool_calls", calls)
+            had = True
         had_flag = (not _get(msg, "thinking_blocks")
                     and _pop(msg, RD_ORPHANED_FLAG) is not None)
         if had or had_flag:
@@ -275,8 +312,90 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
     return touched
 
 
+#: What Anthropic's refusal of a thinking block replayed behind an edited
+#: history says (lower case): "Invalid `signature` in `thinking` block. The
+#: block is bound to a different conversation." The same clause WITHOUT this
+#: sentence is a tampered signature, which no strip heals.
+BINDING_REFUSAL = "bound to a different conversation"
+
+#: The ``reasoning_details`` format of Claude's thinking on the chat route.
+CLAUDE_DETAILS_FORMAT = "anthropic-claude-v1"
+
+
+def strip_tool_set_bound_reasoning(messages: list) -> int:
+    """Remove the reasoning bound to the tool list it was produced under.
+
+    Claude 5.x binds each thinking block to the system prompt and tool list of
+    its request (``tool_set_changed``): once a deferred tool joins the list,
+    every earlier block is refused on an enforcing account, and silently dropped
+    with a changed prefix elsewhere. That is Claude's ``thinking_blocks``
+    (native route) and its ``anthropic-claude-v1`` blocks (chat route); other
+    providers' reasoning is not bound this way and stays. Their text moves to
+    ``reasoning_content``. Returns number of messages touched.
+    """
+    touched = 0
+    for msg in messages:
+        if _get(msg, "role") != "assistant":
+            continue
+        changed = False
+        thinking = _get(msg, "thinking_blocks")
+        if thinking:
+            text = "".join(b.get("thinking") or "" for b in thinking if isinstance(b, dict))
+            if text and not _get(msg, "reasoning_content"):
+                _set(msg, "reasoning_content", text)
+            _pop(msg, "thinking_blocks")
+            _pop(msg, "thinking_model")
+            changed = True
+        blocks = _get(msg, "reasoning_details")
+        if blocks:
+            keep = [b for b in blocks if not (isinstance(b, dict) and b.get("format") == CLAUDE_DETAILS_FORMAT)]
+            if len(keep) != len(blocks):
+                _keep_thinking_text(msg)
+                if keep:
+                    _set(msg, "reasoning_details", keep)
+                else:
+                    _pop(msg, "reasoning_details")
+                changed = True
+        touched += changed
+    if touched:
+        logger.info("Tool-list-bound reasoning stripped from %d message(s) (a tool joined the list)", touched)
+    return touched
+
+
+#: Where a provider puts the signature of a tool call (Gemini's
+#: ``extra_content.google.thought_signature``).
+TOOL_CALL_SIGNATURE_KEY = "extra_content"
+
+
+def unsigned_tool_calls(tool_calls: Any) -> Optional[list]:
+    """*tool_calls* without their signatures, or ``None`` when none carries one.
+
+    New dicts in a new list: the calls belong to the stored history.
+    """
+    if not isinstance(tool_calls, list) or not any(
+            isinstance(tc, dict) and TOOL_CALL_SIGNATURE_KEY in tc for tc in tool_calls):
+        return None
+    return [{k: v for k, v in tc.items() if k != TOOL_CALL_SIGNATURE_KEY}
+            if isinstance(tc, dict) else tc for tc in tool_calls]
+
+
+def own_tool_call_signatures_only(d: dict, msg: Any, model: Any) -> None:
+    """Drop the tool-call signatures from request dict *d* when another model made *msg*.
+
+    The chat route used to forward native Gemini's signatures to every other
+    provider after a switch, and no reset reached them.
+    """
+    if produced_by_another_model(msg, model):
+        calls = unsigned_tool_calls(d.get("tool_calls"))
+        if calls is not None:
+            d["tool_calls"] = calls
+
+
 def produced_by_another_model(msg: Any, model: Any) -> bool:
-    """Whether *msg*'s ``reasoning_details`` came, even in part, from a model other than *model*.
+    """Whether *msg*'s reasoning artifacts came, even in part, from a model other than *model*.
+
+    Artifacts are its ``reasoning_details`` and its tool-call signatures; the
+    answer is tagged with ``reasoning_model`` when it carries either.
 
     A client asks this per request and leaves such a message's artifacts out of
     its payload; the stored history keeps them for a switch back. Stripping
