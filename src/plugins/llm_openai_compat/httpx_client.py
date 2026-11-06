@@ -65,6 +65,8 @@ from plugins.llm_common.model_dialects import (
     tool_schema_sanitizer,
 )
 from agent_system.utils.reasoning_artifacts import (
+    RESPONSES_ITEMS_FORMAT,
+    produced_by_another_model,
     strip_all_reasoning_artifacts,
     strip_reasoning_artifacts_containing,
     thinking_text,
@@ -764,6 +766,32 @@ class HTTPXOpenAIClient(LLMClient):
             clean['reasoning_content'] = d['reasoning_content']
         return clean
 
+    def _own_reasoning_only(self, d: dict, msg: Any) -> None:
+        """Leave out the reasoning_details this request's model cannot use.
+
+        That is another model's (``produced_by_another_model``) and the
+        Responses route's verbatim item blocks, which are no Chat Completions
+        shape even for the same model. The history keeps them for a switch
+        back; they used to be stripped from it on every switch. Their text
+        moves to ``reasoning_content`` as the strip did, for a dialect that
+        echoes it.
+        """
+        blocks = d.get("reasoning_details")
+        if not blocks:
+            return
+        keep = [] if produced_by_another_model(msg, self.model) else [
+            b for b in blocks if not (isinstance(b, dict) and b.get("format") == RESPONSES_ITEMS_FORMAT)]
+        if len(keep) == len(blocks):
+            return
+        if not d.get("reasoning_content"):
+            text = thinking_text_from_details([b for b in blocks if b not in keep])
+            if text:
+                d["reasoning_content"] = text
+        if keep:
+            d["reasoning_details"] = keep
+        else:
+            d.pop("reasoning_details")
+
     # The Anthropic cache policy lives centrally in cache_key.py (single source
     # of truth for all Claude paths). These methods are thin, format-adapting
     # delegators: they pass this client's OpenAI chat-completions dicts on to
@@ -1208,6 +1236,7 @@ class HTTPXOpenAIClient(LLMClient):
                         d['content'] = self._filter_audio_from_content(d['content'])
                     # Whitelist only API-accepted fields, sanitize tool_calls
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
+                    self._own_reasoning_only(d, msg)
                     injections.add(result, d)
 
                     # A tool result's images follow the run of tool messages as a user message
@@ -1220,6 +1249,7 @@ class HTTPXOpenAIClient(LLMClient):
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
+                    self._own_reasoning_only(d, msg)
                     injections.add(result, d)
                 else:
                     injections.add(result, dict(msg))
@@ -1819,6 +1849,7 @@ class HTTPXOpenAIClient(LLMClient):
                         d['content'] = self._filter_audio_from_content(d['content'])
                     # Whitelist only API-accepted fields, sanitize tool_calls
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
+                    self._own_reasoning_only(d, msg)
                     injections.add(result, d)
 
                     # A tool result's images follow the run of tool messages as a user message
@@ -1831,6 +1862,7 @@ class HTTPXOpenAIClient(LLMClient):
                     if 'content' in d:
                         d['content'] = self._filter_audio_from_content(d['content'])
                     d = HTTPXOpenAIClient._sanitize_message_for_api(d)
+                    self._own_reasoning_only(d, msg)
                     injections.add(result, d)
                 else:
                     injections.add(result, dict(msg))

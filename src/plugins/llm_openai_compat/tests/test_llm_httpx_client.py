@@ -1979,6 +1979,75 @@ class TestAnthropicCacheControl:
         assert self._count(msgs, tools) == 4  # 1 tool + 4 msgs = 5 -> 4
 
 
+class TestOnlyThisModelsReasoningTravels:
+    """A model switch leaves the history's reasoning in place; this client sends
+    only what its own model wrote. The step loop used to strip the history on
+    every switch, so a switch back started the first model's chain over."""
+
+    @staticmethod
+    def _history():
+        from agent_system.llm.models import ChatMessage
+        return [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content="a", reasoning_model="other/model",
+                        reasoning_details=[{"type": "reasoning.text", "text": "theirs", "signature": "S"}]),
+            ChatMessage(role="user", content="next"),
+            ChatMessage(role="assistant", content="b", reasoning_model="own/model",
+                        reasoning_details=[{"type": "reasoning.text", "text": "mine", "signature": "T"},
+                                           {"format": "openai-responses-items-v1",
+                                            "type": "reasoning.responses_items", "items": []}]),
+            ChatMessage(role="user", content="again"),
+        ]
+
+    @staticmethod
+    def _sent(payload):
+        return [m.get("reasoning_details") for m in payload["messages"] if m["role"] == "assistant"]
+
+    @pytest.mark.asyncio
+    async def test_another_models_reasoning_and_responses_items_stay_home(self):
+        history = self._history()
+        client = HTTPXOpenAIClient(model="own/model", api_key="k", base_url="https://openrouter.ai/api/v1",
+                                   reasoning_details_mode="keep_all")
+        payload = await captured_payload(client, messages=history)
+        assert self._sent(payload) == [None, [{"type": "reasoning.text", "text": "mine", "signature": "T"}]]
+        assert history[1].reasoning_details, "the request stripped the stored history"
+
+    @pytest.mark.asyncio
+    async def test_dict_messages_are_filtered_the_same(self):
+        client = HTTPXOpenAIClient(model="own/model", api_key="k", base_url="https://openrouter.ai/api/v1",
+                                   reasoning_details_mode="keep_all")
+        history = [m.model_dump(exclude_none=True) for m in self._history()]
+        payload = await captured_payload(client, messages=history)
+        assert self._sent(payload) == [None, [{"type": "reasoning.text", "text": "mine", "signature": "T"}]]
+
+    @pytest.mark.asyncio
+    async def test_the_streaming_request_leaves_them_out_too(self):
+        client = HTTPXOpenAIClient(model="own/model", api_key="k", base_url="https://openrouter.ai/api/v1",
+                                   reasoning_details_mode="keep_all")
+        response = MagicMock()
+
+        async def aiter_bytes():
+            yield b'data: [DONE]\n'
+
+        response.aiter_bytes = aiter_bytes
+        response.status_code = 200
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+        with patch("httpx.AsyncClient.stream", return_value=response) as stream:
+            async for _ in client._make_request_streaming(self._history(), tools=[]):
+                pass
+        assert self._sent(stream.call_args.kwargs["json"]) == [
+            None, [{"type": "reasoning.text", "text": "mine", "signature": "T"}]]
+
+    @pytest.mark.asyncio
+    async def test_a_dialect_that_echoes_reasoning_keeps_the_text(self):
+        """The strip moved the text to reasoning_content; DeepSeek wants it back with tools."""
+        client = HTTPXOpenAIClient(model="own/model", api_key="k", base_url="https://openrouter.ai/api/v1",
+                                   reasoning_details_mode="keep_all", assistant_reasoning_field="reasoning_content")
+        payload = await captured_payload(client, messages=self._history())
+        assert [m.get("reasoning_content") for m in payload["messages"] if m["role"] == "assistant"][0] == "theirs"
+
+
 if __name__ == "__main__":
     # Run tests with pytest when executed directly
     pytest.main([__file__, "-v"])

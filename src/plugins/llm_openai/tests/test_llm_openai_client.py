@@ -830,3 +830,13 @@ async def test_a_cancel_mid_stream_is_a_cancel_not_an_upstream_error(openai_clie
         async for _ in client.chat_tools_streaming([ChatMessage(role="user", content="hi")], [],
                                                    cancellation_token=token):
             pass
+
+
+def test_other_routes_reasoning_carriers_never_reach_this_api():
+    """A model switch keeps another route's reasoning in the history; this client writes none."""
+    client = OpenAIAsyncClient(model="gpt-4", api_key="test-key", base_url="https://api.openai.com/v1")
+    dicts = [{"role": "user", "content": "hi"},
+             {"role": "assistant", "content": "a", "reasoning_details": [{"type": "reasoning.text", "text": "t"}],
+              "thinking_blocks": [{"type": "thinking", "thinking": "t", "signature": "S"}], "thinking_model": "c"}]
+    sent = client._apply_developer_rung(dicts)
+    assert not any(k in m for m in sent for k in ("reasoning_details", "thinking_blocks", "thinking_model"))

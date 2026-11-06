@@ -80,9 +80,9 @@ def _entry_id(session_id: str, message: dict[str, Any], occurrence: int = 0) -> 
     IGNORE) and its placeholders point at them.
 
     Only what the row keeps is hashed. The rest of a message is the
-    provider's and changes between two passes: a model switch strips
-    ``reasoning_details`` from the whole session before the hooks run, and the
-    retry would have come back under new ids.
+    provider's and changes between two passes: a compaction or a chain repair
+    strips ``reasoning_details``, and the retry would have come back under new
+    ids.
 
     ``occurrence`` keeps identical messages of ONE batch apart -- the vector
     store refuses a batch that names an id twice. Identical messages of two

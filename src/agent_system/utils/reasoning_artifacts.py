@@ -2,9 +2,11 @@
 
 THE INVARIANT
 =============
-``reasoning_details`` blocks (OpenAI encrypted reasoning items, Gemini thought
-signatures via OpenRouter) are integrity-protected artifacts over the EXACT
-conversation history that produced them:
+``reasoning_details`` blocks that carry a verification payload (OpenAI
+encrypted reasoning items, Gemini thought signatures via OpenRouter, Claude
+signatures -- see :func:`carries_proof`) are integrity-protected artifacts over
+the EXACT conversation history that produced them. Plain reasoning text
+(DeepSeek, Kimi) is not, and the rule below leaves it alone:
 
 - OpenAI reasoning models chain their encrypted items — every item is verified
   against the full sequence of prior items ("the entire sequence of consecutive
@@ -25,7 +27,8 @@ THE RULE
 Every code path that mutates history MUST call
 :func:`invalidate_reasoning_artifacts` on the message list afterwards.
 
-What it does (provider-agnostic — callers don't know which model runs):
+What it does (provider-agnostic — callers don't know which model runs), for
+the artifacts that carry a payload:
 
 1. Strips ``reasoning_details`` (and ``thinking_blocks``, the native Anthropic
    route's carrier of the same thing) from every assistant message EXCEPT the
@@ -72,6 +75,10 @@ logger = logging.getLogger(__name__)
 #: pydantic field on ChatMessage (pydantic forbids underscore-prefixed field
 #: names), so it survives model_dump / session round-trips.
 RD_ORPHANED_FLAG = "rd_orphaned"
+
+#: Format tag of the block in which the Responses route keeps a turn's
+#: verbatim output items; no other route can send it.
+RESPONSES_ITEMS_FORMAT = "openai-responses-items-v1"
 
 
 def _get(msg: Any, key: str, default: Any = None) -> Any:
@@ -232,13 +239,10 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
 
     Use when the artifacts are invalid beyond the reach of the soft reset in
     :func:`invalidate_reasoning_artifacts` (which keeps the latest message's
-    artifact for an open same-model tool round-trip):
+    artifact for an open same-model tool round-trip). A model switch is not
+    such a case: the clients leave another model's artifacts out per request
+    (:func:`produced_by_another_model`).
 
-    - **Mid-run model switch** (fallback, fallback-recovery, escalation): the
-      old model's artifacts are useless or harmful to the new model in BOTH
-      directions (OpenAI can't verify Gemini blocks and vice versa). The open
-      round-trip belongs to the OLD model, so even the latest artifact must go
-      — for the new model this is simply a fresh start.
     - **Poisoned session healing** after a provider rejected the chain
       (HTTP 400 "encrypted content … could not be verified"): stripping only
       the serialized request copy re-triggers the same 400 every turn, because
@@ -271,24 +275,48 @@ def strip_all_reasoning_artifacts(messages: list) -> int:
     return touched
 
 
-def strip_foreign_reasoning_artifacts(messages: list, model: Any) -> int:
-    """Full reset when any artifact in *messages* was produced by another model.
+def produced_by_another_model(msg: Any, model: Any) -> bool:
+    """Whether *msg*'s ``reasoning_details`` came, even in part, from a model other than *model*.
 
-    Catches the switches the step loop does not see: between two requests of
-    a session (a fallback switched on or recovered meanwhile, a per-request
-    profile override, a restart). Artifacts without ``reasoning_model`` stay —
-    their origin is unknown. One foreign artifact resets all: a switch strips
-    everything, so artifacts of two models side by side mean a broken chain.
+    A client asks this per request and leaves such a message's artifacts out of
+    its payload; the stored history keeps them for a switch back. Stripping
+    them from the history on every switch lost the first model's chain, and a
+    switch back started it again from nothing. A merged message names both
+    producers (``a|b``) and is foreign to each. Untagged artifacts are of
+    unknown origin and count as the model's own, as before.
     """
-    if not isinstance(model, str) or not model:
-        return 0
-    for msg in messages:
-        origin = _get(msg, "reasoning_model")
-        if (origin and origin != model and _get(msg, "role") == "assistant"
-                and _get(msg, "reasoning_details")):
-            logger.info("Reasoning artifacts of %s found before a call to %s", origin, model)
-            return strip_all_reasoning_artifacts(messages)
-    return 0
+    origin = _get(msg, "reasoning_model")
+    if not origin or not isinstance(model, str) or not model:
+        return False
+    return any(part != model for part in str(origin).split("|"))
+
+
+#: Fields in which a provider hands back a payload it verifies on replay:
+#: OpenAI/Gemini ``encrypted_content`` (Responses items), ``data``
+#: (``reasoning.encrypted`` blocks), Claude ``signature``.
+_PROOF_KEYS = frozenset({"encrypted_content", "data", "signature"})
+
+
+def carries_proof(artifact: Any) -> bool:
+    """Whether a reasoning artifact holds something the provider verifies.
+
+    Only such an artifact is bound to the history it came from. Plain reasoning
+    text is not: measured over 3,000 production sessions (05.11.2026), every
+    DeepSeek block (4,487) was text only, while GPT, Gemini and Claude blocks
+    carried ``encrypted_content`` or ``signature``. Text is just echoed, and
+    DeepSeek wants a tool turn's reasoning back. Deciding by shape keeps the
+    rule free of model names.
+    """
+    if isinstance(artifact, dict):
+        return any((key in _PROOF_KEYS and isinstance(value, str) and value)
+                   or carries_proof(value) for key, value in artifact.items())
+    if isinstance(artifact, list):
+        return any(carries_proof(value) for value in artifact)
+    return False
+
+
+def _bound_to_history(msg: Any) -> bool:
+    return bool(_get(msg, "thinking_blocks")) or carries_proof(_get(msg, "reasoning_details"))
 
 
 def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
@@ -299,6 +327,11 @@ def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
     all assistant messages except the most recent, and flags the most recent
     with ``_rd_orphaned`` so the LLM client can complete the reset for
     chain-based providers (reasoning_details_mode="keep_all").
+
+    Only artifacts that :func:`carries_proof` are touched. Plain reasoning text
+    is bound to nothing, so it stays, and the latest turn is not flagged for it.
+    Stripping it after every compaction dropped DeepSeek's reasoning, the open
+    tool turn's included, and broke the cache from the edit on.
 
     Works on both dict-shaped messages and message objects.
 
@@ -311,7 +344,7 @@ def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
 
     Returns:
         Number of messages whose reasoning artifacts were stripped or flagged.
-        0 means the history carried no reasoning artifacts — nothing to do.
+        0 means the history carried no artifact bound to it — nothing to do.
     """
     touched = 0
     last_assistant_idx = -1
@@ -323,12 +356,11 @@ def invalidate_reasoning_artifacts(messages: list, start: int = 0) -> int:
         return 0
 
     for i, msg in enumerate(messages):
-        if i < start or _get(msg, "role") != "assistant":
+        if i < start or _get(msg, "role") != "assistant" or not _bound_to_history(msg):
             continue
         if i == last_assistant_idx:
-            if _get(msg, "reasoning_details") or _get(msg, "thinking_blocks"):
-                _set(msg, RD_ORPHANED_FLAG, True)
-                touched += 1
+            _set(msg, RD_ORPHANED_FLAG, True)
+            touched += 1
             continue
         # No rescue here on purpose: this runs after a compaction, whose job
         # is to make the history smaller. See _keep_thinking_text.

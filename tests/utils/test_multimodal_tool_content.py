@@ -18,9 +18,90 @@ from agent_system.utils.multimodal_tool_content import (
 )
 
 
+class TestAnEarlierTurnKeepsTheImageItsToolReturned:
+    """Every request encodes the history's media again from disk. A tool that
+    rendered again to the same path showed the newer image in the older turn
+    too, a deleted file turned the turn into "not found", and the prompt cache
+    broke there each time."""
+
+    @pytest.fixture(autouse=True)
+    def frozen(self, monkeypatch):
+        from collections import OrderedDict
+        from agent_system.utils import multimodal_tool_content as mtc
+        monkeypatch.setattr(mtc, "_FROZEN", OrderedDict())
+        monkeypatch.setattr(mtc, "_frozen_size", 0)
+
+    def _tool_message(self, image):
+        from agent_system.llm.models import ChatMessage
+        from agent_system.servers.agent.components.tool_call_contract import pop_multimodal_content
+        items = pop_multimodal_content(
+            {"_multimodal_content": [{"type": "image", "path": str(image), "mime_type": "image/png"}]}, "render")
+        assert items and items[0].sha256, "the tool result recorded no content hash"
+        return ChatMessage(role="tool", tool_call_id="c1", name="render", content="ok",
+                           multimodal_content=items)
+
+    def _images(self, msg):
+        injection = create_multimodal_injection(msg, supports_vision=True)
+        return json.dumps(injection["content"])
+
+    def test_a_rerender_to_the_same_path_does_not_reach_the_older_turn(self, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"\x89PNG first render")
+        msg = self._tool_message(image)
+        first = self._images(msg)
+        image.write_bytes(b"\x89PNG second render, another picture")
+        assert self._images(msg) == first
+
+    def test_a_deleted_file_still_shows_in_its_turn(self, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"\x89PNG first render")
+        msg = self._tool_message(image)
+        first = self._images(msg)
+        image.unlink()
+        assert self._images(msg) == first
+
+    def test_a_file_changed_before_its_first_request_is_not_shown(self, tmp_path):
+        """Not frozen yet (a restart in between): the new picture would still be the wrong one."""
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"\x89PNG first render")
+        msg = self._tool_message(image)
+        image.write_bytes(b"\x89PNG another picture")
+        assert create_multimodal_injection(msg, supports_vision=True) is None
+
+    def test_a_frozen_file_still_counts_in_the_context(self, tmp_path):
+        """Counted as 0 it was never compacted although every request carries it."""
+        from agent_system.llm.token_utils import TOKENS_PER_IMAGE, estimate_media_tokens
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"\x89PNG first render")
+        msg = self._tool_message(image)
+        self._images(msg)
+        image.unlink()
+        item = msg.multimodal_content[0]
+        assert estimate_media_tokens(item.model_dump()) == TOKENS_PER_IMAGE
+        assert estimate_media_tokens(item) == TOKENS_PER_IMAGE
+
+    def test_a_model_without_vision_is_not_sent_to_a_file_that_is_gone(self, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"\x89PNG first render")
+        msg = self._tool_message(image)
+        self._images(msg)
+        image.unlink()
+        note = create_multimodal_injection(msg, supports_vision=False)["content"]
+        assert "Missing files" in note and f"File not found: {image}" in note
+
+    def test_a_file_too_large_to_send_is_not_hashed(self, tmp_path, monkeypatch):
+        from agent_system.utils import multimodal_tool_content as mtc
+        monkeypatch.setattr(mtc, "DEFAULT_MAX_IMAGE_SIZE_MB", 0.00001)
+        image = tmp_path / "big.png"
+        image.write_bytes(b"\x89PNG" + b"x" * 100)
+        assert mtc.content_sha256(image, "image") is None
+        image.write_bytes(b"\x89PNG")
+        assert mtc.content_sha256(image, "image")
+
+
 class TestEncodeMultimodalItem:
     """Tests for encode_multimodal_item function."""
-    
+
     def test_encode_image_file(self, tmp_path: Path):
         """Test encoding an image file to base64."""
         # Create a test image file

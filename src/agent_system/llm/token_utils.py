@@ -345,7 +345,20 @@ def estimate_media_tokens(item: Any) -> int:
     kind = _field(item, "type")
     path = _field(item, "path")
     if path and kind in ("audio", "image", "video"):
-        return estimate_file_tokens(path, file_type=kind)
+        tokens = estimate_file_tokens(path, file_type=kind)
+        if tokens:
+            return tokens
+        # The file is gone, but a request still sends the bytes its tool
+        # returned (multimodal_tool_content): count those.
+        from agent_system.utils.multimodal_tool_content import frozen_media
+        frozen = frozen_media(item)
+        if frozen is None:
+            return 0
+        if kind == "image":
+            return TOKENS_PER_IMAGE
+        per_second = AUDIO_BYTES_PER_SECOND if kind == "audio" else VIDEO_BYTES_PER_SECOND
+        rate = TOKENS_PER_AUDIO_SECOND if kind == "audio" else TOKENS_PER_VIDEO_SECOND
+        return int(len(frozen) / per_second * rate)
     payload = inline_payload(item)
     # Compared, not looked up: ``type`` is not promised to be a hashable str.
     if kind in ("image", "image_url"):

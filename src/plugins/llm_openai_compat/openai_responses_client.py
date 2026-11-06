@@ -36,8 +36,9 @@ message are NOT re-serialized (they would duplicate the items).
 
 Because ``reasoning_details`` remains the carrier, the whole reasoning-artifact
 invalidation infrastructure (utils/reasoning_artifacts.py) applies unchanged:
-history mutations strip the blocks of all but the latest assistant message and
-flag the latest with ``rd_orphaned``. This client honors the flag: an orphaned
+history mutations strip the blocks that carry encrypted content from all but
+the latest assistant message and flag the latest with ``rd_orphaned``; blocks
+of plain reasoning text (DeepSeek) stay. This client honors the flag: an orphaned
 message is NOT replayed verbatim (its chain predecessors are gone — a partial
 chain fails verification) but reconstructed from content/tool_calls like
 foreign history — a clean chain restart, which the Responses route tolerates
@@ -106,7 +107,8 @@ from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common.openai_utils import convert_audio_to_input_audio
 from plugins.llm_common.structured_output import responses_text_format
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
-from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
+from agent_system.utils.reasoning_artifacts import (
+    RESPONSES_ITEMS_FORMAT, carries_proof, strip_all_reasoning_artifacts)
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +126,7 @@ _INCOMPLETE_REASON_TO_FINISH = {
     "content_filter": "content_filter",
 }
 
-#: format tag of the verbatim-items block this client writes/reads.
-RESPONSES_ITEMS_FORMAT = "openai-responses-items-v1"
+#: format tag of the verbatim-items block this client writes/reads: RESPONSES_ITEMS_FORMAT (imported).
 RESPONSES_ITEMS_TYPE = "reasoning.responses_items"
 
 #: Audio containers the Responses input item officially accepts (openai SDK
@@ -533,7 +534,10 @@ class OpenAIResponsesClient(LLMClient):
 
         ``model``: where this request goes when it is not ``self.model`` -- the
         concrete model a run on an alias is pinned to (``_run_model``). A block
-        another model of that alias answered is foreign there as well.
+        another model of that alias answered is foreign there as well, if it
+        ``carries_proof``. Plain reasoning text (DeepSeek) is bound to no model:
+        after a 429 had the alias answer from a sibling, treating it as foreign
+        rebuilt the run's earlier turns without reasoning and broke the cache.
 
         One foreign block makes the whole message foreign. Replaying a merged
         message in part dropped the foreign half's function_calls while their
@@ -545,7 +549,8 @@ class OpenAIResponsesClient(LLMClient):
             if isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT:
                 if block.get("model") != self.model:
                     return None
-                if model and model != self.model and block.get("served_model") != model:
+                if (model and model != self.model and block.get("served_model") != model
+                        and carries_proof(block.get("items"))):
                     return None
                 items = block.get("items")
                 if isinstance(items, list) and items:

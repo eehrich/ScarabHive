@@ -13,7 +13,7 @@ from agent_system.utils.reasoning_artifacts import (
     RD_ORPHANED_FLAG,
     invalidate_reasoning_artifacts,
     strip_all_reasoning_artifacts,
-    strip_foreign_reasoning_artifacts,
+    produced_by_another_model,
     strip_reasoning_artifacts_containing,
     thinking_text,
     thinking_text_from_details,
@@ -99,9 +99,9 @@ class TestThinkingTextHasExactlyOneHome:
         """
         msgs = [
             {"role": "assistant", "content": "a", "reasoning_details": [
-                {"type": "reasoning.text", "text": "older thought"}]},
+                {"type": "reasoning.text", "text": "older thought", "signature": "S1"}]},
             {"role": "assistant", "content": "b", "reasoning_details": [
-                {"type": "reasoning.text", "text": "latest thought"}]},
+                {"type": "reasoning.text", "text": "latest thought", "signature": "S2"}]},
         ]
         invalidate_reasoning_artifacts(msgs)
         assert "reasoning_details" not in msgs[0]         # carrier dropped
@@ -137,6 +137,33 @@ class TestInvalidateReasoningArtifacts:
         assert "reasoning_details" not in msgs[1]          # older: stripped
         assert "reasoning_details" in msgs[3]              # last: kept
         assert msgs[3][RD_ORPHANED_FLAG] is True           # but flagged
+
+    def test_plain_reasoning_text_survives_and_the_latest_is_not_flagged(self):
+        """Text without a verification payload is bound to no history (DeepSeek, Kimi):
+        stripping it after a compaction lost the open tool turn's reasoning and the cache."""
+        def text_turn(call, text):
+            return {"role": "assistant", "content": "", "tool_calls": [{"id": call}],
+                    "reasoning_details": [{"type": "reasoning.responses_items", "items": [
+                        {"type": "reasoning", "id": f"rs_{call}", "summary": [],
+                         "content": [{"type": "reasoning_text", "text": text}]}]}]}
+        msgs = [{"role": "user", "content": "hi"}, text_turn("a", "first"),
+                {"role": "tool", "tool_call_id": "a", "content": "r1"}, text_turn("b", "second"),
+                {"role": "tool", "tool_call_id": "b", "content": "r2"}]
+        assert invalidate_reasoning_artifacts(msgs) == 0
+        assert thinking_text(msgs[1]) == "first" and thinking_text(msgs[3]) == "second"
+        assert RD_ORPHANED_FLAG not in msgs[3]
+
+    def test_a_payload_anywhere_in_the_block_binds_it(self):
+        """Responses items keep encrypted_content one level down; Claude keeps a signature."""
+        for block in ({"type": "reasoning.responses_items",
+                       "items": [{"type": "reasoning", "encrypted_content": "E"}]},
+                      {"type": "reasoning.text", "text": "t", "signature": "S"}):
+            msgs = [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "a", "reasoning_details": [block]},
+                    {"role": "user", "content": "next"},
+                    {"role": "assistant", "content": "b", "reasoning_details": [dict(block)]}]
+            assert invalidate_reasoning_artifacts(msgs) == 2, block
+            assert "reasoning_details" not in msgs[1] and msgs[3][RD_ORPHANED_FLAG] is True
 
     def test_noop_without_artifacts(self):
         msgs = [
@@ -241,32 +268,20 @@ class TestInvalidateReasoningArtifacts:
         assert older.model_dump(exclude_none=True).get("rd_orphaned") is None
 
 
-class TestStripForeignReasoningArtifacts:
-    def _tagged(self, *tags):
-        msgs = _msgs()
-        msgs[1]["reasoning_model"], msgs[3]["reasoning_model"] = tags
-        return msgs
+class TestProducedByAnotherModel:
+    """Asked per request by a client; the history itself keeps every model's artifacts."""
 
-    def test_one_foreign_artifact_resets_all(self):
-        msgs = self._tagged("big", "small")
-        assert strip_foreign_reasoning_artifacts(msgs, "big") == 2
-        assert all("reasoning_details" not in m for m in msgs)
+    def test_own_untagged_and_foreign(self):
+        assert produced_by_another_model({"reasoning_model": "big"}, "big") is False
+        assert produced_by_another_model({"reasoning_model": "small"}, "big") is True
+        assert produced_by_another_model({}, "big") is False, "an untagged artifact is of unknown origin"
 
-    def test_own_and_untagged_artifacts_stay(self):
-        msgs = self._tagged("big", None)
-        assert strip_foreign_reasoning_artifacts(msgs, "big") == 0
-        assert msgs[1]["reasoning_details"] and msgs[3]["reasoning_details"]
+    def test_a_merged_message_is_foreign_to_each_producer(self):
+        merged = {"reasoning_model": "big|small"}
+        assert produced_by_another_model(merged, "big") and produced_by_another_model(merged, "small")
 
-    def test_a_tag_whose_artifacts_are_gone_is_no_reason(self):
-        """invalidate_reasoning_artifacts drops the details and leaves the tag."""
-        msgs = self._tagged("small", "big")
-        del msgs[1]["reasoning_details"]
-        assert strip_foreign_reasoning_artifacts(msgs, "big") == 0
-        assert msgs[3]["reasoning_details"]
-
-    def test_a_client_without_a_model_name_strips_nothing(self):
-        msgs = self._tagged("small", "small")
-        assert strip_foreign_reasoning_artifacts(msgs, None) == 0
+    def test_a_client_without_a_model_name_calls_nothing_foreign(self):
+        assert produced_by_another_model({"reasoning_model": "small"}, None) is False
 
 
 class TestInvalidationCoversAnthropicThinkingBlocks:

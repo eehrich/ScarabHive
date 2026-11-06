@@ -13,7 +13,6 @@ import json
 import logging
 from typing import TYPE_CHECKING, List, Optional
 
-from ....utils.reasoning_artifacts import strip_all_reasoning_artifacts
 from ....llm.models import ChatMessage, LLMClient
 from ..components.tool_execution import tool_result_is_error
 from ..loop_detection import ToolCallLoopDetector
@@ -220,16 +219,3 @@ class LLMSelectionMixin:
             if client is not None:
                 self._fallback_clients[profile] = client
         return client
-
-    def _strip_for_switch(self: Agent, profile: str, messages: List[ChatMessage]) -> None:
-        """Strip every provider reasoning artifact before the call goes to
-        another model: encrypted reasoning items / thought signatures are bound
-        to the model that produced them — round-tripping them into a DIFFERENT
-        model is useless at best and a hard 400 at worst. For the new model
-        this is simply a fresh start."""
-        stripped = strip_all_reasoning_artifacts(messages)
-        if stripped:
-            logger.info(
-                f"[{self.name}] Stripped reasoning artifacts from {stripped} "
-                f"message(s) on model switch to {profile}"
-            )

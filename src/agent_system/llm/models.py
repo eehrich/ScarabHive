@@ -135,6 +135,9 @@ class MultimodalToolContent(BaseModel):
     path: str  # Local file path to the content
     mime_type: str  # e.g., "image/png", "audio/wav"
     description: Optional[str] = None  # Optional description for context
+    # The file's content when the tool returned it: a later turn still shows
+    # that, not what a rerender to the same path wrote (multimodal_tool_content).
+    sha256: Optional[str] = None
 
 
 # Union type for all content types
@@ -205,8 +208,8 @@ class ChatMessage(BaseModel):
     # never sent to providers (client pops it before building the payload).
     rd_orphaned: Optional[bool] = None
     # Model that produced reasoning_details. Set by the agent loop, never sent
-    # to a provider; a call to another model strips all artifacts first
-    # (utils/reasoning_artifacts.strip_foreign_reasoning_artifacts).
+    # to a provider; a call to another model leaves those artifacts out of its
+    # payload (utils/reasoning_artifacts.produced_by_another_model).
     reasoning_model: Optional[str] = None
     # Anthropic extended/adaptive thinking blocks, verbatim as returned
     # (thinking+signature / redacted_thinking+data) in the model's original

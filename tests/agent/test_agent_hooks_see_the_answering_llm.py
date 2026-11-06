@@ -24,6 +24,7 @@ from agent_system.llm.models import LLMRateLimitError, LLMServerError
 from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.agent.escalation import StuckEscalator
 from agent_system.servers.agent.server import Agent
+from agent_system.utils.reasoning_artifacts import produced_by_another_model
 
 
 @pytest.fixture
@@ -42,14 +43,14 @@ class _ScriptedLLM:
 
     def __init__(self, name, context_window, reasoning=False, before_answer=None, model=None):
         self.name = name
-        if model:
-            # Only doubles that get blocked carry a model name: the block is
-            # keyed by it, and an untagged fallback keeps the strip tests
-            # measuring the switch the step loop sees itself.
-            self.model = model
+        # Every real client has a model name; the reasoning it leaves is tagged with it.
+        self.model = model or name
         self.context_window = context_window
         self.call_count = 0
+        # Per call: would a client of this model send reasoning (its own), and
+        # does the history still hold any (another model's included)?
         self.saw_artifacts = []
+        self.history_artifacts = []
         self._reasoning = reasoning
         self._before_answer = before_answer
 
@@ -58,7 +59,9 @@ class _ScriptedLLM:
 
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         self.call_count += 1
-        self.saw_artifacts.append(any(getattr(m, "reasoning_details", None) for m in messages))
+        self.saw_artifacts.append(any(getattr(m, "reasoning_details", None)
+                                      and not produced_by_another_model(m, self.model) for m in messages))
+        self.history_artifacts.append(any(getattr(m, "reasoning_details", None) for m in messages))
         if self._before_answer:
             self._before_answer()
         if self.call_count == 1:
@@ -148,9 +151,9 @@ async def test_the_hooks_see_the_fallback_a_blocked_llm_walks_to(system_config):
 @pytest.mark.asyncio
 async def test_a_run_out_block_returns_to_the_original_before_the_hooks(system_config, monkeypatch):
     """Step 1 runs on the fallback and leaves a reasoning block, then the
-    block runs out. Step 2's hooks must see the original AND the history
-    already stripped for it — not the fallback, and not a history the switch
-    rewrites after they worked on it."""
+    block runs out. Step 2's hooks must see the original, and the history they
+    work on is the one that goes out: the switch rewrites nothing, the client
+    leaves the fallback's reasoning out of its own request."""
     now = [1000.0]
     monkeypatch.setattr(model_health, "_clock", lambda: now[0])
     original = _ScriptedLLM("original", 1_000_000, model="m-original")
@@ -171,8 +174,9 @@ async def test_a_run_out_block_returns_to_the_original_before_the_hooks(system_c
     assert step2, "no hooks ran for step 2"
     _, llm, messages = step2[0]
     assert llm is original, "the hooks of the recovered step still saw the fallback"
-    assert not any(m.reasoning_details for m in messages), (
-        "the hooks got the fallback's reasoning; the switch stripped it only afterwards")
+    assert any(m.reasoning_details for m in messages), "the switch stripped the history"
+    assert original.saw_artifacts[0] is False, "the fallback's reasoning reached the original"
+    assert original.history_artifacts[0] is True, "the switch stripped the history"
 
 
 class _ServerErrorLLM(_ScriptedLLM):
@@ -218,7 +222,7 @@ class _LimitedOnSecondCallLLM(_ScriptedLLM):
 
 
 @pytest.mark.asyncio
-async def test_a_switch_inside_a_step_strips_the_failed_models_reasoning(system_config):
+async def test_a_switch_inside_a_step_keeps_the_failed_models_reasoning_from_the_fallback(system_config):
     """The 429 comes in step 2, after step 1 left the original's reasoning in the
     history; the retry on the fallback runs in that same step, where no
     between-steps comparison sees the switch."""
@@ -232,6 +236,7 @@ async def test_a_switch_inside_a_step_strips_the_failed_models_reasoning(system_
 
     assert original.call_count == 2 and fallback.call_count >= 1, "fixture: step 2 did not switch after the 429"
     assert fallback.saw_artifacts[0] is False, "the rate-limited model's reasoning reached the fallback"
+    assert fallback.history_artifacts[0] is True, "the switch stripped the history"
 
 
 @pytest.mark.asyncio
@@ -274,7 +279,7 @@ async def test_a_block_set_by_another_request_during_the_hooks_is_honoured(syste
 
 
 @pytest.mark.asyncio
-async def test_a_block_lifted_by_another_request_during_the_hooks_is_used_with_a_clean_history(system_config):
+async def test_a_block_lifted_by_another_request_during_the_hooks_is_used_without_foreign_reasoning(system_config):
     """Step 1 runs on the fallback and leaves reasoning; during step 2's hooks
     the original answers another request. Step 2 must reach the original, with
     the fallback's reasoning stripped from THIS request's history."""
@@ -294,6 +299,7 @@ async def test_a_block_lifted_by_another_request_during_the_hooks_is_used_with_a
 
     assert fallback.call_count == 1 and original.call_count >= 1, "step 2 stayed on the fallback"
     assert original.saw_artifacts[0] is False, "the fallback's reasoning reached the original"
+    assert original.history_artifacts[0] is True, "the switch stripped the history"
 
 
 @pytest.mark.asyncio
@@ -339,7 +345,7 @@ async def test_a_re_pick_away_from_a_blocked_escalation_spends_no_round(system_c
 
 
 @pytest.mark.asyncio
-async def test_a_re_pick_onto_a_fallback_strips_the_originals_reasoning(system_config):
+async def test_a_re_pick_onto_a_fallback_keeps_the_originals_reasoning_from_it(system_config):
     """Another request blocks the original during this request's hooks; this
     request's history still carries the original's reasoning items."""
     original = _ScriptedLLM("original", 1_000_000, reasoning=True, model="m-original")
@@ -357,6 +363,7 @@ async def test_a_re_pick_onto_a_fallback_strips_the_originals_reasoning(system_c
 
     assert original.call_count == 1 and fallback.call_count >= 1, "fixture: step 2 did not switch"
     assert fallback.saw_artifacts[0] is False, "the original's reasoning reached the fallback"
+    assert fallback.history_artifacts[0] is True, "the switch stripped the history"
 
 
 @pytest.mark.asyncio
@@ -483,7 +490,7 @@ async def test_reasoning_reaches_the_next_call_when_the_model_stays(system_confi
 
 
 @pytest.mark.asyncio
-async def test_a_switch_between_steps_strips_the_previous_models_reasoning(system_config):
+async def test_a_switch_between_steps_keeps_the_previous_models_reasoning_from_the_next(system_config):
     """Another request blocks the original while this one runs its tools —
     between two steps, outside the hook window the re-pick watches."""
     fallback = _ScriptedLLM("fallback", 65_000)
@@ -502,6 +509,34 @@ async def test_a_switch_between_steps_strips_the_previous_models_reasoning(syste
 
     assert original.call_count == 1 and fallback.call_count >= 1, "fixture: step 2 did not switch"
     assert fallback.saw_artifacts[0] is False, "the original's reasoning reached the fallback"
+    assert fallback.history_artifacts[0] is True, "the switch stripped the history"
+
+
+@pytest.mark.asyncio
+async def test_a_switch_back_finds_the_first_models_own_reasoning(system_config):
+    """Away to the fallback for one step and back: the original gets its chain
+    again. The switch used to strip the history, and the original started over
+    with nothing (and a cold cache)."""
+    fallback = None
+    original = None
+
+    def another_request_hits_a_429():
+        _block(original)
+
+    def the_original_answers_another_request():
+        model_health.release(original)
+
+    original = _ScriptedLLM("original", 1_000_000, reasoning=True, before_answer=another_request_hits_a_429)
+    fallback = _ScriptedLLM("fallback", 65_000, before_answer=the_original_answers_another_request)
+    agent = _agent(system_config, original, max_steps=3)
+    _falls_back_to(agent, fallback)
+    _record_hooks(agent)
+
+    await _run(agent)
+
+    assert original.call_count == 2 and fallback.call_count == 1, "fixture: not away and back"
+    assert fallback.saw_artifacts[0] is False, "the original's reasoning reached the fallback"
+    assert original.saw_artifacts[1] is True, "the original lost its own reasoning to the switch"
 
 
 @pytest.mark.asyncio
@@ -596,9 +631,7 @@ class _FlakyLLM(_ScriptedLLM):
 
 
 class _NamedModelLLM(_ScriptedLLM):
-    """Scripted, with the model name real clients carry. Reasoning it leaves
-    is tagged with that name; the other doubles stay untagged so the tests
-    above keep measuring the switch the step loop sees itself."""
+    """Scripted, named after its model profile (``big``, ``small``)."""
 
     def __init__(self, name, context_window, reasoning=False):
         super().__init__(name, context_window, reasoning=reasoning)
@@ -620,7 +653,7 @@ async def _second_request_after(agent, between):
 
 
 @pytest.mark.asyncio
-async def test_a_switch_since_the_previous_request_strips_its_reasoning(system_config):
+async def test_a_switch_since_the_previous_request_keeps_its_reasoning_from_the_new_model(system_config):
     """The original answered another request while this session was idle: this
     session's next request had no step model left to compare with."""
     original = _NamedModelLLM("big", 1_000_000)
@@ -630,6 +663,7 @@ async def test_a_switch_since_the_previous_request_strips_its_reasoning(system_c
 
     assert original.call_count >= 1, "fixture: request 2 did not run on the original"
     assert original.saw_artifacts[0] is False, "the fallback's reasoning from request 1 reached the original"
+    assert original.history_artifacts[0] is True, "the switch stripped the history"
 
 
 @pytest.mark.asyncio
@@ -660,6 +694,7 @@ async def test_the_final_answer_after_an_escalated_last_step_gets_no_foreign_rea
 
     assert advanced.call_count == 1 and original.call_count == 1, "fixture: no escalated step before the final call"
     assert original.saw_artifacts[0] is False, "the advanced model's reasoning reached the final call"
+    assert original.history_artifacts[0] is True, "the switch stripped the history"
 
 
 @pytest.mark.asyncio

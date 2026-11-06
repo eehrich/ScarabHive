@@ -504,8 +504,8 @@ class TestMessageSequence:
     @pytest.mark.parametrize("first, second, expected", [
         (("small", True), (None, False), "small"),
         ((None, False), ("small", True), "small"),
-        # Two producers match no model: the next call strips the merged list.
-        (("small", True), ("big", True), "small|big"),
+        # Two producers: only the newer one's artifacts stay (see the next test).
+        (("small", True), ("big", True), "big"),
         # A tag whose artifacts a compaction already removed names nothing.
         (("small", False), ("big", True), "big"),
     ])
@@ -521,6 +521,21 @@ class TestMessageSequence:
 
         assert len(result.repaired_messages) == 2
         assert result.repaired_messages[1].reasoning_model == expected
+
+    def test_merge_reasoning_details_from_different_models_keeps_newer(self):
+        """A merge foreign to both models sent the newer one's open tool turn without its signature."""
+        older = ChatMessage(role="assistant", content="A", reasoning_model="small",
+                            reasoning_details=[{"type": "reasoning.text", "text": "older thought"}])
+        newer = ChatMessage(role="assistant", content="", reasoning_model="big",
+                            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+                            reasoning_details=[{"type": "reasoning.encrypted", "data": "SIG"}])
+        result = InternalMessageValidator().validate_and_repair(
+            [ChatMessage(role="user", content="Think"), older, newer,
+             ChatMessage(role="tool", tool_call_id="c1", content="ok")], "test")
+        merged = result.repaired_messages[1]
+        assert merged.reasoning_details == [{"type": "reasoning.encrypted", "data": "SIG"}]
+        assert merged.reasoning_model == "big"
+        assert merged.reasoning_content == "older thought", "the older half's thinking was lost"
 
     def test_merge_thinking_blocks_from_different_models_keeps_newer(self):
         """Signatures are model-bound: merging blocks from two different

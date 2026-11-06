@@ -631,8 +631,11 @@ blocked, even if it is chosen in the chat. Another, free LLM, on the other
 hand, runs immediately — one LLM's block does not hold it up.
 
 If the hooks take long while a block is set or lifted, the step chooses again
-afterwards (`model_health.version`). Every model switch, including the switch
-back, removes the previous model's reasoning artifacts from the history.
+afterwards (`model_health.version`). A model switch leaves the reasoning
+artifacts in the history: each client sends only what its own model wrote
+(`produced_by_another_model` in `utils/reasoning_artifacts.py`, the block's
+model on the Responses route, `thinking_model` on Anthropic). A switch back
+finds the first model's chain again.
 
 ### Lifting a Block
 

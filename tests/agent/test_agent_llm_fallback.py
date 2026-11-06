@@ -6,6 +6,8 @@ import time
 
 import httpx
 import pytest
+
+from agent_system.utils.reasoning_artifacts import produced_by_another_model
 from unittest.mock import MagicMock, patch
 
 from agent_system.servers.agent.server import Agent
@@ -880,15 +882,16 @@ async def test_the_fallback_gets_its_own_retry(system_config_with_profiles):
 
 
 class _ArtifactLLM:
-    """Answers with a reasoning_details block and records, per call, whether the
-    history it was handed still carried one."""
+    """Answers with a reasoning_details block and records, per call, whether a
+    client of its model would send reasoning (its own) and whether the history
+    it was handed still held any."""
 
     def __init__(self, name, before_answer=None, model=None):
         self.name = name
-        if model:
-            self.model = model
+        self.model = model or name
         self.call_count = 0
         self.saw_artifacts = []
+        self.history_artifacts = []
         self._before_answer = before_answer
 
     def supports_streaming(self):
@@ -896,8 +899,9 @@ class _ArtifactLLM:
 
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
         self.call_count += 1
-        self.saw_artifacts.append(
-            any(getattr(m, "reasoning_details", None) for m in messages))
+        self.saw_artifacts.append(any(getattr(m, "reasoning_details", None)
+                                      and not produced_by_another_model(m, self.model) for m in messages))
+        self.history_artifacts.append(any(getattr(m, "reasoning_details", None) for m in messages))
         if self._before_answer:
             self._before_answer()
         if self.call_count == 1:
@@ -913,7 +917,7 @@ class _ArtifactLLM:
 
 
 @pytest.mark.asyncio
-async def test_coming_back_to_a_freed_llm_strips_the_fallbacks_reasoning(
+async def test_coming_back_to_a_freed_llm_leaves_the_fallbacks_reasoning_out(
         system_config_with_profiles):
     """The other half of the model switch. Without it the first call after the
     block replays the fallback's reasoning items to the original model, which
@@ -921,7 +925,8 @@ async def test_coming_back_to_a_freed_llm_strips_the_fallbacks_reasoning(
 
     Step 1 runs on the fallback of the blocked original and produces a
     reasoning block; the original then answers another request. Step 2 must
-    reach the original with a clean history."""
+    reach the original without the fallback's reasoning, which the history
+    keeps."""
     original = _ArtifactLLM("original", model="m-original")
     fallback = _ArtifactLLM("fallback", before_answer=lambda: model_health.release(original))
     agent = _chain_agent(system_config_with_profiles, original, fallback)
@@ -934,6 +939,7 @@ async def test_coming_back_to_a_freed_llm_strips_the_fallbacks_reasoning(
     assert original.saw_artifacts[0] is False, (
         "the fallback's reasoning reached the original model — the gateway "
         "rejects that and the agent falls straight back")
+    assert original.history_artifacts[0] is True, "the switch stripped the history"
 
 
 @pytest.mark.asyncio

@@ -210,6 +210,11 @@ class OpenAIAsyncClient(LLMClient):
             # own, and the tool-calling path once sent injected_by to the API.
             for key in PRIVATE_MESSAGE_FIELDS:
                 d.pop(key, None)
+            # Other routes' reasoning carriers: this client writes none of them,
+            # and since a model switch keeps them in the history (reasoning_artifacts.
+            # produced_by_another_model) they would reach this API.
+            for key in ("reasoning_details", "thinking_blocks", "thinking_model"):
+                d.pop(key, None)
             if d.get("role") != DEVELOPER:
                 continue
             content = d.get("content")

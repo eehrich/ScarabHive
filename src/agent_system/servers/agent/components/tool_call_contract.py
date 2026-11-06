@@ -159,6 +159,7 @@ def pop_multimodal_content(tool_result: Any, tool_name: str) -> Optional[List[An
         return None
     from pydantic import ValidationError
     from ....llm.models import MultimodalToolContent
+    from ....utils.multimodal_tool_content import content_sha256
     # An invalid item is dropped on its own: raising here would replace the
     # whole tool result -- a job that already ran -- with an error, and the
     # model would run it again.
@@ -175,6 +176,9 @@ def pop_multimodal_content(tool_result: Any, tool_name: str) -> Optional[List[An
                 )
         elif isinstance(item, MultimodalToolContent):
             multimodal_content.append(item)
+    for item in multimodal_content:
+        if item.sha256 is None:
+            item.sha256 = content_sha256(item.path, item.type)
     if multimodal_content:
         logger.debug("Extracted %d multimodal items from tool %s", len(multimodal_content), tool_name)
     return multimodal_content or None

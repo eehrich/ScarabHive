@@ -757,6 +757,22 @@ class TestARunStaysOnTheModelItsAliasResolvedTo:
         assert sent[0]["model"] == "google/gemini-3.8-flash"
         assert replayed == ["rs_google/gemini-3.8-flash_new"]
 
+    async def test_plain_reasoning_text_of_a_sibling_model_is_replayed(self):
+        """Text without encrypted content verifies nowhere, so it binds to no model: after a 429
+        had the alias answer from a sibling, the run's earlier turns lost their reasoning."""
+        client, sent = self._client([_answer("google/gemini-3.8-flash")])
+        old = self._turn(client, "google/gemini-3.7-flash", "old")
+        for item in old.reasoning_details[0]["items"]:
+            item.pop("encrypted_content", None)
+            if item["type"] == "reasoning":
+                item["content"] = [{"type": "reasoning_text", "text": "thinking"}]
+        history = [ChatMessage(role="user", content="go"), old, ChatMessage(role="user", content="next"),
+                   self._turn(client, "google/gemini-3.8-flash", "new"), ChatMessage(role="user", content="again")]
+        await client.chat_tools(history, [])
+        replayed = [i["id"] for i in sent[0]["input"] if i.get("type") == "reasoning"]
+        assert sent[0]["model"] == "google/gemini-3.8-flash"
+        assert replayed == ["rs_google/gemini-3.7-flash_old", "rs_google/gemini-3.8-flash_new"]
+
     async def test_a_merged_turn_with_a_foreign_half_is_rebuilt_whole(self):
         """The message validator merges consecutive assistant turns, blocks and calls alike. Replayed
         in part, the request lost the 3.7 half's call and kept its output: a 400 on every request."""

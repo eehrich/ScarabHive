@@ -27,7 +27,7 @@ from agent_system.hooks import (
 )
 from agent_system.llm.message_roles import INSTRUCTION_ROLES, is_input
 from agent_system.llm.models import ChatMessage
-from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts, thinking_text_from_details
 
 logger = logging.getLogger(__name__)
 
@@ -602,8 +602,20 @@ class InternalMessageValidator:
             if second_msg.tool_calls:
                 merged_tool_calls.extend(second_msg.tool_calls)
 
+            # Two models' reasoning_details cannot travel as one: the merge
+            # would be foreign to both, and the newer model's open tool turn
+            # would go without its signature. Keep the newer half, as for
+            # thinking_blocks below; the older half's text moves to
+            # reasoning_content.
+            first_rd_model = getattr(first_msg, 'reasoning_model', None)
+            second_rd_model = getattr(second_msg, 'reasoning_model', None)
+            drop_first_rd = bool(getattr(first_msg, 'reasoning_details', None)
+                                 and getattr(second_msg, 'reasoning_details', None)
+                                 and first_rd_model != second_rd_model)
+
             # Merge reasoning_content (important for Gemini "thinking")
-            first_reasoning = getattr(first_msg, 'reasoning_content', None) or ""
+            first_reasoning = getattr(first_msg, 'reasoning_content', None) or (
+                thinking_text_from_details(first_msg.reasoning_details) if drop_first_rd else "")
             second_reasoning = getattr(second_msg, 'reasoning_content', None) or ""
             merged_reasoning = first_reasoning
             if second_reasoning:
@@ -623,8 +635,8 @@ class InternalMessageValidator:
             # thinking blocks that must round-trip, e.g. Gemini
             # thought_signature — dropping them causes
             # MALFORMED_FUNCTION_CALL on the next turn).
-            merged_rd = (list(getattr(first_msg, 'reasoning_details', None) or [])
-                         + list(getattr(second_msg, 'reasoning_details', None) or []))
+            merged_rd = ([] if drop_first_rd else list(getattr(first_msg, 'reasoning_details', None) or [])) \
+                + list(getattr(second_msg, 'reasoning_details', None) or [])
 
             # Anthropic thinking blocks: keep only the NEWER turn's
             # blocks. Anthropic validates the block SEQUENCE of the last
@@ -656,14 +668,11 @@ class InternalMessageValidator:
                 # A broken chain on either side stays broken in the merge.
                 "rd_orphaned": (getattr(first_msg, 'rd_orphaned', None)
                                 or getattr(second_msg, 'rd_orphaned', None)),
-                # Two producers in one merged list match no model, so
-                # strip_foreign_reasoning_artifacts would reset them. The
-                # agent loop strips before this hook runs, so today the
-                # merge only ever sees one producer.
-                "reasoning_model": "|".join(dict.fromkeys(
+                # One producer is left either way (see drop_first_rd).
+                "reasoning_model": (second_rd_model if drop_first_rd else "|".join(dict.fromkeys(
                     m.reasoning_model for m in (first_msg, second_msg)
                     if getattr(m, 'reasoning_details', None)
-                    and getattr(m, 'reasoning_model', None))) or None,
+                    and getattr(m, 'reasoning_model', None))) or None),
                 "thinking_blocks": merged_tb,
                 "thinking_model": merged_tm if merged_tb else None,
                 # The later turn's backend is the one holding the cache.

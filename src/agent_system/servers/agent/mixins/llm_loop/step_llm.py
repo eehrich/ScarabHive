@@ -13,10 +13,6 @@ import logging
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from .....llm.model_health import model_health
-from .....utils.reasoning_artifacts import (
-    strip_all_reasoning_artifacts,
-    strip_foreign_reasoning_artifacts,
-)
 from .state import LoopState, StepState
 
 if TYPE_CHECKING:
@@ -29,8 +25,13 @@ class StepLLMMixin:
     """The step's LLM and its fallbacks (see the module docstring).
 
     Relies on Agent.__init__ for ``name``, ``agent_config`` and ``_step_llms``, and on
-    llm_selection.py for the clients (``_get_escalation_llm``, ``_fallback_client``,
-    ``_strip_for_switch``).
+    llm_selection.py for the clients (``_get_escalation_llm``, ``_fallback_client``).
+
+    A switch leaves the history's reasoning where it is. Each client sends only
+    what its own model wrote (``reasoning_model`` on the chat route, the block's
+    ``model`` on the Responses route, ``thinking_model`` on Anthropic). Stripping
+    it here lost the first model's chain for a switch back, also when the pick
+    was refused before it answered or was the same model on another profile.
     """
 
     def _pick_step_llm(self: Agent, run: LoopState, escalate: bool) -> Tuple[Any, List[str], bool, Optional[str]]:
@@ -41,7 +42,7 @@ class StepLLMMixin:
         base — when its LLM is not blocked (llm/model_health.py); else
         the first unblocked profile of the chain; else the wanted one
         all the same: a blocked LLM beats no LLM. Coming back once the
-        block is lifted is a switch like any other, stripped below.
+        block is lifted is a switch like any other.
         """
         llm = run.active_llm
         # Profile of the model that is ACTUALLY active, when it differs
@@ -149,8 +150,7 @@ class StepLLMMixin:
         # size the context by context.llm (context_engineer's arrival cap,
         # context_summarizer's trigger, context_usage_tracker's percentage).
         # Picked after them, a fallback with a smaller window was sized by
-        # the original's window, and a switch back to a freed LLM stripped
-        # the history the hooks had already worked on.
+        # the original's window.
 
         # Auto-escalation: run this step on the advanced model when a window
         # is open and its LLM is not blocked. The budget round is only spent
@@ -160,16 +160,7 @@ class StepLLMMixin:
         st.escalated = run.escalator.active and not st.final_call
 
         st.health_seen = model_health.version
-        previous_step_llm = self._step_llms.get(run.session_id)
         self._apply_step_pick(run, st)
-        if previous_step_llm is not None and st.current_llm is not previous_step_llm:
-            # A switch between steps: into or out of an escalation, around a
-            # blocked LLM or back to it. The history carries the previous
-            # model's reasoning.
-            strip_all_reasoning_artifacts(run.messages)
-        # A switch since the previous request (or restart) left no step
-        # model behind; the artifacts name the model that produced them.
-        strip_foreign_reasoning_artifacts(run.messages, getattr(st.current_llm, "model", None))
         # Before the hooks too: tool_preload runs tools inside them, and a
         # tool that sizes the context asks llm_for_session.
         self._step_llms[run.session_id] = st.current_llm
@@ -192,9 +183,6 @@ class StepLLMMixin:
                 # The first pick may have made this request the prober of
                 # the LLM it now leaves: hand the probe back.
                 model_health.drop_probe(previous_llm, run.request_id)
-                # A model switch either way: the history the hooks worked
-                # on carries the previous model's reasoning items.
-                strip_all_reasoning_artifacts(run.messages)
                 await self._announce_step_llm(run, st)
 
         # Spent only now that it is settled which model answers: a re-pick
@@ -240,13 +228,12 @@ class StepLLMMixin:
                             *, swap_base: bool) -> None:
         """Move the step's call onto a fallback _take_fallback handed out.
 
-        The history loses the reasoning artifacts of the model it leaves (_strip_for_switch). With
+        The history keeps the reasoning of the model it leaves (see the class docstring). With
         *swap_base*, a failure of the run's BASE also makes the fallback the base for the rest of
         the request (a request-scoped swap: the hooks of later steps size the context for it, and
         it is labelled as the fallback); a failed escalation model says nothing about the base, so
         then only this step moves.
         """
-        self._strip_for_switch(profile, run.messages)
         if swap_base and st.current_llm is run.active_llm:
             run.display_profile_info = f"{profile}:fallback"
             run.active_llm = client

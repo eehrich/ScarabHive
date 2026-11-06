@@ -30,8 +30,10 @@ Usage:
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
@@ -93,6 +95,66 @@ def _local_path(value: Any) -> Optional[Path]:
         logger.warning("Multimodal host/device path refused: %s", path)
         return None
     return path
+
+
+# A tool's media as it returned it, by (path, sha256). Every request encodes
+# the history's media again from disk, so a tool rendering again to the same
+# path showed the newer image in the older turn too, a deleted file turned it
+# into "not found", and the prompt cache broke there (measured on one image
+# agent: 23 breaks in 26 sessions within a day).
+# ponytail: per process and capped; after a restart a changed file is dropped
+# from its turn instead (still no wrong image). A snapshot on disk would keep
+# it across restarts, at the price of a store that needs its own cleanup.
+_FROZEN: "OrderedDict[Tuple[str, str], bytes]" = OrderedDict()
+_FROZEN_MAX_BYTES = 256 * 1024 * 1024
+_frozen_size = 0
+
+
+def content_sha256(value: Any, kind: str = "image") -> Optional[str]:
+    """The sha256 of a local media file, or None when there is none to read.
+
+    None as well above the size a request carries for *kind*: such a file is
+    never encoded, and hashing it would only hold up the tool's answer.
+    """
+    path = _local_path(value) if value else None
+    try:
+        if path is None or path.stat().st_size > attach_limit_mb(kind) * 1024 * 1024:
+            return None
+        with path.open("rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
+def _freeze(key: Tuple[str, str], data: bytes) -> None:
+    global _frozen_size
+    if key in _FROZEN or len(data) > _FROZEN_MAX_BYTES:
+        return
+    _FROZEN[key] = data
+    _frozen_size += len(data)
+    while _frozen_size > _FROZEN_MAX_BYTES:
+        _frozen_size -= len(_FROZEN.popitem(last=False)[1])
+
+
+def _frozen_key(item: Any, path: Path) -> Optional[Tuple[str, str]]:
+    sha = getattr(item, "sha256", None) if not isinstance(item, dict) else item.get("sha256")
+    return (str(path), sha) if sha else None
+
+
+def frozen_media(item: Any) -> Optional[bytes]:
+    """The bytes a request sends for *item* although its file is gone, or None."""
+    path = getattr(item, "path", None) if not isinstance(item, dict) else item.get("path")
+    local = _local_path(path) if path else None
+    key = _frozen_key(item, local) if local is not None else None
+    return _FROZEN.get(key) if key else None
+
+
+def _media_available(item: Any, path: Optional[Path]) -> bool:
+    """Whether *item* can still be shown: as frozen, or from its file."""
+    if path is None:
+        return False
+    key = _frozen_key(item, path)
+    return (key is not None and key in _FROZEN) or path.exists()
 
 
 def _convert_audio_for_openai(
@@ -275,33 +337,45 @@ def encode_multimodal_item(
 
     if path is None:
         return None
-    if not path.exists():
-        logger.warning("Multimodal file not found: %s", path)
-        return None
-    
-    # Determine size limit
-    if max_size_mb is None:
-        max_size_mb = (
-            DEFAULT_MAX_AUDIO_SIZE_MB if content_type == "audio" 
-            else DEFAULT_MAX_IMAGE_SIZE_MB
-        )
-    
-    # Check size
-    size_mb = path.stat().st_size / (1024 * 1024)
-    if size_mb > max_size_mb:
-        logger.warning(
-            "Multimodal file too large: %s (%.1f MB > %.1f MB limit)",
-            path, size_mb, max_size_mb
-        )
-        return None
-    
-    # Read file bytes
-    try:
-        file_bytes = path.read_bytes()
-    except Exception as e:
-        logger.error("Failed to read multimodal file %s: %s", path, e)
-        return None
-    
+    key = _frozen_key(item, path)
+    file_bytes = _FROZEN.get(key) if key else None
+    if file_bytes is not None:
+        _FROZEN.move_to_end(key)
+    else:
+        if not path.exists():
+            logger.warning("Multimodal file not found: %s", path)
+            return None
+
+        # Determine size limit
+        if max_size_mb is None:
+            max_size_mb = (
+                DEFAULT_MAX_AUDIO_SIZE_MB if content_type == "audio"
+                else DEFAULT_MAX_IMAGE_SIZE_MB
+            )
+
+        # Check size
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if size_mb > max_size_mb:
+            logger.warning(
+                "Multimodal file too large: %s (%.1f MB > %.1f MB limit)",
+                path, size_mb, max_size_mb
+            )
+            return None
+
+        # Read file bytes
+        try:
+            file_bytes = path.read_bytes()
+        except Exception as e:
+            logger.error("Failed to read multimodal file %s: %s", path, e)
+            return None
+        if key:
+            if hashlib.sha256(file_bytes).hexdigest() != key[1]:
+                # Another file now: showing it would put it into the older turn.
+                logger.warning("Multimodal file changed since its tool returned it: %s", path)
+                return None
+            _freeze(key, file_bytes)
+    size_mb = len(file_bytes) / (1024 * 1024)
+
     # For audio: convert to OpenAI-compatible format if needed
     if content_type == "audio":
         source_format = path.suffix.lstrip(".").lower() or mime_type.split("/")[-1]
@@ -593,7 +667,11 @@ def create_multimodal_injection(
         path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
 
         local = _local_path(path) if path else None
-        if path and (local is None or not local.exists()):
+        # Frozen bytes only reach a vision model; told about a path, a model
+        # without vision would go and read a file that is gone.
+        available = (_media_available(item, local) if supports_vision
+                     else local is not None and local.exists())
+        if path and not available:
             # File doesn't exist (or is a refused host path) - this is an error!
             missing.add(path)
             error_items.append({
