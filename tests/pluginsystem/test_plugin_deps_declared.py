@@ -134,6 +134,9 @@ def _declared(plugin_dir: Path) -> set[str]:
 def _third_party_imports(plugin_dir: Path) -> set[str]:
     stdlib = set(sys.stdlib_module_names)
     found = set()
+    # Script folders (no __init__.py, an eval's build and check scripts) import each other by name, from their own
+    # folder or a neighbour put on sys.path: a module the plugin carries as a script is no pip name.
+    scripts = {py.stem for py in plugin_dir.rglob("*.py") if not (py.parent / "__init__.py").exists()}
     for py in plugin_dir.rglob("*.py"):
         # tests/ and test_suite/ are dev tooling: they never ship to a server
         # venv, and their sibling imports (`from run import ...`) are local
@@ -169,6 +172,8 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
                 # package the open-source checkout does not carry.
                 if top in ("agent_system", "plugins", plugin_dir.parent.name):
                     continue
+                if top in scripts:
+                    continue
                 found.add(top)
     return found
 
@@ -182,6 +187,22 @@ def test_an_import_from_another_plugin_root_is_a_finding(tmp_path):
         "import plugins.other\nimport plugins_extra.thing\nimport agent_system\n", encoding="utf-8")
 
     assert _third_party_imports(plugin) == {"plugins_extra"}
+
+
+def test_a_script_folder_importing_its_neighbours_is_no_finding(tmp_path):
+    """An eval's scripts import each other by name, from a neighbouring folder too; a pip name beside them still
+    counts. In a package folder a bare name is no local module and stays a finding."""
+    plugin = tmp_path / "src" / "plugins" / "probe"
+    (plugin / "evals" / "one").mkdir(parents=True)
+    (plugin / "evals" / "two").mkdir()
+    (plugin / "evals" / "one" / "build.py").write_text("import yaml\n", encoding="utf-8")
+    (plugin / "evals" / "two" / "check.py").write_text("from build import x\nimport numpy\n", encoding="utf-8")
+    (plugin / "pkg").mkdir()
+    (plugin / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (plugin / "pkg" / "helper.py").write_text("", encoding="utf-8")
+    (plugin / "pkg" / "use.py").write_text("import helper\n", encoding="utf-8")
+
+    assert _third_party_imports(plugin) == {"yaml", "numpy", "helper"}
 
 
 def test_scan_covers_packages_without_a_manifest():
