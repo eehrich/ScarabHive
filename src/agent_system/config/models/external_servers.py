@@ -31,12 +31,22 @@ class ExternalServerCacheConfig(BaseModel):
 
 class MCPAuthConfig(BaseModel):
     """Authentication configuration for tool servers"""
-    type: str = "none"  # none, bearer, api_key, basic
+    type: str = "none"  # none, bearer, api_key, basic, oauth
     api_key: Optional[str] = None
     api_key_header: str = "Authorization"
     bearer_token: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+
+    # oauth: the authorization-code flow with PKCE (mcp_client/oauth.py). A server
+    # with dynamic client registration needs none of these; one without (GitHub)
+    # needs the client_id (and client_secret) of an OAuth app made for it.
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    # Where the authorization server sends the browser back: this app's
+    # /plugins/<mcp_client instance>/oauth/callback, at the address the browser
+    # reaches the app on. None: http://<network.host>:<network.port>/...
+    redirect_uri: Optional[str] = None
 
     # Retry settings
     max_retries: int = 3
@@ -73,6 +83,11 @@ class RemoteMCPConfig(BaseModel):
     # (``<name>.*`` or ``<name>.<tool>``) -- a browser server otherwise ran
     # once per CLI worker, for nobody.
     connect: Literal["startup", "on_demand"] = "startup"
+
+    # Offer the server's resources and prompts to agents as tools of the server
+    # (<name>.mcp_read_resource ...). Off by default: on, <name>.* admits them,
+    # and a resource can carry what tools.blocked keeps a tool from reading.
+    resources_and_prompts: bool = False
 
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None

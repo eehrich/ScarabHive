@@ -1889,6 +1889,42 @@
           "default": null,
           "title": "Password"
         },
+        "client_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Id"
+        },
+        "client_secret": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Secret"
+        },
+        "redirect_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Redirect Uri"
+        },
         "max_retries": {
           "default": 3,
           "title": "Max Retries",
@@ -2534,6 +2570,11 @@
           ],
           "title": "Connect",
           "type": "string"
+        },
+        "resources_and_prompts": {
+          "default": false,
+          "title": "Resources And Prompts",
+          "type": "boolean"
         },
         "auth": {
           "anyOf": [

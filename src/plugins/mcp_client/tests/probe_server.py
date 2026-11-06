@@ -7,9 +7,9 @@ asserted against hand-written JSON-RPC dicts instead of a real handshake.
 """
 import base64 as _b64
 
-from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver import Context, Image, MCPServer
 
-mcp = MCPServer("probe")
+mcp = MCPServer("probe", instructions="Use add for sums; the notes resource says more.")
 
 
 @mcp.tool()
@@ -75,6 +75,32 @@ def resource_only():
 
     return [EmbeddedResource(type="resource", resource=TextResourceContents(
         uri="file:///probe/notes.txt", mime_type="text/plain", text="a note"))]
+
+
+@mcp.resource("probe://notes", mime_type="text/plain")
+def notes() -> str:
+    """Notes about the probe."""
+    return "the probe adds numbers"
+
+
+@mcp.resource("probe://item/{item_id}")
+def item(item_id: str) -> str:
+    """One item, by its id."""
+    return f"item {item_id}"
+
+
+@mcp.prompt()
+def greet(name: str) -> str:
+    """A greeting for someone."""
+    return f"Say hello to {name}."
+
+
+@mcp.tool()
+async def grow(ctx: Context) -> str:
+    """Adds the tool 'grown' and tells the client its tools changed."""
+    mcp.add_tool(lambda: "grown up", name="grown", description="Appears at run time.")
+    await ctx.session.send_tool_list_changed()
+    return "grew"
 
 
 if __name__ == "__main__":

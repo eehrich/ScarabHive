@@ -26,6 +26,33 @@ logger = logging.getLogger(__name__)
 #: Seconds an on_demand server that failed to connect is left alone.
 ON_DEMAND_RETRY_S = 300
 
+#: A server's resources and prompts, offered as tools of that server (``<server>.mcp_read_resource``): an
+#: agent reaches them through the same allowlist as the server's tools, ``<server>.*`` included and a
+#: single named tool not. Offered only by a server whose handshake announces them; a tool of the server's
+#: own with the same name wins.
+RESOURCE_TOOLS = {
+    "mcp_list_resources": (
+        "List the resources this server offers (documents, files, records) with their uri, and the "
+        "resource templates whose uri you fill in. Read one with mcp_read_resource.",
+        {"type": "object", "properties": {}}),
+    "mcp_read_resource": (
+        "Read one resource of this server by its uri, from mcp_list_resources or a filled-in template.",
+        {"type": "object", "properties": {"uri": {"type": "string", "description": "The resource's uri"}},
+         "required": ["uri"]}),
+}
+PROMPT_TOOLS = {
+    "mcp_list_prompts": (
+        "List the prompt templates this server offers, with the arguments each takes. Fill one in with "
+        "mcp_get_prompt.",
+        {"type": "object", "properties": {}}),
+    "mcp_get_prompt": (
+        "Fill in one of this server's prompt templates and return its messages.",
+        {"type": "object", "properties": {
+            "name": {"type": "string", "description": "The prompt's name, from mcp_list_prompts"},
+            "arguments": {"type": "object", "description": "The prompt's arguments, by name (string values)"}},
+         "required": ["name"]}),
+}
+
 
 def cap_text(text: str, limit: int) -> str:
     """*text* cut to *limit* characters, marked with its full length."""
@@ -38,8 +65,19 @@ class ExternalServerPool:
     """Owns every live connection to an external MCP server."""
 
     def __init__(self, *, ssl_verify: bool = True, timeout: float = 30.0, cache_ttl: float = 300.0,
-                 max_result_chars: int = 50000, max_description_chars: int = 1024) -> None:
+                 max_result_chars: int = 50000, max_description_chars: int = 1024,
+                 oauth: Any = None, redirect_uri: str = "") -> None:
         self.ssl_verify = ssl_verify
+        #: The OAuth authorizations (oauth.OAuthBroker) and this app's callback address, for the
+        #: servers with ``auth: {type: oauth}``.
+        self.oauth = oauth
+        self.redirect_uri = redirect_uri
+        #: Called (no arguments) when a server says its tools, resources or prompts changed: the
+        #: plugin tells the agent core its catalogue is stale.
+        self.on_catalog_changed: Optional[Any] = None
+        #: Servers whose OAuth authorization waits for a person (mcp_client_authorize): it holds the
+        #: server's connect lock that long, and a connect that may not wait is refused instead.
+        self._authorizing: set = set()
         self.timeout = timeout
         self.cache_ttl = cache_ttl
         #: Foreign text reaches the model unbounded otherwise: a result lands
@@ -111,12 +149,37 @@ class ExternalServerPool:
                 results[name] = None
         return results
 
-    async def connect(self, name: str) -> ServerConnection:
-        """Connect (or reconnect) one configured server."""
+    def redirect_uri_for(self, name: str) -> str:
+        """The callback address an OAuth server sends the browser back to."""
+        auth = getattr(self.configured_servers.get(name), "auth", None)
+        return getattr(auth, "redirect_uri", None) or self.redirect_uri
+
+    def uses_oauth(self, name: str) -> bool:
+        auth = getattr(self.configured_servers.get(name), "auth", None)
+        return getattr(auth, "type", None) == "oauth"
+
+    async def connect(self, name: str, *, interactive: bool = False) -> ServerConnection:
+        """Connect (or reconnect) one configured server. *interactive*: an OAuth server may wait for a
+        person to authorize in a browser (mcp_client_authorize); otherwise it needs tokens that work."""
         config = self.configured_servers.get(name)
         if config is None:
             raise MCPConnectionError(f"External MCP server '{name}' is not configured or not enabled")
 
+        if not interactive and name in self._authorizing:
+            existing = self._connections.get(name)
+            if existing is not None and existing.connected:
+                return existing
+            raise MCPConnectionError(f"External MCP server '{name}' waits for its authorization in a browser; "
+                                     f"it connects once that is done")
+        if interactive:
+            self._authorizing.add(name)
+        try:
+            return await self._connect(name, config, interactive)
+        finally:
+            if interactive:
+                self._authorizing.discard(name)
+
+    async def _connect(self, name: str, config: Any, interactive: bool) -> ServerConnection:
         ticket = (self._epoch, self._name_epochs.get(name, 0))
         # One lock per server: the handshake may take a minute, and the pool
         # lock held that long serialised every other server behind it.
@@ -127,13 +190,26 @@ class ExternalServerPool:
             if existing is not None:
                 await existing.stop()
 
+            http_auth, handshake = None, None
+            if self.uses_oauth(name):
+                if self.oauth is None:
+                    raise MCPConnectionError(f"External MCP server '{name}' uses OAuth, which this pool has not")
+                from .oauth import AUTHORIZE_WAIT_S
+
+                http_auth = self.oauth.provider(name, config, self.redirect_uri_for(name), interactive=interactive)
+                if interactive:
+                    handshake = AUTHORIZE_WAIT_S + 60
             connection = ServerConnection(
                 name, config, ssl_verify=self.ssl_verify,
                 # Per-server timeout wins over the pool default: long-running
                 # tools (a Blender render) died on the global 5s otherwise.
                 timeout=getattr(config, "timeout", None) or self.timeout,
+                http_auth=http_auth, handshake_timeout=handshake,
+                on_list_changed=self._list_changed,
             )
             await connection.start()
+            if http_auth is not None:
+                http_auth.interactive = False   # a person was there for the handshake, not for later
             # A disconnect or close_all that came while we shook hands wins:
             # the connection must not outlive it.
             if (self._epoch, self._name_epochs.get(name, 0)) != ticket:
@@ -224,6 +300,12 @@ class ExternalServerPool:
         self._last_seen.clear()
         self.invalidate_cache()
 
+    def _list_changed(self, name: str, kind: str) -> None:
+        """A server's notification: its tool list -- resources and prompts are tools here too -- is stale."""
+        self.invalidate_cache()
+        if self.on_catalog_changed is not None:
+            self.on_catalog_changed()
+
     # ----------------------------------------------------------------- lookups
 
     def get(self, name: str) -> Optional[ServerConnection]:
@@ -301,6 +383,14 @@ class ExternalServerPool:
                 }
                 for tool in tools
             ]
+            own = {tool.name for tool in tools}
+            caps = connection.capabilities if getattr(config, "resources_and_prompts", False) else {}
+            for offered, table in (("resources", RESOURCE_TOOLS), ("prompts", PROMPT_TOOLS)):
+                if offered not in caps:
+                    continue
+                result[name] += [{"name": tool, "description": description, "input_schema": schema,
+                                  "blocked": tool in blocked, "synthetic": True}
+                                 for tool, (description, schema) in table.items() if tool not in own]
             self._last_seen[name] = result[name]
 
         # Only a complete answer is worth caching. Caching a partial one would
@@ -326,14 +416,15 @@ class ExternalServerPool:
             connection = await self._restart(server_name, connection)
         if connection is None or not connection.connected:
             raise MCPConnectionError(f"External MCP server '{server_name}' is not connected")
+        synthetic = self._is_synthetic(server_name, tool_name)
         try:
             try:
-                result = await connection.call_tool(tool_name, arguments)
+                result = await self._call(connection, tool_name, arguments, synthetic)
             except MCPServerGone as gone:
                 if not gone.unsent:
                     raise                     # it reached the server: repeating could do it twice
                 connection = await self._restart(server_name, connection)
-                result = await connection.call_tool(tool_name, arguments)
+                result = await self._call(connection, tool_name, arguments, synthetic)
         except Exception as e:
             # A server's error text reaches the model as str(e): same cap.
             # The type is kept where it can be built from the text alone
@@ -357,6 +448,40 @@ class ExternalServerPool:
         text = json.dumps(result, ensure_ascii=False, default=str)
         return cap_text(text, self.max_result_chars) if len(text) > self.max_result_chars else result
 
+    def _is_synthetic(self, server: str, tool: str) -> bool:
+        """Whether *tool* is one of the resource or prompt tools this pool offers for *server*."""
+        if tool not in RESOURCE_TOOLS and tool not in PROMPT_TOOLS:
+            return False
+        if not getattr(self.configured_servers.get(server), "resources_and_prompts", False):
+            return False
+        listed = self._last_seen.get(server)
+        if listed is None:      # not listed yet: what the server announced decides
+            connection = self._connections.get(server)
+            caps = connection.capabilities if connection else {}
+            return ("resources" in caps) if tool in RESOURCE_TOOLS else ("prompts" in caps)
+        return any(t["name"] == tool and t.get("synthetic") for t in listed)
+
+    @staticmethod
+    async def _call(connection: ServerConnection, tool: str, arguments: Dict[str, Any], synthetic: bool) -> Any:
+        if not synthetic:
+            return await connection.call_tool(tool, arguments)
+        if tool == "mcp_list_resources":
+            return await connection.list_resources()
+        if tool == "mcp_read_resource":
+            uri = arguments.get("uri")
+            if not uri:
+                raise ValueError("mcp_read_resource needs the argument 'uri'")
+            return await connection.read_resource(str(uri))
+        if tool == "mcp_list_prompts":
+            return {"prompts": await connection.list_prompts()}
+        name = arguments.get("name")
+        if not name:
+            raise ValueError("mcp_get_prompt needs the argument 'name'")
+        prompt_args = arguments.get("arguments")
+        if prompt_args is not None and not isinstance(prompt_args, dict):
+            raise ValueError("mcp_get_prompt: 'arguments' is an object of the prompt's arguments by name")
+        return await connection.get_prompt(str(name), prompt_args)
+
     # ------------------------------------------------------------------ status
 
     def status(self) -> Dict[str, Dict[str, Any]]:
@@ -373,5 +498,9 @@ class ExternalServerPool:
                 "connected": bool(connection and connection.connected),
                 "server_info": connection.server_info if connection else {},
                 "protocol_version": connection.protocol_version if connection else None,
+                # Foreign text: capped like a tool description, and only here -- it is not put into
+                # any agent's prompt (it would ride along in every request of every agent).
+                "instructions": cap_text(connection.instructions, self.max_description_chars)
+                if connection and connection.instructions else None,
             }
         return out

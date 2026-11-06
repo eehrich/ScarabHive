@@ -22,6 +22,7 @@ same shape the core has always seen.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, TYPE_CHECKING
 
@@ -30,6 +31,7 @@ from agent_system.plugins import capabilities
 
 from .connection import MCPConnectionError
 from .manager import ExternalServerPool
+from .oauth import AUTHORIZE_WAIT_S, OAuthBroker
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -57,15 +59,39 @@ class MCPClientServer(SchemaBasedToolServer):
         connection_cfg = getattr(external, "connection", None) if external else None
         cache_cfg = getattr(external, "cache", None) if external else None
 
+        self.oauth = OAuthBroker(authorize_tool=f"{name}_authorize")
+        host = getattr(network, "host", None) or "127.0.0.1"
+        port = getattr(network, "port", None) or 8000
+        #: Where an authorization server sends the browser back (oauth.py); a server's own
+        #: auth.redirect_uri wins -- the address the browser reaches this app on.
+        self.default_redirect_uri = f"http://{host}:{port}{self.callback_path}"
+        #: Authorizations running in the background, kept until they end (a task nobody holds is collected).
+        self._authorizations: Dict[str, asyncio.Task] = {}
+
         self.pool = ExternalServerPool(
             ssl_verify=getattr(network, "ssl_verify", True) if network else True,
             timeout=getattr(connection_cfg, "timeout", 30.0) if connection_cfg else 30.0,
             cache_ttl=getattr(cache_cfg, "tool_list_ttl", 300.0) if cache_cfg else 300.0,
             max_result_chars=_positive_int(getattr(server_config, "max_result_chars", None), 50000),
             max_description_chars=_positive_int(getattr(server_config, "max_description_chars", None), 1024),
+            oauth=self.oauth, redirect_uri=self.default_redirect_uri,
         )
+        self.pool.on_catalog_changed = self._catalog_changed
         if external is not None:
             self.pool.configure(getattr(external, "remote_servers", None) or {})
+
+    @property
+    def callback_path(self) -> str:
+        return f"/plugins/{self.name}/oauth/callback"
+
+    def _catalog_changed(self) -> None:
+        """A server changed its tools: the agent core lists them afresh (scheduled -- called from the
+        connection's notification handler, which must not wait)."""
+        capabilities.notify_tool_catalog_changed()   # schedules its async listeners and keeps them
+
+    def get_web_router(self):
+        from .web import build_router
+        return build_router(self)
 
     # --------------------------------------------------------------- lifecycle
 
@@ -96,6 +122,10 @@ class MCPClientServer(SchemaBasedToolServer):
     async def stop_plugin(self) -> None:
         """Close every connection and withdraw the capability."""
         capabilities.unregister_provider(capabilities.EXTERNAL_TOOLS, self)
+        for task in self._authorizations.values():
+            task.cancel()                       # an authorization waiting for a browser ends with us
+        await asyncio.gather(*self._authorizations.values(), return_exceptions=True)
+        self._authorizations.clear()
         await self.pool.close_all()
         # Await the invalidation: the caller's next tool listing must see
         # the new catalog, not a cache that a scheduled task has not
@@ -170,6 +200,63 @@ class MCPClientServer(SchemaBasedToolServer):
             "server_info": connection.server_info,
             "protocol_version": connection.protocol_version,
         }
+
+    async def authorize(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Tool: start the OAuth authorization of one server and hand out the link a person opens."""
+        name = params.get("server")
+        scope = params.get("_status")
+        if not name:
+            return {"success": False, "error": "Parameter 'server' is required"}
+        if name not in self.pool.configured_servers:
+            return {"success": False, "server": name,
+                    "error": f"External MCP server '{name}' is not configured or not enabled"}
+        if not self.pool.uses_oauth(name):
+            return {"success": False, "server": name,
+                    "error": f"External MCP server '{name}' does not use auth type oauth"}
+        connection = self.pool.get(name)
+        if connection is not None and connection.connected:
+            if scope:
+                await scope.end(f"{name}: connected already")
+            return {"success": True, "server": name, "message": "connected already; nothing to authorize"}
+        running = self._authorizations.get(name)
+        event = self.oauth.url_event(name)
+        if running is None or running.done():
+            event.clear()
+            self.oauth.urls.pop(name, None)
+            running = asyncio.create_task(self._authorize(name), name=f"mcp-authorize:{name}")
+            # Its failure is logged in _authorize; read here, it is no "never retrieved" either.
+            running.add_done_callback(lambda task: task.cancelled() or task.exception())
+            self._authorizations[name] = running
+        waiter = asyncio.create_task(event.wait())
+        try:
+            await asyncio.wait({running, waiter}, timeout=60, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        url = self.oauth.urls.get(name)
+        if url and not running.done():
+            if scope:
+                await scope.end(f"{name}: waiting for authorization in a browser")
+            return {"success": True, "server": name, "authorize_url": url,
+                    "message": (f"Open authorize_url in a browser and allow access within "
+                                f"{AUTHORIZE_WAIT_S / 60:.0f} minutes; the server connects then. The browser "
+                                f"is sent back to {self.pool.redirect_uri_for(name)} -- it has to reach this app there.")}
+        if running.done():
+            error = running.exception()
+            if error is None:
+                if scope:
+                    await scope.end(f"{name}: connected, the stored authorization still works")
+                return {"success": True, "server": name, "message": "connected with the stored authorization"}
+            return {"success": False, "server": name, "error": str(error)}
+        return {"success": False, "server": name,
+                "error": "the authorization server did not hand out a link within 60s; try again"}
+
+    async def _authorize(self, name: str) -> None:
+        try:
+            await self.pool.connect(name, interactive=True)
+        except Exception as e:
+            logger.warning("MCP server '%s': authorization failed: %s", name, e)
+            raise
+        await capabilities.anotify_tool_catalog_changed()
 
     async def disconnect(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Tool: close one server's connection."""

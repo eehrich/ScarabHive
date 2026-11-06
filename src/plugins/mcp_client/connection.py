@@ -135,12 +135,23 @@ class ServerConnection:
         ssl_verify: bool = True,
         timeout: float = 30.0,
         client_name: str = "AgentSystem",
+        http_auth: Any = None,
+        handshake_timeout: Optional[float] = None,
+        on_list_changed: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self.name = name
         self.config = config
         self.ssl_verify = ssl_verify
         self.timeout = timeout
         self.client_name = client_name
+        #: An httpx2.Auth for the HTTP transports (OAuth, oauth.py); None: the headers of auth: only.
+        self.http_auth = http_auth
+        #: How long start() waits for the handshake; None: max(timeout, _HANDSHAKE_FLOOR). An OAuth
+        #: authorization waits for a person in a browser.
+        self.handshake_timeout = handshake_timeout
+        #: Told (server, "tools" | "resources" | "prompts") when the server says a list of it changed.
+        self.on_list_changed = on_list_changed
+        self._instructions: Optional[str] = None
 
         self._commands: asyncio.Queue[Optional[_Command]] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
@@ -170,6 +181,11 @@ class ServerConnection:
     def protocol_version(self) -> Optional[str]:
         return self._protocol_version
 
+    @property
+    def instructions(self) -> Optional[str]:
+        """What the server's initialize answer says about using it; None if it says nothing."""
+        return self._instructions
+
     # --------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
@@ -198,7 +214,7 @@ class ServerConnection:
             # forever. The HTTP transports were bounded by httpx2; stdio not.
             # The floor: a stdio program has to start first (npx may download
             # its package), and self.timeout is sized for answers, not that.
-            limit = max(self.timeout, _HANDSHAKE_FLOOR)
+            limit = self.handshake_timeout or max(self.timeout, _HANDSHAKE_FLOOR)
             await asyncio.wait_for(self._ready, timeout=limit)
         except asyncio.TimeoutError:
             task, self._task = self._task, None
@@ -264,7 +280,7 @@ class ServerConnection:
                 from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 
                 self._dispatcher = JSONRPCDispatcher(read_stream, write_stream)
-                async with ClientSession(dispatcher=self._dispatcher) as session:
+                async with ClientSession(dispatcher=self._dispatcher, message_handler=self._on_message) as session:
                     init = await session.initialize()
                     self._record_handshake(init)
                     if init.capabilities.tools is not None:
@@ -443,6 +459,8 @@ class ServerConnection:
             from mcp import StdioServerParameters
             from mcp.client.stdio import stdio_client
 
+            if self.http_auth is not None:
+                raise MCPConnectionError(f"MCP server '{self.name}': OAuth is for servers over HTTP, not stdio")
             command = getattr(self.config, "command", None)
             if not command:
                 raise MCPConnectionError(
@@ -472,6 +490,7 @@ class ServerConnection:
                 headers=headers or None,
                 timeout=self.timeout,
                 httpx_client_factory=self._httpx_factory(),
+                auth=self.http_auth,
             ) as streams:
                 yield streams[0], streams[1]
             return
@@ -486,7 +505,7 @@ class ServerConnection:
         # read: a server answering with plain JSON sends nothing until the tool is
         # done, so no shorter than the server's own timeout (scarab: 900 s)
         client = self._httpx_factory()(headers=headers or None, timeout=httpx2.Timeout(
-            self.timeout, read=max(self.timeout, MCP_DEFAULT_SSE_READ_TIMEOUT)))
+            self.timeout, read=max(self.timeout, MCP_DEFAULT_SSE_READ_TIMEOUT)), auth=self.http_auth)
         async with client, streamable_http_client(url, http_client=client) as streams:
             yield streams[0], streams[1]
 
@@ -528,6 +547,20 @@ class ServerConnection:
             )
         return headers
 
+    async def _on_message(self, message: Any) -> None:
+        """A server's notification: a changed list of tools, resources or prompts drops what is cached."""
+        from mcp import types
+
+        kinds = ((types.ToolListChangedNotification, "tools"),
+                 (types.ResourceListChangedNotification, "resources"),
+                 (types.PromptListChangedNotification, "prompts"))
+        for cls, kind in kinds:
+            if isinstance(message, cls):
+                logger.info("MCP server '%s': its %s changed", self.name, kind)
+                if self.on_list_changed is not None:
+                    self.on_list_changed(self.name, kind)
+                return
+
     def _record_handshake(self, init: Any) -> None:
         info = getattr(init, "server_info", None)
         self._server_info = {
@@ -535,6 +568,7 @@ class ServerConnection:
             "version": getattr(info, "version", None),
         }
         self._protocol_version = getattr(init, "protocol_version", None)
+        self._instructions = getattr(init, "instructions", None) or None
         caps = getattr(init, "capabilities", None)
         # by_alias: the protocol's own names (listChanged), as the status tools always showed them
         self._capabilities = caps.model_dump(exclude_none=True, by_alias=True) if hasattr(caps, "model_dump") else {}
@@ -559,6 +593,58 @@ class ServerConnection:
             ]
 
         return await self._submit(run)
+
+    async def list_resources(self) -> Dict[str, Any]:
+        """The server's resources and resource templates, a page at most _MAX_PAGES deep each."""
+        async def run(session: Any) -> Dict[str, Any]:
+            resources = await _all_pages(session.list_resources, "resources")
+            try:
+                templates = await _all_pages(session.list_resource_templates, "resource_templates")
+            except Exception as e:  # noqa: BLE001 - optional in the protocol: a server may not answer it
+                logger.info("MCP server '%s' lists no resource templates: %s", self.name, _describe(e))
+                templates = []
+            return {"resources": [_dump(r) for r in resources], "templates": [_dump(t) for t in templates]}
+
+        return await self._submit(run)
+
+    async def read_resource(self, uri: str) -> Any:
+        """One resource's contents: its text, binary parts named with their type and size."""
+        async def run(session: Any) -> Any:
+            return await session.read_resource(uri)
+
+        result = await self._submit(run)
+        parts = []
+        for item in getattr(result, "contents", None) or []:
+            text = getattr(item, "text", None)
+            if text is not None:
+                parts.append(text)
+            else:
+                size = len(getattr(item, "blob", "") or "") * 3 // 4
+                parts.append(f"[binary content {getattr(item, 'mime_type', None) or 'of unknown type'}, "
+                             f"about {size} bytes, not shown: {getattr(item, 'uri', uri)}]")
+        return "\n\n".join(parts) if parts else f"[resource {uri} has no content]"
+
+    async def list_prompts(self) -> List[Dict[str, Any]]:
+        async def run(session: Any) -> List[Dict[str, Any]]:
+            return [_dump(p) for p in await _all_pages(session.list_prompts, "prompts")]
+
+        return await self._submit(run)
+
+    async def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> str:
+        """A prompt the server fills in, as its messages one after the other (role: text)."""
+        args = {str(k): str(v) for k, v in (arguments or {}).items()}
+
+        async def run(session: Any) -> Any:
+            return await session.get_prompt(name, args or None)
+
+        result = await self._submit(run)
+        lines = [f"[{getattr(result, 'description', '')}]"] if getattr(result, "description", None) else []
+        for message in getattr(result, "messages", None) or []:
+            content = getattr(message, "content", None)
+            text = getattr(content, "text", None)
+            lines.append(f"{getattr(message, 'role', '?')}: "
+                         f"{text if text is not None else '[' + str(getattr(content, 'type', 'content')) + ']'}")
+        return "\n\n".join(lines)
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Call *name* and return its text blocks, or the raw payload.
@@ -641,6 +727,31 @@ class ServerConnection:
             await publish_status(self.name, message, request_id=request_id, phase=phase, meta=meta)
         except Exception:
             logger.debug("publish_status failed for %s on '%s'", message, self.name)
+
+
+#: Pages of a resource or prompt listing read at most: a server that pages forever ends there.
+_MAX_PAGES = 10
+
+
+async def _all_pages(method: Callable[..., Awaitable[Any]], field_name: str) -> List[Any]:
+    from mcp import types
+
+    items: List[Any] = []
+    cursor = None
+    for _ in range(_MAX_PAGES):
+        result = await method(params=types.PaginatedRequestParams(cursor=cursor) if cursor else None)
+        items.extend(getattr(result, field_name, None) or [])
+        cursor = getattr(result, "next_cursor", None)
+        if not cursor:
+            break
+    return items
+
+
+def _dump(item: Any) -> Dict[str, Any]:
+    """A listing entry in the protocol's own field names (mimeType, uriTemplate)."""
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="json", exclude_none=True, by_alias=True)
+    return dict(item)
 
 
 def _describe(error: BaseException) -> str:

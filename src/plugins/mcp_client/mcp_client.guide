@@ -37,7 +37,7 @@ For agents and developers
 @node commands "Chat commands"
 @{h1}Chat commands
 
-Four commands at the chat prompt run the plugin's management tools
+Five commands at the chat prompt run the plugin's management tools
 through the agent's own dispatch. They work only for an agent whose
 allowlist grants @{tt}mcp_client/*@{utt}.
 
@@ -45,6 +45,7 @@ allowlist grants @{tt}mcp_client/*@{utt}.
 Command | Does
 /mcp | the enabled servers with connection state, transport and protocol version
 /mcp-connect <server> | connect a server, or reconnect one whose connection dropped
+/mcp-authorize <server> | authorize a server that uses OAuth: gives the link to open in a browser
 /mcp-disconnect <server> | close a server's connection
 /mcp-tools [server] | the tools the connected servers offer, blocked ones marked
 @{body}
@@ -182,6 +183,29 @@ fails is not tried again for five minutes; calls in that time answer
 in Ns". A restarted HTTP server that forgot the session gets a new one.
 A dead server's tools stay in the agents' tool list.
 
+A server that says its tools, resources or prompts changed
+(@{tt}list_changed@{utt}) has its list dropped at once: the next run
+lists them afresh instead of waiting out @{tt}tool_list_ttl@{utt}.
+
+@{h2}Resources and prompts
+
+A server with @{tt}resources_and_prompts: true@{utt} in its entry -- off
+by default -- whose handshake announces resources gets two more tools,
+@{tt}<server>.mcp_list_resources@{utt} (its resources with their uri, and
+the resource templates whose uri you fill in) and
+@{tt}<server>.mcp_read_resource@{utt} (uri: the text of one; a binary
+part is named with its type and size, not shown). One that announces
+prompts gets @{tt}<server>.mcp_list_prompts@{utt} and
+@{tt}<server>.mcp_get_prompt@{utt} (name, arguments: the filled-in
+messages, one "role: text" after the other). They are the server's tools
+for the allowlist: @{tt}<server>.*@{utt} admits them, a single named tool
+does not, and @{tt}tools.blocked@{utt} blocks them by these names. That is
+why they are off by default: a resource can carry what a blocked tool was
+kept from reading (a repository's files, say), and an allowlist written
+before must not widen by itself. A tool
+of the server's own with the same name wins. A listing reads at most ten
+pages.
+
 A server closed on purpose -- @{tt}/mcp-disconnect@{utt}, the management
 tool, the process shutting down -- is not started again by a call: its
 calls fail with "External MCP server '<server>' is not connected" until
@@ -192,13 +216,14 @@ names it.
 @node tools "The management tools"
 @{h1}The management tools
 
-Four tools, named after the plugin instance (@{tt}mcp_client_...@{utt} in
+Five tools, named after the plugin instance (@{tt}mcp_client_...@{utt} in
 the default setup). They need @{tt}mcp_client/*@{utt} in the allowlist.
 
 @{table}
 Tool | Parameters | Answers
-mcp_client_list_servers | none | servers (name, description, url, transport, enabled, connected, server_info, protocol_version), connected (names), total
+mcp_client_list_servers | none | servers (name, description, url, transport, enabled, connected, server_info, protocol_version, instructions), connected (names), total
 mcp_client_connect | server (required) | success, server, server_info (name, version), protocol_version
+mcp_client_authorize | server (required) | success, server, authorize_url and a message -- or "connected already" / "connected with the stored authorization"
 mcp_client_disconnect | server (required) | success, server, message: "disconnected" or "was not connected"
 mcp_client_tools | server (optional), force_refresh | servers: name to a list of name, description, input_schema, blocked; total
 @{body}
@@ -211,6 +236,11 @@ configured or not enabled", "Could not connect to MCP server '<server>':
 <cause>", "MCP server '<server>' did not complete the handshake within
 Ns", "... has unknown transport ...", "... has no url configured",
 "... uses transport 'stdio' but has no 'command' configured".
+@{bullet}@{tt}instructions@{utt} is what the server's handshake says about
+using it, cut at @{tt}max_description_chars@{utt}; it goes into no
+agent's prompt (see @{" What the model sees " link model}).
+@{bullet}@{tt}authorize@{utt} works for a server with @{tt}auth: {type:
+oauth}@{utt} only, see @{" Setting it up " link setup}.
 @{bullet}@{tt}disconnect@{utt} with a server that was not connected
 answers @{tt}success: false@{utt}, "was not connected" -- an answer, not
 an error.
@@ -253,7 +283,20 @@ version fetches whatever is newest on every start.
 
 @{tt}auth@{utt} adds a header: @{tt}bearer@{utt} (Authorization: Bearer),
 @{tt}api_key@{utt} (the key in @{tt}api_key_header@{utt}, default
-Authorization) or @{tt}basic@{utt}. HTTPS certificates are checked when
+Authorization) or @{tt}basic@{utt}. With @{tt}oauth@{utt} a person
+authorizes once in a browser; the access and refresh token are then kept
+in @{tt}mcp_client/oauth/<server>.json@{utt} in the data directory and
+refreshed without anyone. On Linux and macOS the file is readable by the
+server's user only; on Windows it takes the rights of the data folder,
+which on a default install every signed-in user of the machine may read
+and change -- restrict that folder there. Two processes (the API and an
+@{tt}agent-cli@{utt}) refresh the same file; a server that rotates refresh
+tokens and revokes on reuse may then withdraw the authorization, and
+@{tt}/mcp-authorize@{utt} is needed again. Whoever opens the authorization link
+decides which account the server acts as -- for every user of the
+process. The link is handed to whoever ran @{tt}/mcp-authorize@{utt}
+(and to the model when an agent calls the tool): it is the start of a
+login, not a secret, but only the first answer to it counts. HTTPS certificates are checked when
 @{tt}network.ssl_verify@{utt} is true, as the shipped
 @{tt}config/config.yaml@{utt} sets it. A configuration without that key
 checks NO certificates -- the setting's default is false. Redirects are
@@ -333,8 +376,16 @@ tool definitions change when a server connects, drops or disconnects,
 or updates its tools -- then the tools section of the next call differs
 and the provider's prompt cache starts again from there.
 
+A server's @{tt}instructions@{utt} -- what its handshake says about
+using it -- are not put into any agent's prompt: foreign text there
+would ride along in every request of every agent. They are shown by
+@{tt}mcp_client_list_servers@{utt}.
+
 @{h2}Known gaps
 
+@{bullet}A server that asks the user for input during a call
+(elicitation) or asks the client's model (sampling) is told no: there is
+no way yet to hand such a question to the person watching the run.
 @{bullet}Two external tools whose names differ only in characters that
 are removed or replaced (@{tt}a.b_c@{utt} and @{tt}a_b.c@{utt}) get the
 same name for the model.
@@ -401,10 +452,52 @@ transport | streaming | streaming, streamable_http, streamable-http, http, smith
 url | empty | the endpoint, for the HTTP transports
 command, args, env | none | the program, its arguments and extra environment, for stdio
 timeout | the connection timeout | seconds for the handshake and for each answer
-auth | none | type none, bearer, api_key or basic, with bearer_token, api_key and api_key_header (Authorization), username and password
+auth | none | type none, bearer, api_key, basic or oauth, with bearer_token, api_key and api_key_header (Authorization), username and password; for oauth client_id and client_secret (a server without dynamic registration, such as GitHub's) and redirect_uri. The scopes are the ones the server asks for
+resources_and_prompts | false | offer the server's resources and prompts as its tools, see @{" External tools " link external}
 tools.blocked | none | tool names a call is refused for
 description | none | shown in the server listing
 @{body}
+
+@{h2}A server behind OAuth
+
+@{code yaml}
+    tracker:
+      enabled: true
+      transport: streaming
+      url: "https://mcp.example.com/v1/mcp"
+      connect: on_demand
+      auth:
+        type: oauth
+        # client_id: "${TRACKER_MCP_CLIENT_ID}"   # only without dynamic registration
+        # redirect_uri: "https://hive.example.org/plugins/mcp_client/oauth/callback"
+@{body}
+
+@{tt}/mcp-authorize tracker@{utt} answers with a link. Open it in a browser
+and allow access within ten minutes; the authorization server sends the
+browser back to this app's @{tt}/plugins/mcp_client/oauth/callback@{utt}
+and the server connects. That address has to be the one the browser
+reaches the app on: without @{tt}redirect_uri@{utt} it is
+@{tt}http://<network.host>:<network.port>/...@{utt}, which a browser on
+another machine does not reach -- set it, and when
+@{tt}network.remote_paths@{utt} restricts what other machines may reach,
+add the callback path. With authentication on, the callback is a route
+like any other: the browser has to be signed in to the app at that very
+address (the same host name as in @{tt}redirect_uri@{utt}), or it gets a
+401 and the authorization runs out after ten minutes. The authorization
+can be started from @{tt}agent-cli@{utt} too: the waiting flow and the
+callback meet in files in the data directory, not in one process.
+
+Until then, and when the refresh token stops working, a connect fails at
+once with "MCP server 'tracker' needs authorization: call
+mcp_client_authorize ...". While an authorization waits for the browser,
+other connects of that server -- a run that names an on_demand server --
+are refused with "... waits for its authorization in a browser" instead
+of waiting with it; a connection the authorization made does not wait for
+a person again later. Changing @{tt}redirect_uri@{utt} or the port keeps
+the authorization as long as its refresh works; an authorization needed
+after that answers that the old registration was dropped, and the next
+@{tt}/mcp-authorize@{utt} registers the client for the new address. Deleting the
+server's file in @{tt}mcp_client/oauth/@{utt} forgets the authorization.
 
 Read but without effect: @{tt}initialization_options@{utt} (the protocol
 has no such field; connecting logs a warning that it is not sent),

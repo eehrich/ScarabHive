@@ -19,6 +19,17 @@ tools:
         required: [server]
   - type: function
     function:
+      name: "{{ name }}_authorize"
+      description: Start the OAuth authorization of an external MCP server configured with auth type oauth. Returns a link a person opens in a browser to allow access; the server connects once that is done.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Name of the server as configured under external_servers.remote_servers
+        required: [server]
+  - type: function
+    function:
       name: "{{ name }}_disconnect"
       description: Close the connection to one external MCP server.
       parameters:
@@ -62,6 +73,11 @@ commands:
   - name: mcp-connect
     description: "connect or reconnect one external MCP server"
     tool: "{{ name }}_connect"
+    argument: server
+    argument_hint: "<server>"
+  - name: mcp-authorize
+    description: "authorize an external MCP server that uses OAuth (gives a link to open)"
+    tool: "{{ name }}_authorize"
     argument: server
     argument_hint: "<server>"
   - name: mcp-disconnect
