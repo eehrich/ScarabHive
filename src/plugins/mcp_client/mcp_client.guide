@@ -206,6 +206,38 @@ before must not widen by itself. A tool
 of the server's own with the same name wins. A listing reads at most ten
 pages.
 
+@{h2}When a server asks the person
+
+A server may ask the person something in the middle of one of its tools
+(MCP elicitation): a short form, or an address to open. The question
+appears in the chat on a line of its own in the run, as "MCP server
+'<server>' asks: ...", and is answered there like ask_user's. A form is
+asked field by field ("1/2: Seats", with its default if it has one): a
+choice field by its options (yes / no for a yes-no field, several to tick
+for a list of options), a text or number field in the answer box, an
+optional field with Skip besides; no field at all is OK. An address --
+only a plain http(s) one with a host, no invisible characters and no
+"user@" before the host, shown as text, not as a link -- is answered with
+Done after opening it. Decline always. An answer that does not fit (not a
+number, not one of the options, outside the field's minimum and maximum,
+its length or format -- email, uri, date, date-time) is refused with the
+reason, so it can be corrected; the server only gets values of the types
+it asked for. While the question waits, the call's timeout does not run out; the
+run's cancellation ends it, and so does the end of the call it came with.
+
+The server hears "cancel" -- nobody was asked, nobody refused -- when
+nobody watches the run (a job, the API), when the call was not an
+agent's own, when two calls of that server are in flight at that moment
+and the question could be either's, when it asks while a question of its
+is still open, after three questions in one call, for more than ten
+fields, for a field the chat cannot ask (an object, a list without
+options or of numbers, more than 25 options or one longer than 200
+characters), for an
+address that is no plain one, and when no answer comes within
+@{tt}elicitation_timeout@{utt} (300 s).
+@{tt}elicitation: false@{utt} in the plugin's entry offers no questions
+at all; a server then gets the protocol's refusal.
+
 A server closed on purpose -- @{tt}/mcp-disconnect@{utt}, the management
 tool, the process shutting down -- is not started again by a call: its
 calls fail with "External MCP server '<server>' is not connected" until
@@ -383,9 +415,9 @@ would ride along in every request of every agent. They are shown by
 
 @{h2}Known gaps
 
-@{bullet}A server that asks the user for input during a call
-(elicitation) or asks the client's model (sampling) is told no: there is
-no way yet to hand such a question to the person watching the run.
+@{bullet}A server that asks the client's model (sampling) is told no: it
+would spend the installation's model budget on a foreign server's
+behalf.
 @{bullet}Two external tools whose names differ only in characters that
 are removed or replaced (@{tt}a.b_c@{utt} and @{tt}a_b.c@{utt}) get the
 same name for the model.
@@ -513,6 +545,8 @@ not a positive whole number means the default.
 Key | Default | Meaning
 max_result_chars | 50000 | characters of an external answer the model gets; the rest is cut
 max_description_chars | 1024 | characters of a foreign tool description; it is sent with every request of every agent that allows the tool
+elicitation | true | whether a server may ask the person during a call (false: the client does not offer it)
+elicitation_timeout | 300 | seconds a server's question waits for an answer
 @{body}
 
 @{h2}Shared settings

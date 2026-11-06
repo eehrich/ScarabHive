@@ -54,6 +54,9 @@ _HANDSHAKE_FLOOR = 60.0
 _WARM_UP_SECONDS = 10.0
 
 
+#: Questions one call's server may put to the person (MCP elicitation); more are cancelled unasked.
+MAX_QUESTIONS_PER_CALL = 3
+
 class MCPConnectionError(RuntimeError):
     """Raised when a server cannot be reached or refuses the handshake."""
 
@@ -138,6 +141,7 @@ class ServerConnection:
         http_auth: Any = None,
         handshake_timeout: Optional[float] = None,
         on_list_changed: Optional[Callable[[str, str], None]] = None,
+        elicit: Optional[Callable[[str, Any, Any], Awaitable[Any]]] = None,
     ) -> None:
         self.name = name
         self.config = config
@@ -151,6 +155,17 @@ class ServerConnection:
         self.handshake_timeout = handshake_timeout
         #: Told (server, "tools" | "resources" | "prompts") when the server says a list of it changed.
         self.on_list_changed = on_list_changed
+        #: Asks the person for the server (elicitation.Elicitation.ask): (server, call, params) -> ElicitResult.
+        #: None: the client does not offer elicitation at all.
+        self.elicit = elicit
+        #: The external calls in flight on this connection (request_context.ExternalCall or None), by a
+        #: ticket of their own: whom a server's question goes to (manager.py keeps it).
+        self.callers: Dict[int, Any] = {}
+        #: Questions of the server's waiting for a person: a call's timeout does not run out meanwhile.
+        self._asking = 0
+        #: Questions asked per call (by its ticket in ``callers``), and the one open now, by ticket.
+        self._asked: Dict[int, int] = {}
+        self._questions: Dict[int, asyncio.Future] = {}
         self._instructions: Optional[str] = None
 
         self._commands: asyncio.Queue[Optional[_Command]] = asyncio.Queue()
@@ -280,7 +295,8 @@ class ServerConnection:
                 from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 
                 self._dispatcher = JSONRPCDispatcher(read_stream, write_stream)
-                async with ClientSession(dispatcher=self._dispatcher, message_handler=self._on_message) as session:
+                async with ClientSession(dispatcher=self._dispatcher, message_handler=self._on_message,
+                                         elicitation_callback=self._on_elicit if self.elicit else None) as session:
                     init = await session.initialize()
                     self._record_handshake(init)
                     if init.capabilities.tools is not None:
@@ -430,13 +446,21 @@ class ServerConnection:
             raise MCPConnectionError(f"MCP server '{self.name}' is not connected")
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         await self._commands.put(_Command(run=run, future=future))
-        try:
-            return await asyncio.wait_for(future, timeout=timeout or self.timeout)
-        except asyncio.TimeoutError:
-            future.cancel()
-            raise MCPConnectionError(
-                f"MCP server '{self.name}' did not answer within {timeout or self.timeout}s"
-            ) from None
+        while True:
+            try:
+                return await asyncio.wait_for(asyncio.shield(future), timeout=timeout or self.timeout)
+            except asyncio.TimeoutError:
+                if self._asking:
+                    # The server waits for the person it asked, and so does the call: its
+                    # timeout is for a server that does not answer, not for a person thinking.
+                    continue
+                future.cancel()
+                raise MCPConnectionError(
+                    f"MCP server '{self.name}' did not answer within {timeout or self.timeout}s"
+                ) from None
+            except asyncio.CancelledError:
+                future.cancel()
+                raise
 
     # --------------------------------------------------------------- transport
 
@@ -546,6 +570,54 @@ class ServerConnection:
                 self.name,
             )
         return headers
+
+    async def _on_elicit(self, context: Any, params: Any) -> Any:
+        """The server asks the person (elicitation): the one call in flight decides whom."""
+        from mcp import types
+
+        callers = list(self.callers.items())
+        if len(callers) != 1:
+            # Two calls at once: the question could be either's -- asking one of them would show one
+            # person what the other's call is about. "cancel": nobody refused, nobody was asked.
+            logger.warning("MCP server '%s' asked the person with %d calls in flight: cancelled",
+                           self.name, len(callers))
+            return types.ElicitResult(action="cancel")
+        ticket, call = callers[0]
+        self._asked = {t: n for t, n in self._asked.items() if t in self.callers}
+        if self._asking or self._asked.get(ticket, 0) >= MAX_QUESTIONS_PER_CALL:
+            # One question at a time, and a few per call: a server is not to flood the person, nor
+            # keep a call alive by asking again and again (its timeout waits while a question is open).
+            logger.warning("MCP server '%s' asked again while asking, or too often in one call: cancelled",
+                           self.name)
+            return types.ElicitResult(action="cancel")
+        self._asked[ticket] = self._asked.get(ticket, 0) + 1
+        self._asking += 1
+        # A task of its own: when the call it belongs to ends first (a server asking from a background
+        # task), end_questions takes the question back -- it must not wait on in the chat, nor hold
+        # every other call's timeout open.
+        asking = asyncio.ensure_future(self.elicit(self.name, call, params))
+        self._questions[ticket] = asking
+        try:
+            await asyncio.wait({asking})
+            if asking.cancelled():
+                return types.ElicitResult(action="cancel")
+            return asking.result()
+        except asyncio.CancelledError:
+            asking.cancel()
+            raise
+        except Exception:  # noqa: BLE001 - the server hears a cancel, the call goes on
+            logger.exception("MCP server '%s': asking the person failed", self.name)
+            return types.ElicitResult(action="cancel")
+        finally:
+            self._asking -= 1
+            if self._questions.get(ticket) is asking:
+                del self._questions[ticket]
+
+    def end_questions(self, ticket: int) -> None:
+        """The call ``ticket`` stands for is over: its open question, if any, is taken back."""
+        asking = self._questions.pop(ticket, None)
+        if asking is not None and not asking.done():
+            asking.cancel()
 
     async def _on_message(self, message: Any) -> None:
         """A server's notification: a changed list of tools, resources or prompts drops what is cached."""

@@ -30,6 +30,7 @@ from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins import capabilities
 
 from .connection import MCPConnectionError
+from .elicitation import Elicitation, ElicitBroker
 from .manager import ExternalServerPool
 from .oauth import AUTHORIZE_WAIT_S, OAuthBroker
 
@@ -46,6 +47,18 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError, OverflowError):
         return default
     return number if number > 0 and not isinstance(value, bool) else default
+
+
+
+def _positive_float(value: Any, default: float) -> float:
+    """*value* as a positive number of seconds; anything else is *default*."""
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if number > 0 and number != float("inf") else default
 
 
 class MCPClientServer(SchemaBasedToolServer):
@@ -67,6 +80,12 @@ class MCPClientServer(SchemaBasedToolServer):
         self.default_redirect_uri = f"http://{host}:{port}{self.callback_path}"
         #: Authorizations running in the background, kept until they end (a task nobody holds is collected).
         self._authorizations: Dict[str, asyncio.Task] = {}
+        #: A server's questions to the person while its tool runs (elicitation.py); off: not offered.
+        self.questions = ElicitBroker()
+        elicit = None
+        if getattr(server_config, "elicitation", True) is not False:
+            elicit = Elicitation(name, self.questions, self.answer_url,
+                                 timeout=_positive_float(getattr(server_config, "elicitation_timeout", None), 300.0)).ask
 
         self.pool = ExternalServerPool(
             ssl_verify=getattr(network, "ssl_verify", True) if network else True,
@@ -74,11 +93,15 @@ class MCPClientServer(SchemaBasedToolServer):
             cache_ttl=getattr(cache_cfg, "tool_list_ttl", 300.0) if cache_cfg else 300.0,
             max_result_chars=_positive_int(getattr(server_config, "max_result_chars", None), 50000),
             max_description_chars=_positive_int(getattr(server_config, "max_description_chars", None), 1024),
-            oauth=self.oauth, redirect_uri=self.default_redirect_uri,
+            oauth=self.oauth, redirect_uri=self.default_redirect_uri, elicit=elicit,
         )
         self.pool.on_catalog_changed = self._catalog_changed
         if external is not None:
             self.pool.configure(getattr(external, "remote_servers", None) or {})
+
+    @property
+    def answer_url(self) -> str:
+        return f"/plugins/{self.name}/answer"
 
     @property
     def callback_path(self) -> str:

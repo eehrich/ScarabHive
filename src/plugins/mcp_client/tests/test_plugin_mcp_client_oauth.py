@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from agent_system.config.models import MCPAuthConfig
 from agent_system.config.models.external_servers import RemoteMCPConfig
 from plugins.mcp_client.connection import MCPConnectionError
+from plugins.mcp_client.elicitation import ElicitBroker
 from plugins.mcp_client.manager import ExternalServerPool
 from plugins.mcp_client.oauth import OAuthBroker
 from plugins.mcp_client.web import build_router
@@ -107,7 +108,8 @@ async def test_a_server_behind_oauth_is_authorized_once_then_connects_and_refres
 
 
 def _callback_client(broker):
-    server = type("S", (), {"oauth": broker, "callback_path": "/plugins/mcp_client/oauth/callback"})()
+    server = type("S", (), {"oauth": broker, "callback_path": "/plugins/mcp_client/oauth/callback", "name": "mcp_client",
+                            "questions": ElicitBroker(), "answer_url": "/plugins/mcp_client/answer"})()
     app = FastAPI()
     app.include_router(build_router(server))
     return TestClient(app)

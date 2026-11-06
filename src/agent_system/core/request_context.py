@@ -18,6 +18,7 @@ use it without upward imports (``servers/agent`` previously imported
 from __future__ import annotations
 
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Optional
 
 #: The user of the run this code runs in: set where a run begins, next to
@@ -41,6 +42,26 @@ current_run_agent: ContextVar[Optional[Any]] = ContextVar("current_run_agent", d
 #: without, so a sub-agent's run never takes over its caller's. The run's tool calls are held to them, and so
 #: are those of a model call that is a run of its own (llm_coding_cli hands them on).
 current_tool_bindings: ContextVar[Optional[dict]] = ContextVar("current_tool_bindings", default=None)
+
+
+@dataclass(frozen=True)
+class ExternalCall:
+    """The call of an external (MCP) tool this code runs in -- what a server's question to the person
+    (MCP elicitation, plugins/mcp_client/elicitation.py) needs to reach them: the external call's params
+    carry none of it, they leave the process."""
+
+    #: The id the tool call runs under (its cancellation id): whose run the
+    #: question belongs to, and whether anybody reads it.
+    request_id: str
+    session_id: str
+    user_id: str
+    agent_name: str
+    #: The call's cancellation token.
+    token: Any
+
+
+#: Set by the agent's tool invocation around an external tool call; None outside one.
+current_external_call: ContextVar[Optional[ExternalCall]] = ContextVar("current_external_call", default=None)
 
 # The shared map. Mutating module-level state is intentional here: the map is
 # process-wide by design (one HTTP request may be served by app code, agent

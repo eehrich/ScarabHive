@@ -8,6 +8,7 @@ asserted against hand-written JSON-RPC dicts instead of a real handshake.
 import base64 as _b64
 
 from mcp.server.mcpserver import Context, Image, MCPServer
+from pydantic import BaseModel
 
 mcp = MCPServer("probe", instructions="Use add for sums; the notes resource says more.")
 
@@ -101,6 +102,53 @@ async def grow(ctx: Context) -> str:
     mcp.add_tool(lambda: "grown up", name="grown", description="Appears at run time.")
     await ctx.session.send_tool_list_changed()
     return "grew"
+
+
+class _Booking(BaseModel):
+    seats: int
+    window: bool = False
+
+
+@mcp.tool()
+async def book(ctx: Context) -> str:
+    """Asks the person how many seats (elicitation) and says what came back."""
+    answer = await ctx.elicit("How many seats?", _Booking)
+    if answer.action != "accept":
+        return f"not booked: {answer.action}"
+    return f"booked {answer.data.seats} seats, window={answer.data.window}"
+
+
+class _Yes(BaseModel):
+    ok: bool
+
+
+@mcp.tool()
+async def pester(times: int, ctx: Context) -> str:
+    """Asks the person `times` times in a row; says what each answer was."""
+    return ",".join([(await ctx.elicit(f"Question {i}?", _Yes)).action for i in range(times)])
+
+
+@mcp.tool()
+async def ask_twice_at_once(ctx: Context) -> str:
+    """Asks the person two things at the same moment; says what each answer was."""
+    import asyncio
+
+    answers = await asyncio.gather(ctx.elicit("First?", _Yes), ctx.elicit("Second?", _Yes))
+    return ",".join(sorted(a.action for a in answers))
+
+
+
+_LATER: list = []
+
+
+@mcp.tool()
+async def ask_later(ctx: Context) -> str:
+    """Starts a question to the person and answers the call before it is answered."""
+    import asyncio
+
+    _LATER.append(asyncio.create_task(ctx.elicit("Still there?", _Yes)))
+    await asyncio.sleep(0.5)
+    return "answered before the question"
 
 
 if __name__ == "__main__":

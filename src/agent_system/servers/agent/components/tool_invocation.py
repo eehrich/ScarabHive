@@ -264,7 +264,18 @@ class ToolInvoker:
                     raise RuntimeError("Cannot access tool integration without system config")
                 tool_integration = get_tool_integration(config=system_config)
             # Use serializable_params (report.params) to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
-            tool_result = await tool_integration.call_tool(server_name, actual_tool_name, report.params, "external")
+            from ....core.request_context import ExternalCall, current_external_call
+            # What a server's question to the person needs (MCP elicitation) -- in the context, not
+            # in the params, which leave the process.
+            call = current_external_call.set(ExternalCall(
+                request_id=f"{request_id}_{step:03d}" if request_id else "", session_id=session_id or "",
+                user_id=user_id or "", agent_name=getattr(self._agent, "name", "") or "",
+                token=params.get("_cancellation_token")))
+            try:
+                tool_result = await tool_integration.call_tool(server_name, actual_tool_name, report.params,
+                                                               "external")
+            finally:
+                current_external_call.reset(call)
             logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
             return report.answered(tool_result, sanitize_for_llm(openai_tool_name))
         except (Exception, GeneratorExit) as e:

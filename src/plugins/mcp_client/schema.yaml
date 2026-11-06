@@ -61,6 +61,11 @@ config:
   # Characters of a foreign tool description -- it is sent with every
   # request of every agent that allows the tool.
   max_description_chars: 1024
+  # A server may ask the person during one of its tools (MCP elicitation): the
+  # question shows in the chat under the call. false: not offered at all.
+  elicitation: true
+  # Seconds a server's question waits for the person's answer.
+  elicitation_timeout: 300
 
 # Slash commands — what a PERSON can trigger at the chat prompt. Each one runs
 # one of the tools above through the agent's own dispatch, so it inherits the

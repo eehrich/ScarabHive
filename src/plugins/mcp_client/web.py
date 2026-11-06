@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Optional
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+from agent_system.api.question_routes import question_router
+
 if TYPE_CHECKING:
     from .server import MCPClientServer
 
@@ -25,6 +27,8 @@ def _page(title: str, text: str, status: int) -> HTMLResponse:
 
 def build_router(server: "MCPClientServer") -> APIRouter:
     router = APIRouter()
+    # /answer and /pending for the servers' questions to the person (elicitation.py)
+    router.include_router(question_router(f"/plugins/{server.name}", server.questions, server.answer_url))
 
     @router.get(server.callback_path)
     async def oauth_callback(state: str = "", code: Optional[str] = None, error: Optional[str] = None,

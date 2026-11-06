@@ -673,7 +673,8 @@ class TestPool:
 
         pool = ExternalServerPool(max_result_chars=10)
         pool.configure({"fake": make_config()})
-        pool._connections["fake"] = types.SimpleNamespace(connected=True, call_tool=failing)
+        pool._connections["fake"] = types.SimpleNamespace(connected=True, call_tool=failing, callers={},
+                                                          end_questions=lambda ticket: None)
         raised = {}
         for tool in errors:
             with pytest.raises(Exception) as failed:

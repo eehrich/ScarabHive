@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import json
 import logging
 import time
@@ -61,13 +62,19 @@ def cap_text(text: str, limit: int) -> str:
     return f"{text[:limit]}…[{len(text)} chars]"
 
 
+#: Tickets of the calls in flight on a connection (ServerConnection.callers).
+_TICKETS = itertools.count()
+
+
 class ExternalServerPool:
     """Owns every live connection to an external MCP server."""
 
     def __init__(self, *, ssl_verify: bool = True, timeout: float = 30.0, cache_ttl: float = 300.0,
                  max_result_chars: int = 50000, max_description_chars: int = 1024,
-                 oauth: Any = None, redirect_uri: str = "") -> None:
+                 oauth: Any = None, redirect_uri: str = "", elicit: Any = None) -> None:
         self.ssl_verify = ssl_verify
+        #: Asks the person when a server asks during a call (elicitation.Elicitation.ask); None: not offered.
+        self.elicit = elicit
         #: The OAuth authorizations (oauth.OAuthBroker) and this app's callback address, for the
         #: servers with ``auth: {type: oauth}``.
         self.oauth = oauth
@@ -205,7 +212,7 @@ class ExternalServerPool:
                 # tools (a Blender render) died on the global 5s otherwise.
                 timeout=getattr(config, "timeout", None) or self.timeout,
                 http_auth=http_auth, handshake_timeout=handshake,
-                on_list_changed=self._list_changed,
+                on_list_changed=self._list_changed, elicit=self.elicit,
             )
             await connection.start()
             if http_auth is not None:
@@ -463,6 +470,20 @@ class ExternalServerPool:
 
     @staticmethod
     async def _call(connection: ServerConnection, tool: str, arguments: Dict[str, Any], synthetic: bool) -> Any:
+        from agent_system.core.request_context import current_external_call
+
+        # Kept on the connection while it runs -- a resource read or a prompt too: a question the server
+        # asks meanwhile goes to its run, and with another call in flight to nobody.
+        ticket = next(_TICKETS)
+        connection.callers[ticket] = current_external_call.get()
+        try:
+            return await ExternalServerPool._dispatch(connection, tool, arguments, synthetic)
+        finally:
+            connection.callers.pop(ticket, None)
+            connection.end_questions(ticket)
+
+    @staticmethod
+    async def _dispatch(connection: ServerConnection, tool: str, arguments: Dict[str, Any], synthetic: bool) -> Any:
         if not synthetic:
             return await connection.call_tool(tool, arguments)
         if tool == "mcp_list_resources":
