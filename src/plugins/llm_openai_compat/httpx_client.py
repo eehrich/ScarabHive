@@ -47,7 +47,7 @@ from agent_system.llm.cache_key import (
 )
 from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, as_note, conversation_opener,
-    resolve_rung, rung_for_position,
+    notes_that_ask, resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
@@ -943,20 +943,21 @@ class HTTPXOpenAIClient(LLMClient):
         declared = getattr(self.capabilities, "developer_role", None)
         rung = resolve_rung(declared, ceiling=DEVELOPER, default=SYSTEM,
                             route=f"the endpoint at {self.base_url}")
-        # No early return on the developer rung any more: the LAST developer
-        # message rides the user rung whatever the route allows, because a
-        # request ending on something that demands no answer gets none. The
+        # No early return on the developer rung any more: a note that asks (the
+        # last, and later the one the model answered: notes_that_ask) rides the
+        # user rung whatever the route allows, because a request ending on
+        # something that demands no answer gets none. The
         # rule and its measurement live in message_roles.rung_for_position --
         # this route learned it an hour after the Responses route, from a
         # review, and that hour is the argument for it living in one place.
-        last = message_dicts[-1] if message_dicts else None
+        asking = notes_that_ask(message_dicts)
         opener = conversation_opener(message_dicts)
         for msg in message_dicts:
             msg.pop("injected_by", None)  # read by conversation_opener, never sent
             if msg.get("role") != DEVELOPER:
                 continue
             content = msg.get("content")
-            target = rung_for_position(rung, last=msg is last, opens=msg is opener)
+            target = rung_for_position(rung, last=id(msg) in asking, opens=msg is opener)
             if target != USER:
                 msg["role"] = target
                 continue

@@ -15,11 +15,11 @@ from plugins.llm_common.request_end import ending_error as _ending_error
 from agent_system.llm.tls import httpx_verify
 from agent_system.utils.id import short_id
 from agent_system.llm.message_roles import (
-    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, as_note, conversation_opener, resolve_rung,
+    DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, as_note, conversation_opener, notes_that_ask, resolve_rung,
     rung_for_position,
 )
 from agent_system.llm.models import (
-    PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient, LLMConnectionError, LLMQuotaExhaustedError,
+    ChatMessage, LLMClient, LLMConnectionError, LLMQuotaExhaustedError,
     LLMRateLimitError, LLMServerError,
 )
 from agent_system.config.models import ModelCapabilitiesConfig
@@ -195,30 +195,31 @@ class OpenAIAsyncClient(LLMClient):
         rung = resolve_rung(getattr(self.capabilities, "developer_role", None),
                             ceiling=DEVELOPER, default=DEVELOPER,
                             route=f"the endpoint at {self._base_url or 'api.openai.com'}")
-        # No early return on the developer rung: the LAST developer message rides
-        # the user rung whatever the endpoint allows, because a request ending on
+        # No early return on the developer rung: a note that asks (the last, and
+        # later the one the model answered: notes_that_ask) rides the user rung
+        # whatever the endpoint allows, because a request ending on
         # something that demands no answer gets none. The rule and its measurement
         # live in message_roles.rung_for_position; this route kept the early return
         # after the two openai_compat routes lost it, which is the argument for the
         # rule living in one place.
-        last = message_dicts[-1] if message_dicts else None
+        asking = notes_that_ask(message_dicts)
         opener = conversation_opener(message_dicts)
         for d in message_dicts:
             # Fields that are ours, not the conversation's, dropped here for all three
             # serialisers -- after the opener above, which tells a wake from a note
             # by injected_by. One list, one place: each serialiser used to pop its
             # own, and the tool-calling path once sent injected_by to the API.
-            for key in PRIVATE_MESSAGE_FIELDS:
-                d.pop(key, None)
-            # Other routes' reasoning carriers: this client writes none of them,
-            # and since a model switch keeps them in the history (reasoning_artifacts.
-            # produced_by_another_model) they would reach this API.
-            for key in ("reasoning_details", "thinking_blocks", "thinking_model"):
-                d.pop(key, None)
+            # API fields only (openai_utils.CHAT_MESSAGE_FIELDS, the batch path's
+            # list): the whole ChatMessage was dumped, so other routes' reasoning
+            # carriers -- kept in the history across a model switch
+            # (reasoning_artifacts.produced_by_another_model) -- and bookkeeping
+            # such as timestamp and content_format reached this API.
+            for key in [k for k in d if k not in openai_utils.CHAT_MESSAGE_FIELDS]:
+                d.pop(key)
             if d.get("role") != DEVELOPER:
                 continue
             content = d.get("content")
-            target = rung_for_position(rung, last=d is last, opens=d is opener)
+            target = rung_for_position(rung, last=id(d) in asking, opens=d is opener)
             if target != USER:
                 d["role"] = target
                 continue

@@ -68,7 +68,7 @@ import httpx
 from agent_system.llm.tls import httpx_verify
 from agent_system.llm.message_roles import (
     ASSISTANT, DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, TOOL, USER,
-    as_note, conversation_opener, resolve_rung, rung_for_position,
+    as_note, conversation_opener, notes_that_ask, resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import (
     ChatMessage,
@@ -490,19 +490,20 @@ class OpenAIResponsesClient(LLMClient):
         what the text is, so the tags have to. Parts are wrapped part by part
         rather than stringified, so an image inside a note survives.
 
-        THE LAST ITEM, AND THE ONE THE CONVERSATION OPENS ON, ARE SPECIAL
-        CASES, whatever the rung says -- ``message_roles.rung_for_position``
+        A NOTE THAT ASKS (the last, and later the one the model answered) AND
+        THE ONE THE CONVERSATION OPENS ON ARE SPECIAL CASES, whatever the rung
+        says (``message_roles.notes_that_ask``) -- ``message_roles.rung_for_position``
         decides that and carries the measurement. Every route needs it, so it
         does not live here.
         """
         rung = self._developer_rung
-        last = items[-1] if items else None
+        asking = notes_that_ask(items)
         opener = conversation_opener(items)
         for item in items:
             item.pop("injected_by", None)  # read by conversation_opener, never sent
             if item.get("role") != DEVELOPER:
                 continue
-            item["role"] = rung_for_position(rung, last=item is last, opens=item is opener)
+            item["role"] = rung_for_position(rung, last=id(item) in asking, opens=item is opener)
             if item["role"] != USER:
                 continue
             content = item.get("content")
@@ -978,10 +979,13 @@ class OpenAIResponsesClient(LLMClient):
         }
         in_details = usage.get("input_tokens_details") or {}
         out_details = usage.get("output_tokens_details") or {}
-        if in_details.get("cached_tokens") is not None:
-            mapped["prompt_tokens_details"] = {"cached_tokens": in_details.get("cached_tokens", 0)}
-        if out_details.get("reasoning_tokens") is not None:
-            mapped["completion_tokens_details"] = {"reasoning_tokens": out_details.get("reasoning_tokens", 0)}
+        # Whole, not field by field: picking cached_tokens alone dropped the
+        # gateway's cache_write_tokens, and panel, CLI, OTel and the stored
+        # usage showed 0 cache writes.
+        if in_details:
+            mapped["prompt_tokens_details"] = dict(in_details)
+        if out_details:
+            mapped["completion_tokens_details"] = dict(out_details)
         # Pass through everything we didn't explicitly map (cost, cost_details,
         # is_byok, ...) — without clobbering the mapped keys.
         for k, v in usage.items():
@@ -1694,10 +1698,15 @@ class OpenAIResponsesClient(LLMClient):
                     if routing:
                         logger.debug("Routing %s: %s", self.model, routing)
                     ended = True
+                    formatted = self._format_response(response_data)
                     await self._notify_post_response({
                         "provider": self._PROVIDER, "model": self.model, "url": url,
                         "is_streaming": stream, "duration_ms": duration_ms,
                         "response_data": response_data,
+                        # Computed from status/incomplete_details only in
+                        # _format_response: without it here the hooks logged a
+                        # cut answer (max_output_tokens) like a complete one.
+                        "finish_reason": formatted.get("finish_reason"),
                         # Own key, not just buried in response_data: the message
                         # debugger and any cost/routing audit read the flat
                         # fields, and "which backend served this call" was not
@@ -1712,7 +1721,7 @@ class OpenAIResponsesClient(LLMClient):
                         "usage": self._map_usage(response_data.get("usage")),
                         "timestamp_ms": _time.time() * 1000,
                     })
-                    yield {"type": "final", **self._format_response(response_data)}
+                    yield {"type": "final", **formatted}
                     return
 
             raise LLMServerError(  # pragma: no cover — loop always returns/raises

@@ -837,6 +837,8 @@ def test_other_routes_reasoning_carriers_never_reach_this_api():
     client = OpenAIAsyncClient(model="gpt-4", api_key="test-key", base_url="https://api.openai.com/v1")
     dicts = [{"role": "user", "content": "hi"},
              {"role": "assistant", "content": "a", "reasoning_details": [{"type": "reasoning.text", "text": "t"}],
-              "thinking_blocks": [{"type": "thinking", "thinking": "t", "signature": "S"}], "thinking_model": "c"}]
+              "thinking_blocks": [{"type": "thinking", "thinking": "t", "signature": "S"}], "thinking_model": "c",
+              "timestamp": "2026-11-06T00:00:00Z", "content_format": "markdown"}]
     sent = client._apply_developer_rung(dicts)
     assert not any(k in m for m in sent for k in ("reasoning_details", "thinking_blocks", "thinking_model"))
+    assert all(set(m) <= {"role", "content", "name", "tool_calls", "tool_call_id"} for m in sent), sent

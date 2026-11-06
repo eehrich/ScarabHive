@@ -13,7 +13,7 @@ from agent_system.utils.id import short_id
 
 from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, SYSTEM, USER, conversation_opener, developer_turn,
-    resolve_rung, rung_for_position,
+    notes_that_ask, resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import (
     ChatMessage, LLMClient, LLMConnectionError, LLMRateLimitError, LLMServerError,
@@ -98,6 +98,7 @@ class OllamaNativeAsyncClient(LLMClient):
         out: list[dict[str, Any]] = []
         injections = ToolRunInjections()
         opener = conversation_opener(messages)
+        asking = notes_that_ask(messages)
         may_replay = reasoning_replay_flags(messages, self.reasoning_details_mode)
         for i, m in enumerate(messages):
             # Use model_dump() with mode='json' to properly serialize nested Pydantic models and datetime objects
@@ -114,17 +115,16 @@ class OllamaNativeAsyncClient(LLMClient):
             # `capabilities.developer_role: user` for a template that only ever
             # renders the FIRST system message.
             #
-            # Except the LAST one, which rides the user rung whatever the entry
+            # Except a note that asks -- the last one, and later the one the
+            # model answered -- which rides the user rung whatever the entry
             # says: a request ending on a system turn asks for nothing, and gets
-            # nothing. Nothing this loop adds ever follows a developer message
-            # (only a tool result gets an injected image message), so the last
-            # input stays the last message on the wire. See
-            # message_roles.rung_for_position.
+            # nothing, and a note answered as a user turn stays one
+            # (message_roles.notes_that_ask, rung_for_position).
             if d.get("role") == DEVELOPER:
                 content = d.get("content")
                 role, text = developer_turn(
                     content if isinstance(content, str) else "",
-                    rung_for_position(self._developer_rung, last=m is messages[-1],
+                    rung_for_position(self._developer_rung, last=id(m) in asking,
                                       opens=m is opener))
                 d["role"] = role
                 if role == USER and isinstance(content, list):

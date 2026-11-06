@@ -1280,3 +1280,46 @@ class TestWhoStreams:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _reported(body: dict) -> dict:
+    """What the post-response hooks get for one answer (message debugger, OTel, costs)."""
+    import asyncio
+
+    import httpx
+
+    client = _client(service_tier=None)
+    client.supports_streaming = lambda: False
+    seen: list = []
+
+    async def _fake_post(_client, _url, _payload):
+        return httpx.Response(200, json=body)
+
+    async def _notify(info):
+        seen.append(info)
+
+    client._post = _fake_post
+    client._notify_post_response = _notify
+
+    async def _collect():
+        return [chunk async for chunk in client.chat_tools_streaming([ChatMessage(role="user", content="go")], [])]
+
+    asyncio.run(_collect())
+    assert len(seen) == 1, "fixture: not exactly one report"
+    return seen[0]
+
+
+def test_the_hooks_learn_that_an_answer_was_cut():
+    """A cut answer was logged with finish_reason NULL, like a complete one."""
+    info = _reported({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+                      "output": [{"type": "message", "content": [{"type": "output_text", "text": "half"}]}]})
+    assert info["finish_reason"] == "length"
+
+
+def test_the_usage_keeps_the_cache_writes():
+    info = _reported({"status": "completed", "output": [],
+                      "usage": {"input_tokens": 100, "output_tokens": 5,
+                                "input_tokens_details": {"cached_tokens": 40, "cache_write_tokens": 60},
+                                "output_tokens_details": {"reasoning_tokens": 3}}})
+    assert info["usage"]["prompt_tokens_details"] == {"cached_tokens": 40, "cache_write_tokens": 60}
+    assert info["usage"]["completion_tokens_details"] == {"reasoning_tokens": 3}

@@ -257,6 +257,10 @@ def resolve_rung(declared: Optional[str], *, ceiling: str, default: str, route: 
 def rung_for_position(rung: str, *, last: bool, opens: bool = False) -> str:
     """Which rung a developer message rides, given WHERE it sits.
 
+    ``last``: the note asks (``notes_that_ask``) -- it ends the request, or it
+    did when the model answered it. Every route passes that, not "is the last
+    item", or the note changes its role in the next request.
+
     A developer message is read but demands no answer -- that is its definition
     and what the notes the loop adds mid-turn are for. The last message is a
     different job: it is what the model is being asked, and a woken run's whole
@@ -340,6 +344,53 @@ def conversation_opener(messages: list) -> object | None:
         elif role != SYSTEM:
             break
     return wake if wake is not None else note
+
+
+#: What stops a note from asking: something that asks after it. Everything
+#: else is the model's own output -- ``assistant``, and on the Responses route
+#: role-less items such as ``function_call``, ``reasoning`` or a server tool's
+#: call. Listing the asking side keeps an output type nobody listed from
+#: turning an answered note back.
+_ASKING_ROLES = frozenset({USER, SYSTEM, "tool"})
+_ASKING_TYPES = frozenset({"function_call_output"})
+
+
+def notes_that_ask(messages: list) -> set[int]:
+    """``id()`` of the developer notes that ride the user rung: those the model answered.
+
+    A note asks when nothing but other notes and the model's own output follow
+    it. That holds for the note ending a request (the ``last`` of
+    ``rung_for_position``), and it STAYS true once the model has answered it.
+    Asking by position alone sent the note as user + tags in request N and on
+    the route's rung without tags in N+1: an already-sent message rewritten
+    behind which the answer's reasoning is replayed (Claude 5.x binds its
+    thinking to that prefix), and the cache read stopping there (measured:
+    30 of 39 follow-ups of a Claude chat agent differed exactly at that note).
+    A note followed by a user or tool message keeps the route's rung; that
+    never changes either, the history is append-only.
+
+    Measured 06.11.2026 that the route's rung is no problem after a tool
+    result: DeepSeek and Gemini flash, chat (system) and Responses (developer),
+    12 of 12 ordinary answers. Only the shape of 21.09. (an answer, then the
+    note) needs the user rung, and that note asks here.
+    """
+    asking: set[int] = set()
+    answered = True  # the end of the request counts as "the model answers next"
+    opener = conversation_opener(messages)
+    for msg in reversed(messages):
+        if msg is opener:
+            # It rides as the opener; the notes in front of it are the leading
+            # block, which stays as it is (conversation_opener).
+            break
+        role = role_of(msg)
+        if role == DEVELOPER:
+            if answered:
+                asking.add(id(msg))
+        elif role in _ASKING_ROLES or field_of(msg, "type") in _ASKING_TYPES:
+            answered = False
+        else:
+            answered = True
+    return asking
 
 
 def developer_turn(text: str, rung: str) -> tuple[str, str]:

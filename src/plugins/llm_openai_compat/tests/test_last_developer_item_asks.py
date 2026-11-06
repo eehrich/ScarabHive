@@ -65,20 +65,31 @@ def test_the_last_developer_item_is_turned_into_a_turn_that_asks():
         "nothing else says the run is speaking, not a person")
 
 
-def test_a_developer_note_in_the_middle_keeps_its_role():
+def test_a_note_the_model_answered_keeps_the_user_rung():
+    """The note before the answer ended its request when the model answered it,
+    as a user turn with tags. Sent on the developer rung in the next request,
+    it rewrote a message behind which the answer's reasoning is replayed."""
+    items = _wake_shaped_items()
+    _client()._lower_developer_items(items)
+
+    assert items[1]["role"] == USER, "an answered note changed its role"
+    assert items[1]["content"] == f"{NOTE_OPEN}\nstep 4 of 30\n{NOTE_CLOSE}", "an answered note lost its tags"
+
+
+def test_a_note_followed_by_a_tool_result_keeps_its_role():
     """The other half, or the fix would just be 'no developer messages'.
 
     Removing them does NOT heal -- measured on the same payload: with every
     developer item deleted, 5/6 answers stayed empty and Gemini still refused.
-    What heals is a last item that asks. A note bound to a turn that HAS
-    something open is right where it is, and lowering it would put a second
-    user turn into the middle of the conversation.
-    """
-    items = _wake_shaped_items()
+    What heals is a last item that asks. A note something asking follows was
+    never the end of a request; it stays on the route's rung, for good."""
+    items = [{"type": "message", "role": USER, "content": "go"},
+             {"type": "message", "role": DEVELOPER, "content": "step 4 of 30"},
+             {"type": "function_call_output", "call_id": "c1", "output": "done"}]
     _client()._lower_developer_items(items)
 
-    assert items[1]["role"] == DEVELOPER, "a mid-turn note was lowered too"
-    assert items[1]["content"] == "step 4 of 30", "a mid-turn note was wrapped"
+    assert items[1]["role"] == DEVELOPER, "a note followed by a tool result was lowered"
+    assert items[1]["content"] == "step 4 of 30", "a note followed by a tool result was wrapped"
 
 
 def test_a_route_that_takes_no_developer_role_still_lowers_everything():
@@ -162,8 +173,8 @@ def test_chat_completions_also_turns_the_last_developer_message_into_a_turn():
 
     assert msgs[-1]["role"] == USER
     assert msgs[-1]["content"] == f"{NOTE_OPEN}\nYou were woken. Act on it.\n{NOTE_CLOSE}"
-    assert msgs[1]["role"] == "system", "a mid-turn note left its own rung"
-    assert msgs[1]["content"] == "step 4 of 30", "a mid-turn note was wrapped"
+    assert msgs[1]["role"] == USER, "an answered note changed its role"
+    assert msgs[1]["content"] == f"{NOTE_OPEN}\nstep 4 of 30\n{NOTE_CLOSE}"
 
 
 def test_chat_completions_lowers_the_last_one_even_when_the_route_takes_developer():
@@ -173,7 +184,7 @@ def test_chat_completions_lowers_the_last_one_even_when_the_route_takes_develope
     msgs = _wake_shaped_messages()
     _chat_client(capabilities=ModelCapabilities(developer_role=DEVELOPER))._apply_developer_rung(msgs)
 
-    assert msgs[1]["role"] == DEVELOPER, "a mid-turn note was lowered although the route takes it"
+    assert msgs[1]["role"] == USER, "an answered note changed its role"
     assert msgs[-1]["role"] == USER, "the request still ends on a message asking nothing"
 
 
@@ -190,3 +201,38 @@ def test_chat_completions_survives_an_empty_message_list():
     msgs: list = []
     _chat_client()._apply_developer_rung(msgs)
     assert msgs == []
+
+
+def _step_budget_requests(output):
+    """Request N ends on a note after a tool result; N+1 adds the answer and the next step."""
+    note = {"role": DEVELOPER, "content": "Step budget: 2 of 10 used."}
+    head = [{"role": "user", "content": "Read notes.txt."},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+             "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "milk"}]
+    n = [dict(m) for m in head] + [dict(note)]
+    n1 = [dict(m) for m in head] + [dict(note), {"role": "assistant", "content": output},
+                                     {"role": "user", "content": "And now?"}]
+    return n, n1
+
+
+def test_chat_completions_sends_an_answered_note_the_same_in_the_next_request():
+    """User + tags in N, system without tags in N+1 -- a prefix rewritten behind the
+    answer whose thinking is replayed (measured: 30 of 39 Claude follow-ups broke right there)."""
+    n, n1 = _step_budget_requests("It says milk.")
+    _chat_client()._apply_developer_rung(n)
+    _chat_client()._apply_developer_rung(n1)
+    assert n1[:len(n)] == n, "request N+1 rewrote what request N sent"
+
+
+def test_responses_sends_an_answered_note_the_same_in_the_next_request():
+    items_n = [{"type": "message", "role": "user", "content": "Read notes.txt."},
+               {"type": "function_call", "call_id": "c1", "name": "read_file", "arguments": "{}"},
+               {"type": "function_call_output", "call_id": "c1", "output": "milk"},
+               {"type": "message", "role": DEVELOPER, "content": "Step budget: 2 of 10 used."}]
+    items_n1 = [dict(i) for i in items_n] + [
+        {"type": "message", "role": "assistant", "content": "It says milk."},
+        {"type": "message", "role": "user", "content": "And now?"}]
+    _client()._lower_developer_items(items_n)
+    _client()._lower_developer_items(items_n1)
+    assert items_n1[:len(items_n)] == items_n, "request N+1 rewrote what request N sent"

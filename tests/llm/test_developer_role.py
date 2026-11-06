@@ -1063,3 +1063,27 @@ def test_the_openai_tool_path_does_not_send_hook_metadata():
     assert sent.get("messages"), "fixture is vacuous: the tool path never reached the SDK"
     carrying = [m for m in sent["messages"] if "injected_by" in m]
     assert not carrying, f"hook metadata went to the API: {carrying}"
+
+
+def _request_n():
+    """A note ends request N; the model answers it."""
+    return [ChatMessage(role=SYSTEM, content="You are a careful assistant."),
+            ChatMessage(role=USER, content="Find the number."),
+            ChatMessage(role="assistant", content=ANSWER),
+            ChatMessage(role=USER, content=QUESTION),
+            ChatMessage(role=DEVELOPER, content=NOTE, injected_by="test.budget")]
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_an_answered_note_goes_out_the_same_in_the_next_request(route, monkeypatch):
+    """By position alone the note rode the user rung in N and the route's rung in N+1,
+    rewriting an already-sent message behind which the answer's reasoning is replayed."""
+    import sys
+    module = sys.modules[__name__]
+    mapping, _rung = ROUTES[route]
+    monkeypatch.setattr(module, "history", _request_n)
+    wire_n = mapping()
+    monkeypatch.setattr(module, "history", lambda: _request_n() + [
+        ChatMessage(role="assistant", content="It is 42."), ChatMessage(role=USER, content="Thanks, and now?")])
+    wire_n1 = mapping()
+    assert wire_n1[:len(wire_n)] == wire_n, f"{route}: request N+1 rewrote what N sent"

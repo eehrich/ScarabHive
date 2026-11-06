@@ -11,13 +11,13 @@ The clients know no model names. Quirks of an endpoint are keys on the model, an
 whoever adds a new provider sets lines instead of code. Which route evaluates
 which key:
 
-| Key | `openai_httpx` | `openai_responses` | `openrouter_sdk` | `anthropic` | `gemini*`, `openai`, `ollama` |
-|---|---|---|---|---|---|
-| `tool_schema_dialect` | yes | yes | yes | – | – |
-| `reasoning_details_mode` | yes | yes | yes | yes | – |
-| `assistant_reasoning_field` | yes | – | – | – | – |
-| `thinking_request_shape` | – | – | – | yes | – |
-| `stream_silence_timeout` | yes | yes | – | – | – |
+| Key | `openai_httpx` | `openai_responses` | `openrouter_sdk` | `anthropic` | `ollama` (native) | `gemini*`, `openai` |
+|---|---|---|---|---|---|---|
+| `tool_schema_dialect` | yes | yes | yes | – | – | – |
+| `reasoning_details_mode` | yes | yes | yes | yes | yes | – |
+| `assistant_reasoning_field` | yes | – | – | – | – | – |
+| `thinking_request_shape` | – | – | – | yes | – | – |
+| `stream_silence_timeout` | yes | yes | – | – | – | – |
 | `provider_affinity_minutes` | yes | yes | yes | – | – |
 | `prompt_cache_marker_style` | yes | yes | refuses `anthropic` | own path | – |
 | `safety_settings` | yes | yes | refuses | – | only `gemini*` (native) |
@@ -365,9 +365,13 @@ Reasoning round trip: The items of the reasoning models form an
 encrypted chain that every turn must return in full. The
 config field `reasoning_details_mode` says per model how much of it
 travels back, and is evaluated on `openai_httpx`, `openai_responses`,
-`openrouter_sdk` and `anthropic`. The default depends on the route:
-`keep_last` on the chat route (where a thought signature only applies to the
-current turn), `keep_all` where whole item chains go back verbatim.
+`openrouter_sdk`, `anthropic` and native `ollama`. The default depends on the
+route: `keep_last` on the chat route (where a thought signature only applies to
+the current turn), `keep_all` on all the others. Gemini runs either natively
+(`gemini_sdk`, its signatures ride on the tool calls) or on the Responses route
+(measured 06.11.2026: 7 and 7 models), so `keep_last` is in use nowhere that
+carries reasoning_details; what the code says about keeping a Gemini signature
+under `keep_last` describes a configuration no profile has.
 
 ⚠️ Whoever uses the cache of a model that compares its prefix byte for byte
 (Claude) needs `keep_all` — with `keep_last` the previous round loses its
