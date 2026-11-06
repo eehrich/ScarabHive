@@ -50,6 +50,11 @@ def _positive_int(value: Any, default: int) -> int:
 
 
 
+#: network.host values that mean "every interface", not an address -> the loopback address the app is
+#: reached on then (a socket on :: listens on IPv6 only: 127.0.0.1 does not reach it).
+_ANY_ADDRESS = {"0.0.0.0": "127.0.0.1", "::": "[::1]", "[::]": "[::1]"}
+
+
 def _positive_float(value: Any, default: float) -> float:
     """*value* as a positive number of seconds; anything else is *default*."""
     if isinstance(value, bool):
@@ -73,7 +78,12 @@ class MCPClientServer(SchemaBasedToolServer):
         cache_cfg = getattr(external, "cache", None) if external else None
 
         self.oauth = OAuthBroker(authorize_tool=f"{name}_authorize")
-        host = getattr(network, "host", None) or "127.0.0.1"
+        host = str(getattr(network, "host", None) or "127.0.0.1")
+        # Listening on every interface is no address to send a browser to -- an authorization server
+        # refuses http://0.0.0.0 (only https or a loopback address), and no browser reaches it.
+        host = _ANY_ADDRESS.get(host, host)
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"          # an IPv6 address goes in brackets in a URL
         port = getattr(network, "port", None) or 8000
         #: Where an authorization server sends the browser back (oauth.py); a server's own
         #: auth.redirect_uri wins -- the address the browser reaches this app on.
@@ -262,7 +272,8 @@ class MCPClientServer(SchemaBasedToolServer):
             return {"success": True, "server": name, "authorize_url": url,
                     "message": (f"Open authorize_url in a browser and allow access within "
                                 f"{AUTHORIZE_WAIT_S / 60:.0f} minutes; the server connects then. The browser "
-                                f"is sent back to {self.pool.redirect_uri_for(name)} -- it has to reach this app there.")}
+                                f"is sent back to {self.pool.redirect_uri_for(name)} -- it has to reach this app there, "
+                                f"signed in under that very address.")}
         if running.done():
             error = running.exception()
             if error is None:

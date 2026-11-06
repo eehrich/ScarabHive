@@ -482,7 +482,7 @@ enabled | false | only enabled servers are connected, listed and callable
 connect | startup | startup: connected when the plugin starts; on_demand: when a run names the server, see @{" External tools " link external}
 transport | streaming | streaming, streamable_http, streamable-http, http, smithery: streamable HTTP; sse, http_sse, http+sse: HTTP with SSE; stdio, local: start a program
 url | empty | the endpoint, for the HTTP transports
-command, args, env | none | the program, its arguments and extra environment, for stdio
+command, args, env | none | the program, its arguments and extra environment, for stdio; @{tt}python@{utt} (or @{tt}python3@{utt}) is the interpreter the app runs on, not the one PATH finds
 timeout | the connection timeout | seconds for the handshake and for each answer
 auth | none | type none, bearer, api_key, basic or oauth, with bearer_token, api_key and api_key_header (Authorization), username and password; for oauth client_id and client_secret (a server without dynamic registration, such as GitHub's) and redirect_uri. The scopes are the ones the server asks for
 resources_and_prompts | false | offer the server's resources and prompts as its tools, see @{" External tools " link external}
@@ -509,7 +509,8 @@ and allow access within ten minutes; the authorization server sends the
 browser back to this app's @{tt}/plugins/mcp_client/oauth/callback@{utt}
 and the server connects. That address has to be the one the browser
 reaches the app on: without @{tt}redirect_uri@{utt} it is
-@{tt}http://<network.host>:<network.port>/...@{utt}, which a browser on
+@{tt}http://<network.host>:<network.port>/...@{utt} (127.0.0.1 when the
+host is 0.0.0.0 or ::), which a browser on
 another machine does not reach -- set it, and when
 @{tt}network.remote_paths@{utt} restricts what other machines may reach,
 add the callback path. With authentication on, the callback is a route

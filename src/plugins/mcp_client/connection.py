@@ -25,6 +25,7 @@ import asyncio
 import base64
 import logging
 import re
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -46,6 +47,8 @@ logger = logging.getLogger(__name__)
 _STREAMABLE_HTTP_ALIASES = {"streaming", "streamable_http", "streamable-http", "http", "smithery"}
 _SSE_ALIASES = {"sse", "http_sse", "http+sse"}
 _STDIO_ALIASES = {"stdio", "local"}
+#: A stdio command that means "this Python": run on ``sys.executable``.
+_PYTHON_COMMANDS = {"python", "python3"}
 
 #: Seconds a new connection gets for its handshake at least, whatever the
 #: server's answer timeout. Tests lower it.
@@ -490,6 +493,10 @@ class ServerConnection:
                 raise MCPConnectionError(
                     f"MCP server '{self.name}' uses transport 'stdio' but has no 'command' configured"
                 )
+            if command in _PYTHON_COMMANDS:
+                # The interpreter this process runs on, the one with the mcp package: a bare "python"
+                # on PATH is another one wherever the app was started without its venv activated.
+                command = sys.executable
             params = StdioServerParameters(
                 command=command,
                 args=list(getattr(self.config, "args", None) or []),

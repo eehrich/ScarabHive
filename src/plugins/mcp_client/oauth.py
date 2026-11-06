@@ -147,8 +147,35 @@ def _provider_class():
     restart): without this, every restart after the token ran out asked for authorization again.
     """
     from mcp.client.auth import OAuthClientProvider
+    from mcp.client.auth.utils import extract_field_from_www_auth
 
     class Provider(OAuthClientProvider):
+        interactive = True
+        needs_authorization = ""
+
+        async def async_auth_flow(self, request):
+            # After a 401 only a person can help: the SDK refreshes BEFORE sending, and what follows a 401
+            # is discovery, a registration of this app at the authorization server and then the browser.
+            # Without a person, stop at the 401 -- a server refusing the registration (Figma) showed that
+            # error instead of the way to authorize, and every on-demand retry registered again. Only the
+            # request itself counts (the SDK sends that very object, with the header added): a refresh
+            # refused with 401 is the SDK's to handle -- it goes on without the token.
+            flow = super().async_auth_flow(request)
+            try:
+                outgoing = await flow.__anext__()
+                while True:
+                    response = yield outgoing
+                    refused = response.status_code == 401 or (
+                        response.status_code == 403
+                        and extract_field_from_www_auth(response, "error") == "insufficient_scope")
+                    if refused and outgoing is request and not self.interactive:
+                        raise AuthorizationRequired(self.needs_authorization)
+                    outgoing = await flow.asend(response)
+            except StopAsyncIteration:
+                return
+            finally:
+                await flow.aclose()
+
         async def _initialize(self) -> None:
             # ponytail: overrides a private SDK hook (mcp 2.2); the probe test fails if it is renamed
             await super()._initialize()
@@ -183,6 +210,10 @@ class OAuthBroker:
     def url_event(self, server: str) -> asyncio.Event:
         return self._url_events.setdefault(server, asyncio.Event())
 
+    def _needs_authorization(self, server: str) -> str:
+        return (f"MCP server '{server}' needs authorization: call {self.authorize_tool} with server "
+                f"'{server}' and open the link it gives in a browser")
+
     def provider(self, server: str, config: Any, redirect_uri: str, *, interactive: bool,
                  storage: Optional[FileTokenStorage] = None):
         """An ``httpx2.Auth`` for *server*. *interactive*: its handshake may wait for a person; the
@@ -201,9 +232,7 @@ class OAuthBroker:
 
         async def redirect(authorization_url: str) -> None:
             if not provider.interactive:
-                raise AuthorizationRequired(
-                    f"MCP server '{server}' needs authorization: call {self.authorize_tool} with server "
-                    f"'{server}' and open the link it gives in a browser")
+                raise AuthorizationRequired(self._needs_authorization(server))
             if storage.registered_for_another_address(provider.context.client_info):
                 # redirect_uri or the port changed since the registration: the authorization server
                 # would refuse this address. Forgotten here, the next authorization registers anew.
@@ -246,6 +275,7 @@ class OAuthBroker:
         provider = _provider_class()(server_url=url, client_metadata=metadata, storage=storage,
                                      redirect_handler=redirect, callback_handler=callback)
         provider.interactive = interactive
+        provider.needs_authorization = self._needs_authorization(server)
         return provider
 
     def _answer(self, state: str, data: Dict[str, Any]) -> bool:

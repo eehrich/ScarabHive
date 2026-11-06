@@ -107,6 +107,95 @@ async def test_a_server_behind_oauth_is_authorized_once_then_connects_and_refres
             await pool.close_all()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [None, {"tokens": {"access_token": "dead", "token_type": "Bearer"}}],
+                         ids=["no tokens", "dead tokens, no client"])
+async def test_a_connect_nobody_can_authorize_registers_nothing_at_the_server(tmp_path, stored):
+    """Nobody to open a link: refused at the server's 401. Left to the SDK, it registered this app at the
+    authorization server first -- and a server refusing the registration showed that error instead of the
+    way to authorize."""
+    import json
+
+    if stored is not None:
+        (tmp_path / "probe.json").write_text(json.dumps(stored), encoding="utf-8")
+    with oauth_probe() as port:
+        pool = _pool(port, tmp_path)
+        try:
+            with pytest.raises(MCPConnectionError, match="needs authorization: call mcp_client_authorize"):
+                await asyncio.wait_for(pool.connect("probe"), 20)
+        finally:
+            await pool.close_all()
+    file = tmp_path / "probe.json"
+    kept = json.loads(file.read_text(encoding="utf-8")) if file.exists() else None
+    assert kept == stored, f"the connect registered a client at the server: {kept}"
+
+
+def _unattended(tmp_path, answer):
+    """A provider nobody can authorize with, in front of a server that answers with ``answer(request)``."""
+    import types
+
+    import httpx2
+
+    seen = []
+
+    def handler(request):
+        seen.append(f"{request.method} {request.url.path}")
+        return answer(request)
+
+    config = types.SimpleNamespace(url="http://srv.test/mcp", auth=types.SimpleNamespace(client_id=None))
+    provider = OAuthBroker(tmp_path).provider("srv", config, REDIRECT, interactive=False)
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler), auth=provider), seen
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_answers_without_a_login_is_reached_without_one(tmp_path):
+    import httpx2
+
+    client, seen = _unattended(tmp_path, lambda request: httpx2.Response(200, json={}))
+    async with client:
+        assert (await client.post("http://srv.test/mcp", json={})).status_code == 200
+    assert seen == ["POST /mcp"], seen
+    assert not (tmp_path / "srv.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("challenge, stops", [('Bearer error="insufficient_scope", scope="more"', True),
+                                              ('Bearer error="invalid_token", error_description="insufficient_scope"',
+                                               False)])
+async def test_a_403_stops_only_for_a_missing_scope(tmp_path, challenge, stops):
+    """A scope step-up needs a person like a 401; any other 403 is the server's answer, passed on."""
+    import httpx2
+
+    client, seen = _unattended(tmp_path, lambda request: httpx2.Response(
+        403, headers={"WWW-Authenticate": challenge}, json={}))
+    async with client:
+        if stops:
+            with pytest.raises(Exception, match="needs authorization"):
+                await client.post("http://srv.test/mcp", json={})
+        else:
+            assert (await client.post("http://srv.test/mcp", json={})).status_code == 403
+    assert seen == ["POST /mcp"], seen
+
+
+@pytest.mark.asyncio
+async def test_a_refused_refresh_still_sends_the_request(tmp_path):
+    """The 401 of the token endpoint is the SDK's: it drops the token and sends the request without it."""
+    import json
+
+    import httpx2
+
+    (tmp_path / "srv.json").write_text(json.dumps({
+        "tokens": {"access_token": "old", "token_type": "Bearer", "refresh_token": "r", "expires_in": 1},
+        "tokens_saved_at": 1,     # long ago: the token ran out
+        "client_info": {"client_id": "c", "redirect_uris": [REDIRECT], "token_endpoint_auth_method": "none"},
+    }), encoding="utf-8")
+    client, seen = _unattended(
+        tmp_path, lambda request: httpx2.Response(401 if request.url.path == "/token" else 200, json={}))
+    async with client:
+        assert (await client.post("http://srv.test/mcp", json={})).status_code == 200
+    assert seen == ["POST /token", "POST /mcp"], seen
+
+
 def _callback_client(broker):
     server = type("S", (), {"oauth": broker, "callback_path": "/plugins/mcp_client/oauth/callback", "name": "mcp_client",
                             "questions": ElicitBroker(), "answer_url": "/plugins/mcp_client/answer"})()
@@ -262,6 +351,19 @@ def test_the_authorize_tool_is_named_after_the_instance():
 
     plugin = MCPClientServer("team_mcp", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
     assert plugin.oauth.authorize_tool == "team_mcp_authorize"
+
+
+@pytest.mark.parametrize("host, address", [("0.0.0.0", "127.0.0.1"), ("::", "[::1]"), ("[::]", "[::1]"),
+                                           ("::1", "[::1]"), ("hive.lan", "hive.lan"), ("127.0.0.1", "127.0.0.1")])
+def test_the_callback_address_is_one_a_browser_can_reach(host, address):
+    """network.host 0.0.0.0 (every interface) is no address: Notion refused http://0.0.0.0 as a callback."""
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from plugins.mcp_client.server import MCPClientServer
+
+    config = AgentSystemConfig()
+    config.network.host, config.network.port = host, 8001
+    plugin = MCPClientServer("mcp_client", config, ToolServerConfig(type="mcp_client"))
+    assert plugin.default_redirect_uri == f"http://{address}:8001/plugins/mcp_client/oauth/callback"
 
 
 def test_a_half_written_answer_is_read_again_not_taken(tmp_path):
