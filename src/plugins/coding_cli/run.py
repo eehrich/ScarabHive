@@ -103,19 +103,24 @@ def secret_rules() -> list[str]:
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
                   mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
                   rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False,
-                  effort: str = "", web_with_shell: bool = False) -> list[str]:
+                  effort: str = "", web_with_shell: bool = False, files: bool = True) -> list[str]:
     """The whole command line. The task goes in on stdin, so nothing the model
     wrote becomes an argument but json_schema; resume is a session id this
     plugin read, mcp_servers the operator's names, each with the tools its
     entry blocks. web: the workdir's runs search and read the web (WEB_TOOLS), in either mode, and
     get no shell: a page can tell the model what to do, and a file it wrote and an allowed command
     would run it -- unless the operator accepts that (web_with_shell, the instance's setting). What the
-    worktree shows can still leave in a URL WebFetch calls."""
-    tools = [*(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS), *(WEB_TOOLS if web else ())]
+    worktree shows can still leave in a URL WebFetch calls. files=False: a run in a room (claude_input) gets no
+    file tool and no shell -- others work in the same folder -- and takes its task as stream-json."""
+    file_tools = (PLAN_TOOLS if mode == "plan" else EDIT_TOOLS) if files else ()
+    tools = [*file_tools, *(WEB_TOOLS if web else ())]
     cmd = [*exe, "-p", "--output-format", "stream-json", "--verbose", "--restricted",
            "--strict-mcp-config", "--mcp-config", str(mcp_config),
            "--permission-mode", "plan" if mode == "plan" else "acceptEdits"]
-    commands = [c for c in allowed_commands if c] if mode != "plan" and (web_with_shell or not web) else []
+    if not files:
+        cmd += ["--input-format", "stream-json"]
+    commands = ([c for c in allowed_commands if c] if files and mode != "plan" and (web_with_shell or not web)
+                else [])
     servers = (mcp_servers or {}) if mode != "plan" else {}
     shell = shell_tool()
     # Headless, a command nobody approved is refused (M-CC-9): the shell runs
@@ -282,6 +287,20 @@ def agy_note(tools: Optional[Iterable[str]] = None) -> str:
             f"You reach them only through call_mcp_tool (server `{GATEWAY_SERVER}`). For files outside your working "
             "directory use them: your own file tools (read_file, write_file, edit_file, ...) are refused there. "
             "You have no shell: a command is refused, so look at folders and files with these tools too.\n\n")
+
+
+def claude_input(blocks: Sequence[str]) -> str:
+    """The task as the one stdin message of Claude Code's stream-json input, a text block for each part -- for a run
+    without files, in its workdir's room. Measured 2026-11-06 on 2.1.x, each against the subscription:
+    - Claude Code writes the working directory and the git status (branch, commits, files) into its system prompt,
+      ahead of the task: the same task in another folder, on another branch or after a commit read only Claude
+      Code's own part from the cache. A run in a worktree of its own shares no prefix with any other; a room is the
+      same folder and repository for every run. includeGitInstructions would leave the git part out, but
+      --restricted leaves --settings unread.
+    - The API caches at a block's end: a task that begins with a whole earlier task reads it back only when that
+      part is a block of its own. The same text as one block was written anew, plain stdin text matched no block."""
+    content = [{"type": "text", "text": block} for block in blocks if block]
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False) + "\n"
 
 
 def agy_input(task: str) -> str:

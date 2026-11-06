@@ -35,9 +35,15 @@ def emit(event):
 def main():
     task = sys.stdin.buffer.read().decode("utf-8")
     argv = sys.argv[1:]
+    blocks = None
+    if "--input-format" in argv and argv[argv.index("--input-format") + 1] == "stream-json":
+        # One user message whose text blocks together are the script.
+        blocks = [b["text"] for b in json.loads(task)["message"]["content"]]
+        task = "".join(blocks)
     if os.environ.get("FAKE_CLAUDE_LOG"):
         Path(os.environ["FAKE_CLAUDE_LOG"]).write_text(json.dumps(
-            {"argv": argv, "env": sorted(os.environ), "task": task, "cwd": os.getcwd()}), encoding="utf-8")
+            {"argv": argv, "env": sorted(os.environ), "task": task, "blocks": blocks, "cwd": os.getcwd()}),
+            encoding="utf-8")
     session = argv[argv.index("--resume") + 1] if "--resume" in argv else str(uuid.uuid4())
     emit({"type": "system", "subtype": "init", "session_id": session, "cwd": os.getcwd(),
           "model": "claude-haiku-4-5-20251001", "permissionMode": "acceptEdits", "apiKeySource": "none",

@@ -932,6 +932,132 @@ async def test_resume_takes_only_an_ended_run_of_ones_own(repo, data_root):
         assert "no run" in bogus["error"], bogus_id
 
 
+def room_server(repo, **config):
+    server = make_server(repo, **config)
+    server.workdirs["repo"]["files"] = False
+    return server
+
+
+async def test_runs_without_files_share_one_room_and_keep_claude_codes_prefix_alike(repo, log, data_root):
+    """The working directory and the git status stand in Claude Code's system prompt, ahead of the task: runs in a
+    worktree each share no cached prefix (cli.claude_input)."""
+    server = room_server(repo)
+    branches = git(repo, "branch", "--list")
+    first, _ = await call(server, "run_task", task="x")
+    cwd, argv = log()["cwd"], log()["argv"]
+    room = data_root / "rooms" / "repo"
+    status = (git(room, "rev-parse", "HEAD"), git(room, "status", "--porcelain", "--branch"))
+    second, _ = await call(server, "run_task", task="y")
+    assert first["state"] == second["state"] == "done", (first, second)
+    assert log()["cwd"] == cwd == str(room)
+    assert (git(room, "rev-parse", "HEAD"), git(room, "status", "--porcelain", "--branch")) == status, (
+        "a repository of its own whose status no run changes")
+    assert git(room, "rev-parse", "--show-toplevel").strip() == room.as_posix(), "not inside another repository"
+    assert not (data_root / "worktrees").exists() and git(repo, "branch", "--list") == branches
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    assert argv[argv.index("--tools") + 1] == "", "no file tool and no shell in a room others work in"
+    assert "commit" not in second or not second["commit"]
+
+
+async def test_a_task_that_begins_with_an_earlier_one_has_it_as_a_block_of_its_own(repo, log):
+    """The API caches a task at its end; only a block that ends there reads it back."""
+    server = room_server(repo)
+    await call(server, "run_task", task="BOOK\nREVIEW")
+    assert log()["blocks"] == ["BOOK\nREVIEW"]
+    await call(server, "run_task", task="BOOK\nREVIEW\nVERIFY")
+    assert log()["blocks"] == ["BOOK\nREVIEW", "\nVERIFY"]
+    await call(server, "run_task", task="BOOK\nREVIEW\nVERIFY\nAGAIN")
+    assert log()["blocks"] == ["BOOK\nREVIEW", "\nVERIFY", "\nAGAIN"], "the earlier one's own cut stays"
+    await call(server, "run_task", task="BOOK\nOTHER")
+    assert log()["blocks"] == ["BOOK\nOTHER"], "a part of a task is no task: nothing was cached there"
+
+
+async def test_a_run_in_a_room_resumes_while_others_work_there(repo, log):
+    server = room_server(repo, max_parallel=2, wait_s=0.2)
+    first, _ = await call(server, "run_task", task="x")
+    await call(server, "get_run", run_id=first["run_id"], wait_s=20)
+    other, _ = await call(server, "run_task", task="SLEEP 30")
+    assert other["state"] == "running"
+    resumed, _ = await call(server, "run_task", task="x\nmore", resume=first["run_id"])
+    assert "error" not in resumed, resumed
+    await call(server, "get_run", run_id=resumed["run_id"], wait_s=20)
+    assert log()["blocks"] == ["x\nmore"], "a resume goes on in its own conversation: nothing to cut"
+    await call(server, "cancel_run", run_id=other["run_id"])
+    await call(server, "run_task", task="x\nmore\nthen")
+    assert log()["blocks"] == ["x", "\nmore\nthen"], "and it is no beginning of a fresh run's task"
+
+
+async def test_one_conversation_goes_on_in_one_room_run_at_a_time(repo):
+    """Two processes resuming one session would write the same conversation."""
+    server = room_server(repo, max_parallel=3, wait_s=0.2)
+    first, _ = await call(server, "run_task", task="x")
+    await call(server, "get_run", run_id=first["run_id"], wait_s=20)
+    going, _ = await call(server, "run_task", task="SLEEP 30", resume=first["run_id"])
+    assert going["state"] == "running"
+    again, _ = await call(server, "run_task", task="x", resume=first["run_id"])
+    assert "another run goes on with that conversation" in again["error"]
+    await call(server, "cancel_run", run_id=going["run_id"])
+
+
+async def test_a_room_that_is_no_repository_starts_no_run(repo, data_root):
+    """It would show the git status of the repository around it, which changes with every commit."""
+    (data_root / "rooms" / "repo").mkdir(parents=True)
+    answer, status = await call(room_server(repo), "run_task", task="x")
+    assert "no repository of its own" in answer["error"] and status.closing[0][0] == "error"
+
+
+async def test_a_workdir_a_caller_adds_at_run_time_without_the_key_has_files(repo):
+    server = make_server(repo)
+    server.workdirs["added"] = {k: v for k, v in server.workdirs["repo"].items() if k != "files"}
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello", workdir="added")
+    assert result["state"] == "done" and result["branch"], result
+
+
+async def test_a_task_that_adds_only_blanks_is_not_cut(repo, log):
+    """A block of blanks only would be refused by the API."""
+    server = room_server(repo)
+    await call(server, "run_task", task="A\nB")
+    await call(server, "run_task", task="A\nB\n\n")
+    assert log()["blocks"] == ["A\nB\n\n"]
+
+
+async def test_a_room_run_does_not_resume_in_a_room_that_lost_its_repository(repo, data_root):
+    server = room_server(repo)
+    first, _ = await call(server, "run_task", task="x")
+    server_module._remove_tree(data_root / "rooms" / "repo" / ".git")
+    again, _ = await call(server, "run_task", task="y", resume=first["run_id"])
+    assert "no repository of its own" in again["error"]
+
+
+def test_a_room_another_process_makes_first_is_taken_whole(tmp_path, monkeypatch):
+    """Built beside it and moved: the one that comes second takes its own away, no half-made room is used."""
+    room = tmp_path / "rooms" / "text"
+    real = server_module._scratch_repo
+
+    def other_process_first(path, anywhere=False):
+        assert path != room, "built in place, another process could start a run in it half made"
+        made = real(path, anywhere)
+        if path != room:
+            real(room, anywhere=True)       # the other process moves its room into place meanwhile
+        return made
+
+    monkeypatch.setattr(server_module, "_scratch_repo", other_process_first)
+    server_module._make_room(room)
+    assert (room / ".git").is_dir() and git(room, "log", "--oneline").strip()
+    assert [p.name for p in room.parent.iterdir()] == ["text"], "the one made second is taken away"
+
+
+async def test_a_room_run_resumes_in_its_room_whatever_the_workdir_says_now(repo, log):
+    server = room_server(repo)
+    first, _ = await call(server, "run_task", task="x")
+    assert "worked on no files" in first["next"]
+    server.workdirs["repo"]["files"] = True
+    second, _ = await call(server, "run_task", task="y", resume=first["run_id"])
+    argv = log()["argv"]
+    assert second["state"] == "done" and argv[argv.index("--tools") + 1] == "", "no file tools in the shared room"
+    assert log()["blocks"] == ["y"]
+
+
 async def test_two_runs_never_share_a_worktree(repo):
     server = make_server(repo, max_parallel=2, wait_s=0.2)
     first, _ = await call(server, "run_task", task="x")

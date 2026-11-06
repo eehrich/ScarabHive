@@ -20,8 +20,10 @@ does another instance take the run over, found by its periodic sweep.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -87,6 +89,8 @@ CAP_STDERR = 600
 CAP_HIDDEN = 50
 LAST_ACTIONS = 12
 POLL_S = 1.0
+# How many tasks of a room a new one may begin with (_task_blocks): a verify pass follows its run within minutes.
+RECENT_TASKS = 32
 # How long a CLI may stay silent after its result event (counted from its last event) before it is ended: the
 # answer is on disk. agy 1.4.10-1.4.11 (2026-10-29/30): 75 of 257 new conversations did not exit after their
 # result, no resumed one (0 of 227); 74 of the 75 had no title stored, against 5 of 182 that exited -- it seems
@@ -322,13 +326,14 @@ def _replace(path: Path, text: str) -> None:
             time.sleep(0.05)
 
 
-def _scratch_repo(path: Path) -> bool:
+def _scratch_repo(path: Path, anywhere: bool = False) -> bool:
     """A workdir in the data directory that is not there yet: an empty repository with one empty commit (a run's
     worktree branches from it), the shape every such workdir has -- the scratch folder a run as an LLM works in. A
     data directory of its own (an eval's) starts without them. A folder that is there is left alone, repository or
     not: its content is someone's. A failed attempt takes the folder it made away again (git's objects are read-only
-    on Windows), and the workdir is skipped as before. False: it tried and failed, whatever is left there."""
-    if path.exists() or not path.is_relative_to(data_path().resolve()):
+    on Windows), and the workdir is skipped as before. False: it tried and failed, whatever is left there.
+    anywhere: a room of this plugin's own (DATA_ROOT may lie elsewhere), made the same way."""
+    if path.exists() or not (anywhere or path.is_relative_to(data_path().resolve())):
         return True
     try:
         path.mkdir(parents=True)
@@ -347,17 +352,45 @@ def _scratch_repo(path: Path) -> bool:
                 raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
-
-        def writable(remove, name, _exc):
-            os.chmod(name, stat.S_IWRITE)
-            remove(name)
-        try:
-            # onexc from 3.12 on, where onerror is deprecated; the project runs on 3.11 too
-            shutil.rmtree(path, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
-        except OSError as left:
-            logger.warning("coding_cli: %s is left half made -- remove it (%s)", path, left)
+        _remove_tree(path)
         return False
     return True
+
+
+def _in_room(spec: dict, prior: Optional[dict]) -> bool:
+    """Whether a run works in its workdir's room: a resume where its run did, whatever the workdir says now; a fresh
+    run where the workdir has no files. A workdir a caller adds at run time without the key has files."""
+    return bool(prior.get("room")) if prior else spec.get("files", True) is False
+
+
+def _make_room(path: Path) -> None:
+    """The room, made whole or not at all: a repository with one empty commit, built beside it and moved into place.
+    Another process making it at the same time moves its own there first, and this one's is taken away -- no run
+    starts in a room half made, or in one that is taken away under it. A folder that is there is left alone."""
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    making = path.parent / f".{path.name}.{secrets.token_hex(4)}"
+    if not _scratch_repo(making, anywhere=True):
+        return
+    try:
+        making.rename(path)
+    except OSError:
+        if not path.exists():
+            raise
+        _remove_tree(making)    # another process was first
+
+
+def _remove_tree(path: Path) -> None:
+    """Git's objects are read-only on Windows."""
+    def writable(remove, name, _exc):
+        os.chmod(name, stat.S_IWRITE)
+        remove(name)
+    try:
+        # onexc from 3.12 on, where onerror is deprecated; the project runs on 3.11 too
+        shutil.rmtree(path, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
+    except OSError as left:
+        logger.warning("coding_cli: %s is left half made -- remove it (%s)", path, left)
 
 
 def _session_vars(agent: Any, session_id: str) -> Optional[dict]:
@@ -422,6 +455,11 @@ class CodingCliServer(SchemaBasedToolServer):
                 logger.warning("coding_cli: workdir %r skipped -- web and mcp_servers together: a page the run "
                                "reads could steer the servers' tools; give research a workdir of its own", wname)
                 continue
+            files = entry.get("files") is not False
+            if not files and self.agy:
+                logger.warning("coding_cli: workdir %r skipped -- files: false is for Claude Code: agy reads its "
+                               "task as it is and keeps no room", wname)
+                continue
             unusable = [n for n in names if not _usable_mcp(n, remote.get(n))]
             if unusable:
                 logger.warning("coding_cli: workdir %r skipped -- MCP server(s) %s unknown, disabled, stdio, without "
@@ -429,7 +467,7 @@ class CodingCliServer(SchemaBasedToolServer):
                 continue
             self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []],
                                          "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True,
-                                         "gateway": gateway}
+                                         "gateway": gateway, "files": files}
         # The subscription belongs to one person (concept §7).
         users = getattr(server_config, "allowed_users", None) or ()
         # `allowed_users: admin` is one user, not five letters.
@@ -487,6 +525,8 @@ class CodingCliServer(SchemaBasedToolServer):
                                              MAX_RESULT_CHARS_CAP) or CAP_RESULT)
         self._monitors: dict[str, asyncio.Task] = {}
         self._listeners: dict[str, Any] = {}
+        # Per workdir without files, the block ends of its last tasks (_task_blocks).
+        self._recent_tasks: dict[str, collections.deque] = {}
         # run id -> its live view (live.py), for the life of the run, not only
         # while the call that started it waits.
         self._live: dict[str, LiveRun] = {}
@@ -939,7 +979,11 @@ class CodingCliServer(SchemaBasedToolServer):
             if available is not None and available < MIN_AVAILABLE_MEMORY_MB:
                 return await self._fail(status, f"not started: only {available} MB of memory available, a run needs "
                                                 f"{MIN_AVAILABLE_MEMORY_MB} MB free -- wait for runs to end")
-            if prior and any(r.get("worktree") == prior["worktree"] for r in running):
+            # A room holds no files: its runs share it, resumes as well -- but one conversation goes on in one run
+            # at a time, or two processes write the same session.
+            if prior and prior.get("room") and any(r.get("resumes") == prior["claude_session"] for r in running):
+                return await self._fail(status, "resume: another run goes on with that conversation")
+            if prior and not prior.get("room") and any(r.get("worktree") == prior["worktree"] for r in running):
                 return await self._fail(status, "resume: another run works in that worktree")
             run_id = secrets.token_hex(6)
             # Held until the call has answered: while it is in flight this instance answers for the run, its
@@ -998,7 +1042,7 @@ class CodingCliServer(SchemaBasedToolServer):
         sub_agent = False
         try:
             try:
-                await status.progress(f"run {run_id} started on {record['branch']} ({mode})")
+                await status.progress(f"run {run_id} started on {record['branch'] or 'its room'} ({mode})")
                 await asyncio.wait_for(asyncio.shield(monitor), timeout=self.wait_s)
             except asyncio.TimeoutError:
                 pass
@@ -1153,6 +1197,29 @@ class CodingCliServer(SchemaBasedToolServer):
         self._stop(record["run_id"], reason)
         await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
 
+    def _task_blocks(self, workdir: str, task: str, fresh: bool) -> list[str]:
+        """The task cut where an earlier task of the room ended, the longest one it begins with: the API cached that
+        one at its end, and only a block ending there reads it back (claude_input). A fresh run's ends are kept for
+        the next; a resume goes on in its own conversation, its task begins nothing. Kept in this process, the last
+        RECENT_TASKS of the room: what another process started, or what is gone, is written anew."""
+        if not fresh:
+            return [task]
+        recent = self._recent_tasks.setdefault(workdir, collections.deque(maxlen=RECENT_TASKS))
+        ends: tuple[int, ...] = ()
+        for length, digest, cuts in sorted(recent, key=lambda r: -r[0]):
+            if length <= len(task) and hashlib.sha256(task[:length].encode()).hexdigest() == digest:
+                ends = cuts
+                break
+        if ends and not task[ends[-1]:].strip():
+            # Nothing but blank after it: a block of blanks only is refused by the API.
+            cuts = (*ends[:-1], len(task))
+        else:
+            cuts = (*ends, len(task))
+        entry = (len(task), hashlib.sha256(task.encode()).hexdigest(), cuts)
+        if entry not in recent:
+            recent.append(entry)
+        return [task[a:b] for a, b in zip((0, *cuts), cuts)]
+
     def _prepare(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict],
                  user_id: str, session_id: str, schema: Optional[dict] = None,
                  asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
@@ -1161,14 +1228,24 @@ class CodingCliServer(SchemaBasedToolServer):
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
+        # A caller may add a workdir of its own at run time, without the key: one with files.
+        room = _in_room(spec, prior)
         if prior:
             worktree, branch = Path(prior["worktree"]), prior["branch"]
+        elif room:
+            # Its one room, the same folder for every run (cli.claude_input): no worktree, nothing to commit.
+            worktree, branch = self._root() / "rooms" / workdir, ""
+            _make_room(worktree)
         else:
             worktree, branch = self._root() / "worktrees" / run_id, f"coding_cli/{run_id}"
+        if room and not (worktree / ".git").is_dir():
+            # It would show the git status of a repository around it (the project's), in every run's prefix.
+            raise OSError(f"the room {worktree} is no repository of its own -- remove the folder")
         try:
             made = (cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or []) if prior
+                    else cli.Worktree("", "", []) if room
                     else cli.make_worktree(spec["path"], worktree, branch, spec["exclude"]))
-            if not prior:
+            if not prior and not room:
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
                                asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url, session_vars)
@@ -1182,7 +1259,7 @@ class CodingCliServer(SchemaBasedToolServer):
             # run no worktree or branch that no answer names.
             with contextlib.suppress(OSError):
                 self._file(run_id, "mcp.json").unlink(missing_ok=True)
-            if not prior:
+            if not prior and not room:     # the room stays: other runs work in it
                 cli.remove_worktree(spec["path"], worktree, branch)
             raise
 
@@ -1192,6 +1269,8 @@ class CodingCliServer(SchemaBasedToolServer):
                pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
                session_vars: Optional[dict] = None) -> dict:
         resume = prior["claude_session"] if prior else ""
+        # Where the run started, not what the workdir says now: a resume goes on in the room, file tools or not.
+        room = _in_room(self.workdirs[workdir], prior)
         unsafe = cli.agy_unsafe(worktree) if self.agy else []
         if unsafe:
             # agy would run them, hooks without asking (run.py, AGY_SETTINGS).
@@ -1260,7 +1339,8 @@ class CodingCliServer(SchemaBasedToolServer):
                                                  **({cli.GATEWAY_SERVER: []} if token else {})},
                                     model=self.model, effort=self.effort,
                                     resume=resume, rules=rules if rules.is_file() else None, json_schema=schema,
-                                    web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell)
+                                    web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell,
+                                    files=not room)
         record = {"run_id": run_id, "instance_name": self.name, "cli": self.cli,
                   "max_run_s": max_run_s, "asked_run_s": asked_run_s,
                   "asked_utilization": asked_utilization,
@@ -1269,6 +1349,7 @@ class CodingCliServer(SchemaBasedToolServer):
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,
                   "git_dir": made.git_dir, "hidden": made.hidden, "json_schema": schema,
                   "prior": prior["run_id"] if prior else None, "state": "running", "started_at": time.time(),
+                  "room": room, "resumes": resume or None,
                   "pin": pin, "gateway": gateway["instance"] if gateway else None,
                   # Read at the end, by whichever instance finalizes: the starting one's bound.
                   "max_result_chars": self.max_result_chars,
@@ -1277,6 +1358,9 @@ class CodingCliServer(SchemaBasedToolServer):
             # Before the task, the same for every run in the workdir: the cached prefix stays one.
             note = cli.agy_note(gateway["tools"] if token else None)
             self._file(run_id, "task").write_text(cli.agy_input(note + task), encoding="utf-8")
+        elif room:
+            self._file(run_id, "task").write_text(cli.claude_input(self._task_blocks(workdir, task, prior is None)),
+                                                  encoding="utf-8")
         else:
             self._file(run_id, "task").write_text(task, encoding="utf-8")
         self._save(record)
@@ -1606,8 +1690,9 @@ class CodingCliServer(SchemaBasedToolServer):
             answer["limit"] = record["limit"]
         if record.get("details"):
             answer["details"] = _untrusted(record["details"])
-        answer["next"] = (f"resume={run_id} continues this conversation in the same worktree; "
-                          f"nothing is merged -- git diff {str(record.get('base'))[:10]}..{record.get('branch')} shows it")
+        answer["next"] = (f"resume={run_id} continues this conversation; the run worked on no files" if record.get("room")
+                          else f"resume={run_id} continues this conversation in the same worktree; nothing is merged "
+                               f"-- git diff {str(record.get('base'))[:10]}..{record.get('branch')} shows it")
         files = len([c for c in changes if not c.startswith("...")])
         window = (record.get("abo") or {}).get("five_hour")
         line = (f"run {run_id} {record.get('state')}: {record.get('turns') or 0} turn(s), {files} file(s), "
