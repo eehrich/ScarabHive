@@ -8,8 +8,9 @@ then a rate limit, an exhausted quota or a refused key blocks the LLM for every 
 (llm/model_health.py) and moves on; a 5xx or a
 transport error moves on without a block; running out of file descriptors moves nowhere. "Moves on"
 is the next fallback of the step (step_llm.py), and when the chain is used up the error goes to the
-caller. A cancel or a timeout ends the run. Its own module because what each error means is the one
-place the rules of docs/_arch_agent_architecture.md ("What Triggers a Block") live in code.
+caller -- unless no LLM of the chain could even be reached (a network outage): then the step waits
+and asks the run's own model again, within the agent's network_outage_seconds. A cancel or a timeout
+ends the run. Its own module because what each error means is the one place the rules of docs/_arch_agent_architecture.md ("What Triggers a Block") live in code.
 """
 from __future__ import annotations
 
@@ -19,8 +20,12 @@ import copy
 import errno
 import functools
 import logging
+import socket
+import ssl
+import time
 from typing import TYPE_CHECKING, Any, Dict
 
+import httpcore
 import httpx
 
 from .....llm.model_health import model_health
@@ -51,6 +56,48 @@ FORMAT_NOTE = "agent.structured_output"
 # indistinguishable from an unreachable endpoint unless the cause chain is
 # inspected — see _is_local_resource_exhaustion.
 _LOCAL_EXHAUSTION_ERRNOS = frozenset({errno.EMFILE, errno.ENFILE})
+
+#: A network outage: the first wait before the chain is asked again, and the longest one (each
+#: further wait doubles). Short enough that a run comes back within two minutes of the network.
+OUTAGE_FIRST_WAIT_S = 10.0
+OUTAGE_MAX_WAIT_S = 120.0
+#: The clock the outage budget is measured on (tests replace it).
+_now = time.monotonic
+
+# The way to the endpoint is gone: unroutable, the network down, the connect timed out. A refused
+# connection is not among them: the host answered -- a wrong port, a local server not started.
+_UNREACHABLE_ERRNOS = frozenset({errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ETIMEDOUT})
+
+#: Failures of a connection that was up: the request may have reached the provider.
+_AFTER_CONNECT = (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError, httpx.ReadTimeout,
+                  httpx.WriteTimeout, httpcore.ReadError, httpcore.WriteError, httpcore.RemoteProtocolError,
+                  httpcore.ReadTimeout, httpcore.WriteTimeout)
+
+
+def _never_reached(exc: BaseException) -> bool:
+    """Did this call fail before any request could reach the provider (connect, DNS)?
+
+    Only such a failure can be the network: a read timeout, a broken stream or an unreadable body
+    come from a provider that may have got the request -- asked again they repeat (and may be
+    billed again). The clients keep the transport error as the cause (``raise ... from``). A failure
+    of a connection that was up, a refused connection and TLS are no outage: a broken read carries
+    the OSError of the dropped socket (ETIMEDOUT, EHOSTUNREACH) as its cause too.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    found = False
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (ssl.SSLError, ConnectionRefusedError) + _AFTER_CONNECT):
+            return False
+        if isinstance(cur, (httpx.ConnectError, httpx.ConnectTimeout, socket.gaierror)):
+            found = True
+        elif isinstance(cur, OSError) and cur.errno in _UNREACHABLE_ERRNOS:
+            found = True
+        elif type(cur).__name__ in ("ClientConnectorError", "ClientConnectorDNSError"):   # aiohttp (Gemini SDK)
+            found = True
+        cur = cur.__cause__ or cur.__context__
+    return found
 
 
 def _is_local_resource_exhaustion(exc: BaseException) -> bool:
@@ -100,6 +147,7 @@ class FallbackMixin:
         on a cancel and on a timeout. An error no fallback can help with goes up as it came.
         """
         # LLM call with streaming support and fallback handling (st.llm_out starts as None)
+        self._start_round(run, st)
         while True:  # Retry loop for fallbacks (rate limits + upstream errors)
             async with contextlib.aclosing(self._prepare_llm_call(run, st)) as events:
                 async for event in events:
@@ -107,6 +155,12 @@ class FallbackMixin:
             if st.ended():
                 return
             try:
+                if st.network_wait is not None:
+                    # Inside the try, like the rate-limit wait: a cancel during it ends the run
+                    seconds, st.network_wait = st.network_wait, None
+                    await _wait_unless_cancelled(seconds, run.main_token)
+                    self._after_outage_wait(run, st)
+                    continue  # prepared afresh for the LLM picked now
                 if st.rate_limit_wait is not None:
                     # Inside the try: a cancel during the wait ends the run like one during a call
                     (seconds, limit), st.rate_limit_wait = st.rate_limit_wait, None
@@ -129,6 +183,7 @@ class FallbackMixin:
                 # retry with a fallback LLM without leaking the error event to the client.
                 _assistant_check: Dict[str, Any] = st.llm_out.get("assistant", {}) if st.llm_out else {}
                 if "error" in _assistant_check:
+                    st.round_reached = True
                     async with contextlib.aclosing(self._on_upstream_error(run, st, _assistant_check["error"])) as events:
                         async for event in events:
                             yield event
@@ -140,20 +195,26 @@ class FallbackMixin:
                 # An answer lifts the LLM's block for every agent — one set
                 # before this call went out.
                 model_health.release(st.current_llm, asked_at=st.health_asked_at)
+                # An answer ends an outage: a later one gets the whole budget, and the base it
+                # moved off is not brought back (one endpoint down is what the swap is for).
+                run.outage_started, run.outage_waits = None, 0
                 if st.pending_thinking_complete:
                     yield _name_the_model(st.pending_thinking_complete, st.current_llm)
                 break
 
             except ReasoningLoopError as e:
+                st.round_reached = True
                 await self._on_reasoning_loop(run, st, e)
                 continue
 
             except (LLMRateLimitError, LLMQuotaExhaustedError) as e:
+                st.round_reached = True
                 if await self._fall_back_on_rate_limit(run, st, e):
                     continue  # Retry with fallback
                 raise
 
             except LLMServerError as e:
+                st.round_reached = True
                 if await self._fall_back_on_server_error(run, st, e):
                     continue  # Retry with fallback (request-scoped)
                 raise
@@ -563,6 +624,8 @@ class FallbackMixin:
                 f"process's open descriptors against LimitNOFILE."
             )
             return False
+        if status_code is not None or not _never_reached(e):
+            st.round_reached = True     # an answer of some kind, or a provider that got the request
         kind = (f"HTTP {status_code}" if status_code
                 else "Connection/transport error")
         if endpoint_level:
@@ -586,5 +649,48 @@ class FallbackMixin:
             # (~connect timeout x retries per step).
             self._switch_to_fallback(run, st, fallback_profile, fallback_llm, swap_base=True)
             return True
+        if not st.round_reached and await self._wait_out_outage(run, st, e):
+            return True
         logger.error(f"[{self.name}] No fallback profiles available, connection error unrecoverable")
         return False
+
+    def _start_round(self: Agent, run: LoopState, st: StepState) -> None:
+        """A round of the chain begins (a step, or the next try after an outage wait): nothing was
+        reached yet, and the base it starts from is kept to come back to."""
+        st.round_reached = False
+        st.round_base = (run.active_llm, run.base_profile, run.display_profile_info)
+        st.round_started = _now()
+
+    async def _wait_out_outage(self: Agent, run: LoopState, st: StepState, e: Exception) -> bool:
+        """No LLM of the round could even be reached: most likely the network, not every provider
+        at once. The step waits (``st.network_wait``, taken at the top of the retry loop) and then
+        asks again from the base the round started on -- walking on would end the run, and a chain
+        ends on its priciest members. False once network_outage_seconds have passed since the
+        outage began (calls included, not only the waits)."""
+        now = _now()
+        if run.outage_started is None:
+            run.outage_started = st.round_started   # the calls of the first round count too
+        left = run.max_outage_seconds - (now - run.outage_started)
+        if left <= 0:
+            return False
+        seconds = min(OUTAGE_FIRST_WAIT_S * 2 ** run.outage_waits, OUTAGE_MAX_WAIT_S, left)
+        run.outage_waits += 1
+        logger.warning(
+            f"[{self.name}] No LLM of the chain could be reached ({e}); waiting {seconds:.0f}s for "
+            f"the network ({now - run.outage_started:.0f} of {run.max_outage_seconds:.0f}s gone)")
+        await run.status_worker.progress(
+            f"No LLM reachable, waiting {seconds:.0f}s for the network",
+            meta={"step": st.step + 1, "outage_wait_s": seconds})
+        st.network_wait = seconds
+        return True
+
+    def _after_outage_wait(self: Agent, run: LoopState, st: StepState) -> None:
+        """After an outage wait: the base the round started on, and the step's LLM and chain picked
+        afresh, as at the start of a step -- a new round."""
+        if st.round_base is not None:
+            run.active_llm, run.base_profile, run.display_profile_info = st.round_base
+        previous = st.current_llm
+        self._apply_step_pick(run, st)
+        if st.current_llm is not previous:
+            model_health.drop_probe(previous, run.request_id)
+        self._start_round(run, st)

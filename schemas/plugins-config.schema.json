@@ -168,6 +168,12 @@
           "title": "Fallback Recovery Seconds",
           "type": "integer"
         },
+        "network_outage_seconds": {
+          "default": 1800,
+          "minimum": 0,
+          "title": "Network Outage Seconds",
+          "type": "number"
+        },
         "max_steps": {
           "default": 20,
           "title": "Max Steps",

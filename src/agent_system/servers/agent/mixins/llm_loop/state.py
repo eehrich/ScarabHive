@@ -86,6 +86,11 @@ class LoopState:
     #: (active_llm): later steps leave it out of their fallback chain, or the
     #: fallback that fails next would be retried as its own fallback.
     base_profile: Optional[str] = None
+    #: How long this run may wait out a network outage (agent_config.network_outage_seconds);
+    #: when the current one began (fallback._now) and how often it has waited -- reset by an answer.
+    max_outage_seconds: float = 0.0
+    outage_started: Optional[float] = None
+    outage_waits: int = 0
 
     # -- safeguards against infinite loops
     consecutive_no_tool_calls: int = 0
@@ -158,6 +163,17 @@ class StepState:
     #: (seconds, the 429) when the next call of the retry loop waits first and asks the same
     #: client again; None otherwise.
     rate_limit_wait: Optional[tuple] = None
+    #: Seconds the next call of the retry loop waits first, a network outage having failed
+    #: every LLM of the chain; then the step picks its LLM afresh. None otherwise.
+    network_wait: Optional[float] = None
+    #: Whether a call of this round of the chain reached a provider (any answer or HTTP status, or a
+    #: failure after the request went out); only a round that reached none waits for the network.
+    round_reached: bool = False
+    #: The run's base (active_llm, base_profile, display_profile_info) as the round began: after an
+    #: outage the run asks it again, not the chain's last member the round moved the base to.
+    round_base: Optional[tuple] = None
+    #: When the round began (fallback._now): an outage is counted from its first round on.
+    round_started: float = 0.0
     budget_note: Optional[ChatMessage] = None
 
     # -- the call and its retries (fallback.py)

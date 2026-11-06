@@ -240,6 +240,12 @@ class AgentConfig(BaseModel):
     # a rate limit starts at 60 s and doubles up to this; an exhausted quota or a
     # refused key (401/402/403/404) blocks this long at once.
     fallback_recovery_seconds: int = 3600
+    # How long a run waits out a network outage: when no LLM of a step's chain could even be
+    # reached (the connect timed out or found no route, a name that does not resolve), the step waits
+    # -- 10 s, doubling up to 2 min -- and asks the run's own model again, until this many
+    # seconds have passed since the outage began (calls included). An answer ends the outage.
+    # 0: the run ends at once, as before.
+    network_outage_seconds: float = Field(1800, ge=0)
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning (default: 20, used if not set in config)
     tools: ToolConfig = Field(default_factory=ToolConfig)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)

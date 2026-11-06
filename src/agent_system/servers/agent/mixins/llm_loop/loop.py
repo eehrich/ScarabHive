@@ -97,6 +97,8 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         display_profile_info = self.llm_profile_info
         max_block_seconds = float(self.agent_config.fallback_recovery_seconds
                                   if self.agent_config else 3600)
+        max_outage_seconds = float(self.agent_config.network_outage_seconds
+                                   if self.agent_config else 0)
 
         # Extract from context
         messages = context.messages
@@ -177,6 +179,7 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
             active_llm=active_llm,
             display_profile_info=display_profile_info,
             max_cut_off_notes=max_cut_off_notes,
+            max_outage_seconds=max_outage_seconds,
         )
 
         # One iteration past the budget: the final call. It used to be a bare
