@@ -63,6 +63,15 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+def _unknown_tool_error(shown: Optional[str], called: Optional[str], names: List[str]) -> str:
+    """The error for a call of a tool this agent does not have. A model that called an external tool by the
+    server's own name (browser_navigate for playwright_browser_navigate) is told the one name it meant; with
+    two or more candidates it is told none."""
+    near = {name for name in names if called and name.endswith(f"_{called}")}
+    hint = f"Did you mean '{near.pop()}'?" if len(near) == 1 else "Please check available tools and try again."
+    return f"Unknown tool: '{shown}'. The tool does not exist. {hint}"
+
+
 @dataclass
 class _StepCalls:
     """The model's tool calls of one step and what has become of each so far:
@@ -347,7 +356,9 @@ class ToolExecutionManager:
                 call_id = call_id_or(tc, "error-call")
                 # Return detailed error message so LLM can recover
                 error_content = json.dumps({
-                    "error": f"Unknown tool: '{tool_name}'. The tool does not exist. Please check available tools and try again.",
+                    # the mapping's keys: the names in the model's tool list, after allowed and blocked --
+                    # available_tools also holds server names, blocked ones too
+                    "error": _unknown_tool_error(tool_name, openai_tool_name, list(tool_name_mapping)),
                     "type": "ToolNotFoundError"
                 })
                 calls.indexed_results.append(

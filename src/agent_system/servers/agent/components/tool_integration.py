@@ -15,6 +15,13 @@ from ....tools.integration import get_tool_integration
 logger = logging.getLogger(__name__)
 
 
+def model_tool_name(tool_name: str) -> str:
+    """The name the model calls an external tool by: ``server.tool`` made to fit ``^[a-zA-Z0-9_-]+$``."""
+    import re
+    name = tool_name.replace(".", "_").replace("/", "__").replace(" ", "_")
+    return re.sub(r'[^a-zA-Z0-9_-]', '', name)
+
+
 class ToolIntegrationManager:
     """Manages tool integration and schema building for the agent."""
 
@@ -132,15 +139,8 @@ class ToolIntegrationManager:
         """Build schema for an external tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
         
-        # Create OpenAI-compatible name (replace dots and other invalid chars with underscores)
-        # OpenAI requires pattern: ^[a-zA-Z0-9_-]+$
-        openai_tool_name = tool_name.replace(".", "_")  # Replace dots first
-        openai_tool_name = openai_tool_name.replace("/", "__")  # Replace slashes with double underscore
-        openai_tool_name = openai_tool_name.replace(" ", "_")  # Replace spaces
-        # Remove any remaining invalid characters
-        import re
-        openai_tool_name = re.sub(r'[^a-zA-Z0-9_-]', '', openai_tool_name)
-        
+        openai_tool_name = model_tool_name(tool_name)
+
         tool_name_mapping = {openai_tool_name: tool_name}
 
         try:

@@ -311,3 +311,30 @@ class TestUnknownToolHandling:
         # Verify event has error info
         error_event = [e for e in events if e["type"] == "tool_error"][0]
         assert "Unknown tool" in error_event["error"]
+
+
+class TestUnknownToolNamesTheOneMeant:
+    """An external tool called by the server's own name (browser_navigate) gets the name the model's tool list
+    carries for it; a name two servers share gets no guess."""
+
+    @staticmethod
+    async def _error(manager, mapping):
+        calls = [{"id": "c1", "function": {"name": "browser_navigate", "arguments": '{"url": "https://example.com"}'}}]
+        # available_tools holds server names too, as in a run: a blocked server's among them is no tool to name
+        available = [*mapping.values(), "blocked_browser_navigate"]
+        messages, _events, _results = await execute_tools_collect(manager, calls, mapping, available, 1, "req_near")
+        return json.loads(messages[0].content)["error"]
+
+    @pytest.mark.asyncio
+    async def test_the_one_tool_it_meant_is_named(self, tool_execution_manager):
+        error = await self._error(tool_execution_manager, {
+            "playwright_browser_navigate": "playwright.browser_navigate",
+            "playwright_browser_snapshot": "playwright.browser_snapshot"})
+        assert error.endswith("Did you mean 'playwright_browser_navigate'?"), error
+
+    @pytest.mark.asyncio
+    async def test_two_candidates_name_none(self, tool_execution_manager):
+        error = await self._error(tool_execution_manager, {
+            "playwright_browser_navigate": "playwright.browser_navigate",
+            "edge_browser_navigate": "edge.browser_navigate"})
+        assert "Did you mean" not in error and "check available tools" in error, error
