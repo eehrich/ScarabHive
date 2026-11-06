@@ -1,0 +1,2 @@
+value: 53
+next: owqln.txt

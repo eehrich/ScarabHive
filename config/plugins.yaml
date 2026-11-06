@@ -1011,8 +1011,8 @@ plugins:
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
-        # Above the context_engineer's max_messages (190): its prune (no LLM
-        # call, archived) runs first; summarization only if that stays above 200.
+        # Above the context_engineer's max_messages (190): its prune (archived,
+        # one checkpoint call) runs first; summarization only if that stays above 200.
         max_messages: 200
         summarization_trigger_percentage: 0.8
 
@@ -1081,13 +1081,17 @@ plugins:
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
         # Every prune breaks the prompt cache, so what matters is how rarely:
-        # pruning from 190 to 100 means one break per ~90 messages, no LLM call,
-        # removed messages go to the archive. Must stay BELOW the
+        # pruning from 190 to 100 means one break per ~90 messages and one
+        # checkpoint call (prune_checkpoint_profile); removed messages go to the archive. Must stay BELOW the
         # context_summarizer's max_messages (200), or it summarizes first.
         # The writer_context_summarizer (writer agents) is set to 150 and
         # still triggers first there.
         max_messages: 190              # 0 = off
         max_messages_prune_to: 100     # messages kept after a prune; 0 = max_messages // 2
+        # The prune note carries a checkpoint of what the leaving messages
+        # established (objective, decisions, work state). A fast profile: one
+        # that thinks first missed the 25 s budget in about three of ten prunes.
+        prune_checkpoint_profile: summarizer   # "" = no checkpoint
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 

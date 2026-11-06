@@ -1,0 +1,2 @@
+value: 92
+next: ccthd.txt

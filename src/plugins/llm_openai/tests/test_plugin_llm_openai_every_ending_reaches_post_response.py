@@ -296,6 +296,20 @@ async def test_a_spent_quota_is_not_retried(streaming):
     assert hits == 1 and len(hooks.post) == 1
 
 
+@both
+async def test_googles_ordinary_throttle_is_a_rate_limit_not_a_spent_quota(streaming):
+    """RESOURCE_EXHAUSTED says "exhausted" and "quota": read as a spent quota it blocked the model for everyone."""
+    body = ('{"error": {"code": 429, "message": "Resource has been exhausted (e.g. check quota).", '
+            '"status": "RESOURCE_EXHAUSTED"}}')
+    async with Upstream(_rate_limited("", body), _rate_limited("", body)) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await asyncio.wait_for(call(client, streaming), 10)
+        hits = upstream.hits
+    assert not isinstance(limited.value, LLMQuotaExhaustedError)
+    assert hits == 2, "a throttle is waited on and asked again"
+
+
 async def _broken(**kwargs):
     raise RuntimeError("detector broke")
 

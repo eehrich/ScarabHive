@@ -234,6 +234,11 @@ config:
     default: "summarizer"
     description: "The llm_profile that writes those summaries -- a NAME from config/llm.yaml, which is where the model behind it is chosen and changed. 'summarizer' ships as a cheap fast profile. Empty: nothing is summarized, whatever tool_result_summary_from says. Every summarized result goes to that profile's provider, file contents included -- pick one you trust with what the agent reads."
 
+  prune_checkpoint_profile:
+    type: string
+    default: ""
+    description: "The llm_profile that writes a CHECKPOINT when Pre-Layer P (or Layer 3) moves messages out of view: objective, requirements, decisions, work state, next move, relevant files -- what those messages established, written into the one breadcrumb and updated on every prune instead of stacked. A NAME from config/llm.yaml (e.g. 'summarizer'). Empty (default): the breadcrumb only counts. A failed or slow call (25 s) keeps the previous checkpoint and the prune goes ahead. The moved messages go to that profile's provider -- pick one you trust with them. Per agent via hooks.overrides."
+
   tool_result_summary_tools:
     type: array
     default: []

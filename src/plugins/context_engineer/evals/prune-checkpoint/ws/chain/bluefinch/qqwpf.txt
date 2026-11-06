@@ -1,0 +1,2 @@
+value: 38
+next: ijnge.txt

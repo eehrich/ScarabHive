@@ -830,3 +830,18 @@ def test_a_tool_results_images_follow_the_whole_run_of_parallel_results(anthropi
     first_text = flat.index("text")
     assert flat.count("tool_result") == 2
     assert max(i for i, t in enumerate(flat) if t == "tool_result") < first_text
+
+
+def test_a_throttle_naming_exhausted_resources_is_a_rate_limit_and_a_spent_balance_a_quota():
+    """The 429 mapping read "quota" or "exhausted" anywhere as a spent quota, which blocks the model for
+    every agent; it asks llm_common's quota_exhausted now."""
+    from agent_system.llm.models import LLMQuotaExhaustedError, LLMRateLimitError
+    from plugins.llm_anthropic.anthropic_client import _typed_error
+
+    throttle = _typed_error(RuntimeError("429 RESOURCE_EXHAUSTED: Resource has been exhausted (e.g. check quota)."),
+                            "rate_limit", "claude-x")
+    spent = _typed_error(RuntimeError("Your credit balance is too low to access the Anthropic API."),
+                         "rate_limit", "claude-x")
+
+    assert type(throttle) is LLMRateLimitError
+    assert type(spent) is LLMQuotaExhaustedError

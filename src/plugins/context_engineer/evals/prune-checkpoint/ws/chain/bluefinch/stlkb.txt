@@ -1,0 +1,2 @@
+value: 70
+next: kqnjt.txt

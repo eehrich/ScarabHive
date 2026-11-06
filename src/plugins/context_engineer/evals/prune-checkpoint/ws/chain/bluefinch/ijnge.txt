@@ -1,0 +1,2 @@
+value: 52
+next: ihmxh.txt

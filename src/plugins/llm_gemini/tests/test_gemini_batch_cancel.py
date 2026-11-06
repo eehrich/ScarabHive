@@ -142,3 +142,22 @@ async def test_every_job_leaves_the_tracker(client):
         await client.cancel_all_pending_batches()
 
     assert {c.args[1] for c in tracker.remove_job.await_args_list} == {"a", "b"}
+
+
+PER_MINUTE = ("429 RESOURCE_EXHAUSTED. Resource has been exhausted (e.g. check quota). "
+              "quotaId: GenerateRequestsPerMinutePerProjectPerModel")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text, raised", [
+    (PER_MINUTE, "LLMRateLimitError"),   # RESOURCE_EXHAUSTED is also the per-minute throttle
+    ("429 RESOURCE_EXHAUSTED. You exceeded your current quota. quotaId: GenerateRequestsPerDayPerProjectPerModel",
+     "LLMQuotaExhaustedError"),
+])
+async def test_a_batch_429_is_a_spent_quota_only_when_it_names_a_cap(client, text, raised):
+    client._sdk_client.batches.cancel = MagicMock(side_effect=Exception(text))
+
+    with pytest.raises(Exception) as caught:
+        await client.cancel_batch("batches/1")
+
+    assert type(caught.value).__name__ == raised, caught.value

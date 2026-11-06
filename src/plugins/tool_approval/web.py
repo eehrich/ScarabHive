@@ -1,7 +1,7 @@
 """The routes that answer a waiting approval.
 
 ``POST /plugins/<instance>/answer`` -- ``{"question_id", "choices", "text"}``:
-``choices`` one decision (allow_once / allow_session / deny, as the question
+``choices`` one decision (allow_once / allow_session / allow_tool / deny, as the question
 offers them), ``text`` a reason, with Deny only.
 ``GET /plugins/<instance>/pending`` -- the open questions the caller may answer.
 

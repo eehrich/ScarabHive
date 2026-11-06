@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from .....llm.message_roles import DEVELOPER
 from .....llm.models import ChatMessage
 from .....utils.json_utils import history_safe_tool_calls
-from .state import LoopState, StepEnd, StepState
+from .state import LoopState, StepEnd, StepState, broken_answer_asked_again
 
 if TYPE_CHECKING:
     from ...server import Agent
@@ -283,6 +283,8 @@ class StepMixin:
                     # the hook reads this before it counts a nudge.
                     max_steps=run.max_steps,
                     final_call=st.final_call,
+                    # A broken-off answer the text step asks again (answer.py): nothing for a hook to judge.
+                    asked_again=broken_answer_asked_again(run, st),
                 )
             )
 
@@ -362,6 +364,9 @@ class StepMixin:
         # of a model now writing in parts included -- starts the count again.
         if st.finish_reason != "length":
             run.consecutive_cut_off = 0
+        if st.finish_reason != "incomplete_stream" or st.tool_calls:
+            # a broken-off tool call runs as it is: an answer of its own, between the text fragments
+            run.consecutive_broken_streams = 0
         if st.finish_reason == "length" and (st.content or st.tool_calls):
             logger.warning(
                 "[%s] Answer truncated at the output cap (finish_reason=length, "

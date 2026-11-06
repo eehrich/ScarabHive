@@ -15,7 +15,8 @@ import pytest
 
 from agent_system.config.models import LLMModelConfig
 from agent_system.core.cancellation import CancellationToken
-from agent_system.llm.models import ChatMessage, LLMConnectionError, LLMRateLimitError, LLMServerError
+from agent_system.llm.models import (ChatMessage, LLMConnectionError, LLMQuotaExhaustedError,
+                                     LLMRateLimitError, LLMServerError)
 from plugins.llm_gemini.gemini_client import GeminiClient
 from plugins.llm_gemini.gemini_sdk_client import GeminiSDKClient
 from plugins.llm_gemini.gemini_utils import extract_usage_from_metadata
@@ -309,6 +310,26 @@ async def test_a_refusal_raises_what_the_fallback_catches_and_is_reported_once(
         assert status_code == code
     assert len(hooks.post) == 1, hooks.post
     assert hooks.post[0]["error"] and hooks.post[0]["is_streaming"] is streaming
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+@pytest.mark.parametrize("route", ["rest", "sdk"])
+async def test_resource_exhausted_is_a_throttle_not_a_spent_quota(route, streaming, monkeypatch):
+    """Google's ordinary per-minute 429 says "exhausted" and "quota"; read as a spent quota it blocked the
+    model for every agent for max_block_seconds instead of a short wait."""
+    async def no_wait(self, seconds, token):
+        pass
+
+    monkeypatch.setattr(GeminiClient, "_cancellable_sleep", no_wait)
+    monkeypatch.setattr(GeminiSDKClient, "_cancellable_sleep", no_wait)
+    body = json.dumps({"error": {"code": 429, "message": "Resource has been exhausted (e.g. check quota).",
+                                 "status": "RESOURCE_EXHAUSTED"}})
+    async with Upstream(status(429, body)) as upstream:
+        client = (rest_client(upstream.port, streaming=streaming, max_retries=0) if route == "rest"
+                  else sdk_client(upstream.port, streaming=streaming, rate_limit_max_retries=0))
+        with pytest.raises(LLMRateLimitError) as limited:
+            await asyncio.wait_for(_ask(client, streaming), 10)
+    assert not isinstance(limited.value, LLMQuotaExhaustedError), limited.value
 
 
 @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])

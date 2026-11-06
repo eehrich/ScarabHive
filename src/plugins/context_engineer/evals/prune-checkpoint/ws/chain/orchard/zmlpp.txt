@@ -1,0 +1,2 @@
+value: 82
+next: suqxp.txt

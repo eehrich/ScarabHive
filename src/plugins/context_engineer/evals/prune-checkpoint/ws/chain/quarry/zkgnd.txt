@@ -1,0 +1,2 @@
+value: 65
+next: lnnzc.txt

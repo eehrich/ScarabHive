@@ -102,6 +102,7 @@ from .httpx_client import (
     routing_pinned_to_last_backend,
 )
 from plugins.llm_common.http_status import retry_after_seconds
+from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common.openai_utils import convert_audio_to_input_audio
 from plugins.llm_common.structured_output import responses_text_format
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
@@ -1477,7 +1478,7 @@ class OpenAIResponsesClient(LLMClient):
                             continue
                         retry_after = retry_after_seconds(response.headers.get("retry-after"))
                         await report_error(url, duration_ms, f"HTTP 429: {body_text[:200]}", stream)
-                        if "quota" in body_text.lower() or "exhausted" in body_text.lower():
+                        if quota_exhausted(body_text):
                             raise LLMQuotaExhaustedError(
                                 f"Quota exhausted: {body_text[:200]}",
                                 provider=self._PROVIDER, model=self.model, retry_after=retry_after)

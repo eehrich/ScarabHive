@@ -45,13 +45,18 @@ from agent_system.hooks.registry import get_hook_registry
 from agent_system.servers.agent.components.status_forwarding import attended_stream_of
 from agent_system.tools.status import StatusScope, get_status_bus
 
-from .broker import ALLOW_ONCE, ALLOW_SESSION, DECISIONS, DENY, Answer, ApprovalBroker, ApprovalQuestion
+from .broker import (ALLOW_ONCE, ALLOW_SESSION, ALLOW_TOOL, DECISIONS, DENY, Answer, ApprovalBroker,
+                     ApprovalQuestion)
+from .grants import call_grant
 from .policy import Policy, PolicyStore
 from .preview import arguments_preview
 from .rules import Rule, RuleError, first_match, parse_rules
 from .spawns import Spawn, is_script, spawn_of
 
 logger = logging.getLogger(__name__)
+
+#: The answers that allow beyond this one call: a script is never offered them.
+SESSION_DECISIONS = (ALLOW_SESSION, ALLOW_TOOL)
 
 MODES = ("ask", "auto", "off")
 UNATTENDED = ("block", "allow")
@@ -233,15 +238,22 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
         if policy.allows(name, server, arguments):
             return _pass(context)
         tool_key = f"{server}/{name}"
-        if self.broker.granted(policy.grant_sessions, tool_key):
+        if self._granted(policy, tool_key, arguments):
             return _pass(context)
         if attended_stream_of(context.request_id, settings.gone_after_seconds) is None:
             return self._unattended(context, policy.unattended, name)
         # A script is shown with its code and allowed call by call: allowed for the
         # session, every later script -- and every call inside one -- would run unread.
-        decisions = tuple(d for d in DECISIONS if d != ALLOW_SESSION) if is_script(context, server) else DECISIONS
+        decisions = (tuple(d for d in DECISIONS if d not in SESSION_DECISIONS) if is_script(context, server)
+                     else DECISIONS)
         return await self._ask(context, settings, policy, name, server, arguments, tool_key,
                                decisions=decisions)
+
+    def _granted(self, policy: Policy, tool_key: str, arguments: Mapping[str, Any]) -> bool:
+        """Whether a person allowed the whole tool, or calls like this one, for the session."""
+        sessions = policy.grant_sessions
+        return self.broker.granted(sessions, tool_key) or any(
+            self.broker.granted(sessions, key) for key in call_grant(tool_key, arguments)[2])
 
     async def _unguarded_spawn(self, context: HookContext, settings: Settings, policy: Policy,
                                spawn: Spawn, by_model: bool, name: str, server: str,
@@ -260,7 +272,7 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
                           "It did not run. Make this call on its own, outside the script, so the user "
                           "can be asked.")
         tool_key = f"{server}/{name}!unguarded:{spawn.target}"
-        if self.broker.granted(policy.grant_sessions, tool_key):
+        if self._granted(policy, tool_key, arguments):
             return _pass(context)
         if attended_stream_of(context.request_id, settings.gone_after_seconds) is None:
             return self._unattended(context, "block", name, spawn)
@@ -294,7 +306,8 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
         question = self.broker.open(
             owner=context.user_id, session_id=context.session_id, request_id=context.request_id,
             agent_name=context.agent_name, tool=name, server=server, arguments_preview=shown,
-            timeout=wait, arguments_cut=cut, warning=warning, decisions=decisions)
+            timeout=wait, arguments_cut=cut, warning=warning, decisions=decisions,
+            covers=call_grant(tool_key, arguments)[1])
         # A row of its own under the run: a line of the run's own id would
         # overwrite the run's row, and the buttons would go with the next line.
         status_id = f"{context.request_id}_approval_{question.id}"
@@ -310,29 +323,32 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
                     gone_after_seconds=settings.gone_after_seconds,
                     cut_off=f"{name}: not run, the check was cut off while asking")
                 return await self._settle(scope, outcome, context, unattended, wait, name, tool_key,
-                                          policy, question)
+                                          policy, question, arguments)
         finally:
             self.broker.close(question)
 
     async def _settle(self, scope: StatusScope, outcome: Any, context: HookContext, unattended: str,
                       wait: float, name: str, tool_key: str, policy: Policy,
-                      question: ApprovalQuestion) -> HookResult:
+                      question: ApprovalQuestion, arguments: Mapping[str, Any]) -> HookResult:
         """The status row's last line and what the hook returns, per outcome."""
         if isinstance(outcome, Answer):
             who = outcome.answered_by or "the user"
             if outcome.decision == ALLOW_ONCE:
                 await scope.end(_line(f"{name}: allowed once by {who}"))
                 return _pass(context)
-            if outcome.decision == ALLOW_SESSION and ALLOW_SESSION in question.decisions:
+            if outcome.decision in SESSION_DECISIONS and outcome.decision in question.decisions:
                 # kept in every session of the chain that asks: it holds only where
                 # all of them would have asked, and no other chain reaches it. Only
                 # in the run owner's own sessions -- a level of another user's (an
                 # ended run's id taken as a prefix) is never written, so such a
                 # chain holds no grant at all and asks again.
-                self.broker.grant([s for s in policy.grant_sessions if s[0] == context.user_id], tool_key)
-                await scope.end(_line(f"{name}: allowed for this session by {who}"))
+                whole = outcome.decision == ALLOW_TOOL
+                key = tool_key if whole else call_grant(tool_key, arguments)[0]
+                self.broker.grant([s for s in policy.grant_sessions if s[0] == context.user_id], key)
+                covered = "every call" if whole else question.covers
+                await scope.end(_line(f"{name}: {covered} allowed for this session by {who}"))
                 return _pass(context)
-            if outcome.decision == ALLOW_SESSION:
+            if outcome.decision in SESSION_DECISIONS:
                 await scope.end(_line(f"{name}: allowed once by {who} (a script is never allowed for the session)"))
                 return _pass(context)
             if outcome.decision == DENY:

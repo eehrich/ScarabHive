@@ -1,0 +1,2 @@
+value: 71
+next: zkgnd.txt

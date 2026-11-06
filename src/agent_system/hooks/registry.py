@@ -309,6 +309,7 @@ class HookRegistry:
                         current_context.user_id = context.user_id
                         current_context.max_steps = context.max_steps
                         current_context.final_call = context.final_call
+                        current_context.asked_again = context.asked_again
 
                         # Merge hook result metadata into context metadata
                         if result.metadata:

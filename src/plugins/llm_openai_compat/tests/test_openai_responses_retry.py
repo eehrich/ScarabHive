@@ -157,6 +157,14 @@ class TestRateLimitAndTierDrop:
         with pytest.raises(LLMQuotaExhaustedError):
             await _client(service_tier=None).chat_tools(MESSAGES, [])
 
+    async def test_a_per_minute_throttle_naming_quota_is_no_exhausted_quota(self, transport):
+        """Google words its per-minute 429 "Resource has been exhausted (e.g. check quota)": a short wait helps."""
+        transport([httpx.Response(429, text="Resource has been exhausted (e.g. check quota). "
+                                            "quotaId: GenerateRequestsPerMinutePerProjectPerModel")])
+        with pytest.raises(LLMRateLimitError) as exc:
+            await _client(service_tier=None).chat_tools(MESSAGES, [])
+        assert type(exc.value) is LLMRateLimitError
+
     async def test_retry_after_is_carried_into_the_error(self, transport):
         transport([httpx.Response(429, text="slow", headers={"retry-after": "42"})])
         with pytest.raises(LLMRateLimitError) as exc:

@@ -1,0 +1,2 @@
+value: 55
+next: vulmg.txt

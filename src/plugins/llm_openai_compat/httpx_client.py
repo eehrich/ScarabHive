@@ -22,6 +22,7 @@ import ssl
 
 from plugins.llm_common.request_end import ending_error as _ending_error
 from plugins.llm_common.http_status import retry_after_seconds
+from plugins.llm_common.quota import quota_exhausted
 from agent_system.llm.tls import httpx_verify
 
 from agent_system.llm.cache_key import (
@@ -1380,10 +1381,16 @@ class HTTPXOpenAIClient(LLMClient):
                         # Handle rate limiting (429) - longer backoff + jitter to avoid thundering herd
                         if response.status_code == 429:
                             retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                            # A longer ask is not slept: while this call sleeps, the fallback chain cannot run.
+                            full_error_text = response.text or ""
+                            # No wait helps a spent quota: straight to the fallback chain (as llm_openai does). Google words
+                            # its per-minute limit like a cap ("exceeded your current quota"); a short Retry-After says throttle.
+                            spent = quota_exhausted(full_error_text) and not (
+                                retry_after is not None and retry_after <= MAX_RETRY_AFTER_SECONDS)
+                            # A longer ask is not slept: while this call sleeps, the fallback chain cannot run. A pinned
+                            # backend's refusal -- a cap too, often that one backend's -- is asked once more without the pin.
                             free = attempt < self.rate_limit_max_retries and _release_pin_after_refusal()
-                            if attempt < self.rate_limit_max_retries and (free or retry_after is None
-                                                                              or retry_after <= MAX_RETRY_AFTER_SECONDS):
+                            if attempt < self.rate_limit_max_retries and (free or not spent and (
+                                    retry_after is None or retry_after <= MAX_RETRY_AFTER_SECONDS)):
                                 base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
                                 jitter = base * random.uniform(0.0, 0.5)
                                 # No waiting out a pinned backend's 429: the retry is
@@ -1396,10 +1403,10 @@ class HTTPXOpenAIClient(LLMClient):
                                 await self._cancellable_sleep(backoff_time, cancellation_token)
                                 continue
                             # Retries exhausted - raise for fallback
-                            error_text = response.text[:200] if response.text else ""
+                            error_text = full_error_text[:200]
                             await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
                             await _report_end(error=f"Rate limit: {error_text}")
-                            if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                            if spent:
                                 raise LLMQuotaExhaustedError(
                                     f"Quota exhausted: {error_text}",
                                     provider="httpx", model=self.model, retry_after=retry_after
@@ -2057,10 +2064,17 @@ class HTTPXOpenAIClient(LLMClient):
                             # Check status code (don't use raise_for_status() - it tries to read the body)
                             if response.status_code == 429:
                                 retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                                # A longer ask is not slept: while this call sleeps, the fallback chain cannot run.
+                                error_body = await response.aread()
+                                full_error_text = error_body.decode(errors="replace") if error_body else ""
+                                # No wait helps a spent quota: straight to the fallback chain (as llm_openai does). Google words
+                                # its per-minute limit like a cap ("exceeded your current quota"); a short Retry-After says throttle.
+                                spent = quota_exhausted(full_error_text) and not (
+                                    retry_after is not None and retry_after <= MAX_RETRY_AFTER_SECONDS)
+                                # A longer ask is not slept: while this call sleeps, the fallback chain cannot run. A pinned
+                                # backend's refusal -- a cap too, often that one backend's -- is asked once more without the pin.
                                 free = attempt < self.rate_limit_max_retries and _release_pin_after_refusal()
-                                if attempt < self.rate_limit_max_retries and (free or retry_after is None
-                                                                                  or retry_after <= MAX_RETRY_AFTER_SECONDS):
+                                if attempt < self.rate_limit_max_retries and (free or not spent and (
+                                        retry_after is None or retry_after <= MAX_RETRY_AFTER_SECONDS)):
                                     base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
                                     jitter = base * random.uniform(0.0, 0.5)
                                     # No waiting out a pinned backend's 429: the retry is
@@ -2073,11 +2087,10 @@ class HTTPXOpenAIClient(LLMClient):
                                     await self._cancellable_sleep(backoff_time, cancellation_token)
                                     continue
                                 # Retries exhausted - raise for fallback
-                                error_body = await response.aread()
-                                error_text = error_body.decode()[:200] if error_body else ""
+                                error_text = full_error_text[:200]
                                 await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
                                 await _report_end(error=f"Rate limit: {error_text}")
-                                if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                                if spent:
                                     raise LLMQuotaExhaustedError(
                                         f"Quota exhausted: {error_text}",
                                         provider="httpx", model=self.model, retry_after=retry_after

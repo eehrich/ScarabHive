@@ -457,7 +457,21 @@ Over @{tt}max_messages@{utt} messages (0: off), the oldest are archived
 and removed down to @{tt}max_messages_prune_to@{utt} (0, or a value above
 max_messages: half the limit). Among the oldest, placeholders go first.
 A single system note, @{tt}pruned_notice@{utt}, says how many have left
-in all and how to find them.
+in all and how to find them. With @{tt}prune_checkpoint_profile@{utt} set,
+that profile also writes a @{tt}checkpoint@{utt} into the note: objective,
+requirements, decisions, work state, next move, relevant files -- what the
+messages that left established. Every later prune updates it from the new
+leavers instead of adding a second one. A failed or slow call (25 s for all
+calls of one compaction; none in Layer 3's trial run) keeps the one there,
+the prune goes ahead, and the note says how many moved messages the
+checkpoint does not cover yet (@{tt}checkpoint_gap@{utt}); the next call
+is given them too, up to the last 400. Messages moved before the profile was
+set are counted in the gap as well: the checkpoint never saw them. The model is shown the moved messages with
+credentials masked and tool results marked as data, never instructions. The
+note itself is a system message: it says the checkpoint is another model's
+summary, tool results included, and not instructions -- whether a model
+that wrote one from a hostile page obeys it anyway is not measured.
+The idea and the template come from opencode's compaction.
 
 @{h2}The media passes
 
@@ -560,7 +574,9 @@ message was archived, in its own role:
 ..."}@{utt}. Where media was: @{tt}[Image 'plot.png' compacted.
 read(ref="...") loads it again.]@{utt}. Where messages were pruned or
 removed, one system message at the front with
-@{tt}"type": "pruned_notice"@{utt}, the total and how to find them.
+@{tt}"type": "pruned_notice"@{utt}, the total and how to find them, and
+with a checkpoint profile its @{tt}checkpoint@{utt} (and
+@{tt}checkpoint_gap@{utt} while it is behind).
 
 @{h2}The stored-information note
 
@@ -705,6 +721,7 @@ tool_result_max_window_share | 0.25 | Pre-Layer T: share of the window a new res
 tool_result_summary_from | 0 | Pre-Layer T: prose tokens from which a new result is summarized; 0 off
 tool_result_summary_profile | summarizer | the llm profile that writes those summaries; empty: none
 tool_result_summary_tools | [] | tool name patterns that may be summarized; empty: every tool
+prune_checkpoint_profile | "" | the llm profile that writes the prune breadcrumb's checkpoint; empty: none; pick a fast one -- a model that thinks first took 9-22 s a checkpoint and missed the 25 s budget in about three of ten prunes
 archive_after_turns | 10 | Layer 2: age in turns
 keep_system_messages | true | system messages are never archived or removed
 drop_after_turns | 50 | Layer 3: age in turns

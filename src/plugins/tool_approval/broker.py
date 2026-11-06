@@ -15,19 +15,22 @@ from typing import Any, Dict, Optional, Sequence, Set, Tuple
 
 from agent_system.core.run_questions import AnswerRejected, Question, QuestionBroker
 
-__all__ = ["ALLOW_ONCE", "ALLOW_SESSION", "DENY", "DECISIONS", "Answer", "AnswerRejected",
+__all__ = ["ALLOW_ONCE", "ALLOW_SESSION", "ALLOW_TOOL", "DENY", "DECISIONS", "Answer", "AnswerRejected",
            "ApprovalBroker", "ApprovalQuestion"]
 
 ALLOW_ONCE = "allow_once"
 ALLOW_SESSION = "allow_session"
+#: Every call of the tool for the session: offered beside the narrower "calls like this".
+ALLOW_TOOL = "allow_tool"
 DENY = "deny"
-DECISIONS = (ALLOW_ONCE, ALLOW_SESSION, DENY)
+DECISIONS = (ALLOW_ONCE, ALLOW_SESSION, ALLOW_TOOL, DENY)
 
 #: Longest reason a person can hand the model, in characters.
 MAX_REASON_CHARS = 1000
 
 #: The decisions as the person reads them.
-DECISION_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow for this session", DENY: "Deny"}
+DECISION_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow calls like this for this session",
+                   ALLOW_TOOL: "Allow every call of this tool for this session", DENY: "Deny"}
 #: How a client may set a decision apart: the narrow allow first, the refusal as one.
 DECISION_TONES = {ALLOW_ONCE: "primary", DENY: "danger"}
 #: Said where the preview left out part of a long value.
@@ -62,6 +65,8 @@ class ApprovalQuestion(Question):
     warning: Optional[str] = None
     #: The answers offered; a script is never allowed for the session.
     decisions: Tuple[str, ...] = DECISIONS
+    #: What "calls like this" covers, as the person reads it: "'git status …'", "this exact call".
+    covers: str = ""
 
     def to_public(self) -> Dict[str, Any]:
         """What the page shows about the question."""
@@ -73,6 +78,7 @@ class ApprovalQuestion(Question):
             "arguments_cut": self.arguments_cut,
             "warning": self.warning,
             "decisions": list(self.decisions),
+            "covers": self.covers,
         }
 
     def form(self) -> Dict[str, Any]:
@@ -80,12 +86,20 @@ class ApprovalQuestion(Question):
         warnings = [note for note in (self.warning, CUT_NOTE if self.arguments_cut else None) if note]
         return {"prompt": f"Approve {self.tool}?", "detail": self.arguments_preview or None,
                 "warning": "\n".join(warnings) or None,
-                "choices": [{"value": decision, "label": DECISION_LABELS[decision],
+                "choices": [{"value": decision, "label": self._label(decision),
                              **({"tone": DECISION_TONES[decision]} if decision in DECISION_TONES else {})}
                             for decision in self.decisions],
                 "multi_select": False,
                 "text": {"label": "Why not (sent to the agent with Deny)", "alone": False,
                          "max_chars": MAX_REASON_CHARS}}
+
+
+    def _label(self, decision: str) -> str:
+        if decision == ALLOW_SESSION and self.covers:
+            return f"Allow {self.covers} for this session"
+        if decision == ALLOW_TOOL:
+            return f"Allow every {self.tool} call for this session"
+        return DECISION_LABELS[decision]
 
 
 class ApprovalBroker(QuestionBroker):
@@ -100,13 +114,13 @@ class ApprovalBroker(QuestionBroker):
     def open(self, *, owner: Optional[str], session_id: str, request_id: str, agent_name: str,
              tool: str, server: str, arguments_preview: str, timeout: float,
              arguments_cut: bool = False, warning: Optional[str] = None,
-             decisions: Tuple[str, ...] = DECISIONS) -> ApprovalQuestion:
+             decisions: Tuple[str, ...] = DECISIONS, covers: str = "") -> ApprovalQuestion:
         """A new question whose answer the caller awaits on ``question.answer``."""
         return self.open_question(
             ApprovalQuestion, owner=owner, session_id=session_id, request_id=request_id,
             agent_name=agent_name, timeout=timeout, tool=tool, server=server,
             arguments_preview=arguments_preview, arguments_cut=arguments_cut, warning=warning,
-            decisions=tuple(decisions))
+            decisions=tuple(decisions), covers=covers)
 
     def answer(self, question_id: str, decision: str, reason: str = "",
                answered_by: Optional[str] = None) -> Question:

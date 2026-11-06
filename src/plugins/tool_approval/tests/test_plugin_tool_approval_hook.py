@@ -80,7 +80,7 @@ class _Probe(ToolServer):
             for name in ("probe_echo", "probe_wipe")]
 
     async def probe_echo(self, params):
-        self.received.append({"tool": "probe_echo", "text": params.get("text")})
+        self.received.append({"tool": "probe_echo", "text": params.get("text", params.get("command"))})
         return {"status": "ok", "echo": params.get("text")}
 
     async def probe_wipe(self, params):
@@ -575,7 +575,7 @@ class TestAsking:
         async with _client(plugin) as client:
             async def for_the_session(question, event):
                 await client.post("/plugins/tool_approval/answer",
-                                  json={"question_id": question["id"], "choices": ["allow_session"]})
+                                  json={"question_id": question["id"], "choices": ["allow_tool"]})
 
             first = await _run(agent, watched("sess1run"), session_id="sess-A", answer=for_the_session)
             assert [r["text"] for r in probe.received] == ["one", "two"]
@@ -594,6 +594,30 @@ class TestAsking:
 
         assert asked == ['text: "four"']
         assert "never" not in [r["text"] for r in probe.received], "the grant lifted a deny rule"
+
+    async def test_calls_like_this_cover_the_command_prefix_and_nothing_chained_to_it(self, approval, watched):
+        """"Allow for this session" used to allow the whole tool: an allowed git status let any command run."""
+        plugin = await approval()
+        probe = _Probe()
+        agent = _agent(probe, {})
+
+        def command(call_id: str, text: str) -> Dict[str, Any]:
+            return {"id": call_id, "type": "function",
+                    "function": {"name": "probe_echo", "arguments": json.dumps({"command": text})}}
+
+        agent.llm = _Model([command("c1", "git status -s")], [command("c2", "git status origin")],
+                           [command("c3", "git status && rm -rf x")], [command("c4", "git push")])
+        asked: List[str] = []
+
+        async def answer(question, event):
+            asked.append(question["arguments"])
+            choice = "allow_session" if not asked[:-1] else "deny"
+            plugin.broker.answer(question["id"], choice)
+
+        await _run(agent, watched("like1"), session_id="sess-like", answer=answer)
+
+        assert [r["text"] for r in probe.received] == ["git status -s", "git status origin"]
+        assert asked == ['command: "git status -s"', 'command: "git status && rm -rf x"', 'command: "git push"'], asked
 
     async def test_a_message_in_the_chat_approves_nothing(self, approval, watched):
         """While an approval waits, the person types into the chat: a mid-run message

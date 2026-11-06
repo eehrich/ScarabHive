@@ -1,0 +1,2 @@
+value: 81
+next: kdkqd.txt

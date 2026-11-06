@@ -7,12 +7,58 @@ import os
 import signal
 import time
 import weakref
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 from agent_system.utils.process_sandbox import ProcessSandbox, SandboxUnavailable
 from .security import CommandSecurityValidator
 
 logger = logging.getLogger(__name__)
+
+
+class CappedOutput:
+    """What a command wrote, within *max_bytes*: the first half and the last half, the middle dropped.
+
+    Only the start was kept before, so the end -- where a build or a test run says what failed -- was what got cut.
+    """
+
+    def __init__(self, max_bytes: int):
+        self.tail_room = max_bytes // 2
+        self.head_room = max_bytes - self.tail_room
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.omitted = 0
+
+    def feed(self, chunk: bytes) -> None:
+        room = self.head_room - len(self.head)
+        if room > 0:
+            self.head += chunk[:room]
+            chunk = chunk[room:]
+        if chunk:
+            self.tail += chunk
+            if len(self.tail) > self.tail_room:
+                cut = len(self.tail) - self.tail_room
+                self.omitted += cut
+                del self.tail[:cut]
+
+    @property
+    def truncated(self) -> bool:
+        return self.omitted > 0
+
+    def text(self) -> str:
+        decode = codecs.getincrementaldecoder('utf-8')
+        if not self.truncated:   # head and tail are the whole output, in one piece
+            return decode(errors='replace').decode(bytes(self.head + self.tail), final=True)
+        # A UTF-8 sequence split at either cut is dropped, not turned into a replacement character.
+        head_decoder = decode(errors='replace')
+        start = head_decoder.decode(bytes(self.head), final=False)
+        held = len(head_decoder.getstate()[0])   # the start of a character the head cut off
+        tail = bytes(self.tail)
+        skip = 0
+        while skip < min(3, len(tail)) and 0x80 <= tail[skip] < 0xC0:
+            skip += 1
+        end = decode(errors='replace').decode(tail[skip:], final=True)
+        return (f"{start}\n... [OUTPUT TRUNCATED - {self.omitted + held + skip} bytes in the middle omitted, the "
+                f"start and the end are shown. Use 'grep', 'head' or 'tail' to see a part] ...\n{end}")
 
 
 def _restore_console_mode() -> None:
@@ -204,35 +250,21 @@ class CommandExecutor:
         return exec_env
 
     @staticmethod
-    async def _read_capped(process, max_bytes: int, kept: Optional[bytearray] = None,
-                           more: Optional[list] = None) -> Tuple[bytes, bool]:
-        """The merged output up to *max_bytes*, and whether there was more.
+    async def _read_capped(process, max_bytes: int,
+                           output: Optional["CappedOutput"] = None) -> "CappedOutput":
+        """The merged output within *max_bytes*: its start and its end.
 
         Reads to the end either way -- a pipe nobody drains blocks the command
         -- but keeps no more than the cap. communicate() held the whole output
         in memory before it was cut: 150 MB at the peak for a 50 MB output.
 
-        *kept* and *more* (a one-element list) belong to the caller, so what
-        was read survives a timeout or a cancel that ends this task.
+        *output* belongs to the caller, so what was read survives a timeout or
+        a cancel that ends this task.
         """
-        kept = bytearray() if kept is None else kept
-        more = [False] if more is None else more
+        output = CappedOutput(max_bytes) if output is None else output
         while chunk := await process.stdout.read(65536):
-            room = max_bytes - len(kept)
-            if len(chunk) > room:
-                more[0] = True
-            kept += chunk[:room]
+            output.feed(chunk)
         await process.wait()
-        return bytes(kept), more[0]
-
-    @staticmethod
-    def _decoded(kept: bytes, truncated: bool) -> str:
-        # Not final when cut: a UTF-8 sequence split at the cap is held back
-        # instead of becoming a replacement character.
-        output = codecs.getincrementaldecoder('utf-8')(errors='replace').decode(
-            bytes(kept), final=not truncated)
-        if truncated:
-            output += "\n... [OUTPUT TRUNCATED - exceeded size limit. Use filters like 'head', 'tail', 'grep' to limit output]"
         return output
 
     def refusal(self, command: str, cwd: Optional[str] = None,
@@ -339,9 +371,9 @@ class CommandExecutor:
             # command a Stop had asked to end.
             # Held here, not in the reading task: a timeout or a cancel ends
             # that task, and what the command wrote until then is the answer.
-            kept, more = bytearray(), [False]
+            captured = CappedOutput(self.max_output_kb * 1024)
             reading = asyncio.ensure_future(
-                self._read_capped(process, self.max_output_kb * 1024, kept, more))
+                self._read_capped(process, self.max_output_kb * 1024, captured))
             waiters = {reading}
             if cancellation_token is not None:
                 waiters.add(asyncio.ensure_future(cancellation_token.wait_for_cancellation()))
@@ -352,9 +384,9 @@ class CommandExecutor:
                 if reading not in done:
                     await kill_tree(process)
                     partial = {
-                        "stdout": self._decoded(kept, more[0]),
+                        "stdout": captured.text(),
                         "stderr": "",  # Merged into stdout
-                        "truncated": more[0],
+                        "truncated": captured.truncated,
                         "command": command
                     }
                     if done:
@@ -362,9 +394,9 @@ class CommandExecutor:
                                 "error_type": "Cancelled", **partial}
                     return {"status": "error", "error": f"Command timeout after {timeout}s",
                             "error_type": "TimeoutError", **partial}
-                kept_bytes, truncated = reading.result()
+                reading.result()
                 execution_time = time.time() - start_time
-                output = self._decoded(kept_bytes, truncated)
+                output, truncated = captured.text(), captured.truncated
 
                 return {
                     "status": "success",

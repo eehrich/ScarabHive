@@ -75,10 +75,11 @@ execution_time | seconds
 cwd, command | where and what ran
 @{body}
 
-Output is capped at @{tt}max_output_size_kb@{utt} (60 KB): the first 60 KB
-are kept, the rest is read and dropped, and the text ends with
-"... [OUTPUT TRUNCATED - exceeded size limit. Use filters like 'head',
-'tail', 'grep' to limit output]".
+Output is capped at @{tt}max_output_size_kb@{utt} (60 KB): the first and
+the last 30 KB are kept, the middle is read and dropped -- a build or a
+test run says what failed at its end. Between the two stands "...
+[OUTPUT TRUNCATED - N bytes in the middle omitted, the start and the end
+are shown. Use 'grep', 'head' or 'tail' to see a part] ...".
 
 A timeout kills the command and everything it started, and answers
 @{tt}error_type: TimeoutError@{utt} ("Command timeout after 30s"), with

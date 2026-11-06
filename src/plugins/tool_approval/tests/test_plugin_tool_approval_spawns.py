@@ -278,7 +278,7 @@ class TestUnguardedSpawns:
         family = _Family(tmp_path, {"mode": "ask"}, {})
         family.child("child_guarded", [])
         family.child("child_open", [])
-        answers = iter(["allow_session", "deny"])
+        answers = iter(["allow_tool", "deny"])
 
         async def answer(question):
             plugin.broker.answer(question["id"], next(answers))
@@ -645,7 +645,7 @@ class TestGrants:
 
         async def for_the_session(question):
             granted_in.append(question["tool"])
-            plugin.broker.answer(question["id"], "allow_session")
+            plugin.broker.answer(question["id"], "allow_tool")
 
         await family.run(watched("chain1"), [_create("p1", "child_guarded")], answer=for_the_session)
         [child_id] = [r["instance_id"] for r in family.parent_results()]
@@ -733,7 +733,7 @@ class TestAgentCalledAsATool:
             question = _question_of(event)
             if question is not None and question["id"] not in [q["id"] for q in asked]:
                 asked.append(question)
-                plugin.broker.answer(question["id"], "allow_session")
+                plugin.broker.answer(question["id"], "allow_tool")
 
         assert [q["tool"] for q in asked] == ["probe_echo", "helper"], asked
         assert [r["text"] for r in probe.received] == ["caller", "helper"]
@@ -782,7 +782,7 @@ class TestGrantsStayWithTheirOwner:
             question = _question_of(event)
             if question is not None and question["id"] not in asked:
                 asked.append(question["id"])
-                plugin.broker.answer(question["id"], "allow_session")
+                plugin.broker.answer(question["id"], "allow_tool")
 
         assert not plugin.broker.granted([("bob", "sess-bob")], "probe/probe_wipe"), "written into bob's session"
         assert len(asked) == 2, "a chain with bob's level held a grant"

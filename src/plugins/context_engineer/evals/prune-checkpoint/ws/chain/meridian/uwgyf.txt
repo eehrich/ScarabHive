@@ -1,0 +1,2 @@
+value: 17
+next: xlqnm.txt

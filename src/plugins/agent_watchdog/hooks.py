@@ -104,6 +104,8 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
         self._prompts: Dict[str, str] = {}
 
         self._running: Dict[str, asyncio.Task] = {}
+        #: Runs whose due check fell on a broken-off answer the loop asked again: checked on the next step instead.
+        self._deferred: set = set()
         self._tasks: "OrderedDict[str, Optional[Dict[str, Any]]]" = OrderedDict()
         # Set by a test: that client judges. Otherwise the client of the judge profile as the watched agent's
         # config resolves it now -- a config reload that changes its model reaches the next check.
@@ -170,7 +172,14 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
 
     async def observe_step(self, context: HookContext) -> HookResult:
         """POST_LLM_CALL: snapshot the excerpt when a check is due, judge later."""
-        if self._is_due(context) and not self._busy(context):
+        # A broken-off answer the loop asks again is no step to judge: the judge would be paid for a fragment.
+        # The check moves to the next step instead of falling out (that step is rarely due itself).
+        due = self._is_due(context) or context.request_id in self._deferred
+        if due and context.asked_again:
+            self._deferred.add(context.request_id)
+            return HookResult(success=True, modified=False)
+        self._deferred.discard(context.request_id)
+        if due and not self._busy(context):
             assistant = (context.llm_response or {}).get("assistant") or {}
             self._start_check(context, self._excerpt(context, context.messages, assistant),
                               {"trigger": "step"})

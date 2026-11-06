@@ -19,6 +19,7 @@ from agent_system.llm.tls import httpx_verify
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
+from plugins.llm_common.quota import quota_exhausted
 from .gemini_utils import (
     RequestEnd,
     adjust_thinking_for_retry,
@@ -590,7 +591,7 @@ class GeminiClient(LLMClient):
                     
                     # Retries exhausted - raise for fallback
                     await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
-                    if "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                    if quota_exhausted(error_str):
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",
                             provider="gemini", model=self.model, retry_after=wait_time
@@ -952,7 +953,7 @@ class GeminiClient(LLMClient):
                     
                     # Retries exhausted - raise for fallback
                     await report_status(f"Rate limit exceeded after {self.max_retries + 1} attempts: {self.model}")
-                    if "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                    if quota_exhausted(error_str):
                         raise LLMQuotaExhaustedError(
                             f"Quota exhausted: {error_str}",
                             provider="gemini", model=self.model, retry_after=wait_time

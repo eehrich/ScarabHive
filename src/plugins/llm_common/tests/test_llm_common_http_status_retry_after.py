@@ -54,3 +54,11 @@ def test_batch_quota_and_other_errors():
         raise_for_batch_status(_response(500, "boom"), "op", provider="p")
     raise_for_batch_status(_response(200), "op", provider="p")
 
+
+
+def test_a_batch_per_minute_429_naming_quota_is_a_rate_limit():
+    """Google's per-minute throttle reads "Resource has been exhausted (e.g. check quota)": a short wait helps."""
+    with pytest.raises(LLMRateLimitError) as limited:
+        raise_for_batch_status(_response(429, "Resource has been exhausted (e.g. check quota). "
+                                              "quotaId: GenerateRequestsPerMinutePerProjectPerModel"), "op", provider="p")
+    assert type(limited.value) is LLMRateLimitError

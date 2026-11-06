@@ -1,0 +1,2 @@
+value: 35
+next: rwktq.txt

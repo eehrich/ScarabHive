@@ -289,6 +289,20 @@ class TestHook:
         await _drain(plugin)
 
     @pytest.mark.asyncio
+    async def test_a_broken_off_answer_the_loop_asks_again_is_not_judged_and_its_check_moves_on(self, plugin):
+        """The judge was paid for a fragment the loop then threw away; skipped instead, the due check fell out."""
+        plugin._judge_llm = FakeLLM("{}")
+        fragment = _context(step=20)
+        fragment.asked_again = True
+        await plugin.observe_step(fragment)
+        assert plugin._running == {}
+        await plugin.observe_step(_context(step=21))   # the step asked again: not due by number
+        assert "req-1" in plugin._running, "the due check fell out with the fragment"
+        await _drain(plugin)
+        await plugin.observe_step(_context(step=22))
+        assert plugin._running == {}, "the moved check stayed due"
+
+    @pytest.mark.asyncio
     async def test_agent_override_changes_the_rhythm_and_typos_fall_back(self, plugin):
         plugin._judge_llm = FakeLLM("{}")
         await plugin.observe_step(_context(step=3, hook_config={"first_check_step": 3}))

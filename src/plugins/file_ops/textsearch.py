@@ -317,11 +317,17 @@ def is_text_file(path: Path) -> bool:
         return False  # unreadable — nothing to search
     if not chunk:
         return False  # empty file carries no searchable text
+    return looks_like_text(chunk)
+
+
+def looks_like_text(chunk: bytes) -> bool:
+    """The content rule of ``is_text_file``, on the first bytes of a file."""
     if b"\x00" in chunk:
         return False  # NUL byte: binary
     # Control characters outside tab/newline/CR/formfeed/escape. Text in any
-    # encoding stays far below the threshold; binaries blow past it.
-    control = sum(1 for byte in chunk if byte < 0x09 or 0x0e <= byte < 0x20)
+    # encoding stays far below the threshold; binaries blow past it. ESC was
+    # counted although this line exempted it: a coloured test log read as binary.
+    control = sum(1 for byte in chunk if byte < 0x09 or (0x0e <= byte < 0x20 and byte != 0x1b))
     return control / len(chunk) <= 0.10
 
 

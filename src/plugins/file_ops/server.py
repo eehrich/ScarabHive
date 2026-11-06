@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from pathlib import Path
@@ -9,12 +10,13 @@ from typing import Any, Dict
 
 from agent_system.config import AgentSystemConfig, ToolServerConfig
 from agent_system.paths import launch_dir
+from agent_system.utils.path_sandbox import is_secret, might_be_private
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.params import bool_param as _bool_param
 
 from .operations import FileOperations
 from .search import FileSearchEngine
-from .security import PathValidator, SecurityError
+from .security import PathValidator, SecurityError, from_git_bash
 
 
 def _whole_number(params: Dict[str, Any], key: str, default: Any) -> Any:
@@ -44,6 +46,25 @@ def _whole_number(params: Dict[str, Any], key: str, default: Any) -> Any:
     if number is not None and number.is_integer():
         return int(number)
     raise ValueError(f"{key}: a whole number, got {value!r}")
+
+
+class MissingArgument(ValueError):
+    """A required argument the call left out: said by name, not as a bare KeyError ("'dir_path'")."""
+
+
+def _required(params: Dict[str, Any], key: str) -> Any:
+    """The argument ``key``; the framework does not check ``required``, so a call without it is answered here."""
+    if params.get(key) is None:
+        raise MissingArgument(f"Missing required argument '{key}': send it and call again.")
+    return params[key]
+
+
+def _log_failure(where: str, exc: Exception) -> None:
+    """A missing argument is the model's mistake, logged without a traceback; anything else is unexpected."""
+    if isinstance(exc, MissingArgument):
+        logger.info("file_ops %s: %s", where, exc)
+    else:
+        logger.error(f"Unexpected error in {where}: {exc}", exc_info=True)
 
 
 def _int_param(params: Dict[str, Any], key: str, default: Any,
@@ -209,12 +230,30 @@ class FileOpsServer(SchemaBasedToolServer):
         """
         return self.validator.allowed_dirs
 
+    def _similar_paths(self, file_path: Any, count: int = 3) -> list[str]:
+        """Up to ``count`` entries of a missing file's folder whose names are close to its own -- only in a folder
+        the sandbox lets the agent see. Nothing when there is none or the folder is not there."""
+        if not isinstance(file_path, str) or not file_path:
+            return []
+        # The whole path first: the parent of a Git Bash path (/c/Users/...) is no longer one it converts.
+        wanted = Path(from_git_bash(file_path))
+        try:
+            folder = self.validator.validate_path(str(wanted.parent), must_exist=True)
+            # A secret is no file to point at, whatever its name; only a name that can be one is resolved.
+            names = [entry.name for _, entry in zip(range(5000), folder.iterdir())
+                     if not (might_be_private(entry.name) and is_secret(entry))]
+        except (SecurityError, OSError):
+            return []
+        # In the drive form: "/c/Users" as a parent became "\c\Users", a path no tool resolves.
+        return [str(wanted.parent / name)
+                for name in difflib.get_close_matches(wanted.name, names, n=count, cutoff=0.6)]
+
     async def read_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Read text file contents with pagination."""
         status = params.get("_status")
 
         try:
-            file_path = params["filePath"]
+            file_path = _required(params, "filePath")
             # Copilot uses 1-indexed offset
             offset = _int_param(params, "offset", 0)
             if offset > 0:
@@ -259,9 +298,10 @@ class FileOpsServer(SchemaBasedToolServer):
             error_msg = f"File not found: {params.get('filePath')}"
             if status:
                 await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
+            similar = self._similar_paths(params.get("filePath"))
             return {
                 "status": "error",
-                "error": error_msg,
+                "error": f"{error_msg}. Did you mean: {', '.join(similar)}?" if similar else error_msg,
                 "error_type": "FileNotFoundError"
             }
         except SecurityError as e:
@@ -274,7 +314,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            logger.error(f"Unexpected error in read_file: {e}", exc_info=True)
+            _log_failure("read_file", e)
             if status:
                 await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
@@ -354,7 +394,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            logger.error(f"Unexpected error in manage ({operation}): {e}", exc_info=True)
+            _log_failure(f"manage ({operation})", e)
             if status:
                 await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
@@ -376,7 +416,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
     async def _manage_create(self, params: Dict[str, Any], status) -> Dict[str, Any]:
         """Create operation: create a file, or replace it whole with overwrite."""
-        path = params["path"]
+        path = _required(params, "path")
         content = params.get("content")
         overwrite = _bool_param(params, "overwrite")
 
@@ -412,7 +452,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
     async def _manage_delete(self, params: Dict[str, Any], status) -> Dict[str, Any]:
         """Delete operation: delete file or directory."""
-        path = params["path"]
+        path = _required(params, "path")
         recursive = _bool_param(params, "recursive")
 
         if status:
@@ -435,7 +475,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
     async def _manage_move(self, params: Dict[str, Any], status) -> Dict[str, Any]:
         """Move operation: move file/directory to new location."""
-        path = params["path"]
+        path = _required(params, "path")
         destination = params.get("destination")
 
         if not destination:
@@ -466,7 +506,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
     async def _manage_rename(self, params: Dict[str, Any], status) -> Dict[str, Any]:
         """Rename operation: rename file/directory (same directory)."""
-        path = params["path"]
+        path = _required(params, "path")
         new_name = params.get("new_name")
 
         if not new_name:
@@ -523,9 +563,9 @@ class FileOpsServer(SchemaBasedToolServer):
         status = params.get("_status")
 
         try:
-            file_path = params["filePath"]  # Note: Copilot uses camelCase
-            old_string = params["oldString"]
-            new_string = params["newString"]
+            file_path = _required(params, "filePath")  # Note: Copilot uses camelCase
+            old_string = _required(params, "oldString")
+            new_string = _required(params, "newString")
 
             if status:
                 await status.progress(f"Replacing in: {Path(file_path).name}")
@@ -563,9 +603,10 @@ class FileOpsServer(SchemaBasedToolServer):
             error_msg = f"File not found: {params.get('filePath')}"
             if status:
                 await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
+            similar = self._similar_paths(params.get("filePath"))
             return {
                 "status": "error",
-                "error": error_msg,
+                "error": f"{error_msg}. Did you mean: {', '.join(similar)}?" if similar else error_msg,
                 "error_type": "FileNotFoundError"
             }
         except SecurityError as e:
@@ -578,7 +619,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            logger.error(f"Unexpected error in replace_string_in_file: {e}", exc_info=True)
+            _log_failure("replace_string_in_file", e)
             if status:
                 await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
@@ -592,7 +633,7 @@ class FileOpsServer(SchemaBasedToolServer):
         status = params.get("_status")
 
         try:
-            dir_path = params["dir_path"]
+            dir_path = _required(params, "dir_path")
             recursive = _bool_param(params, "recursive")
             pattern = params.get("pattern")
             include_hidden = _bool_param(params, "include_hidden")
@@ -650,7 +691,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            logger.error(f"Unexpected error in list_directory: {e}", exc_info=True)
+            _log_failure("list_directory", e)
             if status:
                 await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
@@ -664,7 +705,7 @@ class FileOpsServer(SchemaBasedToolServer):
         status = params.get("_status")
 
         try:
-            pattern = params["pattern"]
+            pattern = _required(params, "pattern")
             max_results = _int_param(params, "max_results", 50, low=1, high=500)
             include_ignored = _bool_param(params, "include_ignored")
 
@@ -687,7 +728,7 @@ class FileOpsServer(SchemaBasedToolServer):
             return result
 
         except Exception as e:
-            logger.error(f"Unexpected error in search_files: {e}", exc_info=True)
+            _log_failure("search_files", e)
             if status:
                 await status.error(f"Search error: {e}", meta={"error_type": type(e).__name__})
             return {
@@ -701,7 +742,7 @@ class FileOpsServer(SchemaBasedToolServer):
         status = params.get("_status")
 
         try:
-            query = params["query"]
+            query = _required(params, "query")
             is_regex = _bool_param(params, "is_regex")
             include_pattern = params.get("include_pattern")
             case_sensitive = _bool_param(params, "case_sensitive")
@@ -740,7 +781,7 @@ class FileOpsServer(SchemaBasedToolServer):
             return result
 
         except Exception as e:
-            logger.error(f"Unexpected error in grep_search: {e}", exc_info=True)
+            _log_failure("grep_search", e)
             if status:
                 await status.error(f"Grep error: {e}", meta={"error_type": type(e).__name__})
             return {
@@ -754,7 +795,7 @@ class FileOpsServer(SchemaBasedToolServer):
         status = params.get("_status")
 
         try:
-            query = params["query"]
+            query = _required(params, "query")
             max_results = _int_param(params, "max_results", 10, low=1, high=50)
             filter_pattern = params.get("filter_pattern")
 
@@ -783,7 +824,7 @@ class FileOpsServer(SchemaBasedToolServer):
             return result
 
         except Exception as e:
-            logger.error(f"Unexpected error in semantic_search: {e}", exc_info=True)
+            _log_failure("semantic_search", e)
             if status:
                 await status.error(f"Semantic search error: {e}", meta={"error_type": type(e).__name__})
             return {

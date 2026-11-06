@@ -45,7 +45,23 @@ from .paging import (
 )
 from .tool_result_store import ToolResultStore
 
+from plugins.llm_common.agentless import book_as_agentless
+
 logger = logging.getLogger(__name__)
+
+
+def _answer_text(answer: Any) -> str | None:
+    """A summary or checkpoint model's answer as text; None for an error the client handed back as its answer
+    (llm_openai's chat() returns {"_llm_error": ...} as JSON text): taken as text it replaced the work state."""
+    text = answer if isinstance(answer, str) else str(answer)
+    try:
+        failed = "_llm_error" in json.loads(text) if text.lstrip().startswith("{") else False
+    except (ValueError, TypeError):
+        failed = False
+    if failed:
+        logger.warning("context_engineer: the model call failed: %s", text[:300])
+        return None
+    return text
 
 
 def _person_turn_behind_injections(messages: list[dict[str, Any]]) -> int:
@@ -782,15 +798,40 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             answer = await llm.chat(
                 messages=[ChatMessage(role="user", content=prompt, timestamp=_dt.now())],
                 cancellation_token=token)
-            return answer if isinstance(answer, str) else str(answer)
+            return _answer_text(answer)
 
         return summarize
+
+    def _checkpointer(self, context: HookContext, cfg: CompactionConfig):
+        """What writes the checkpoint of a prune (prompt -> text), or None for none: no profile, no client."""
+        profile = cfg.prune_checkpoint_profile
+        system_config = getattr(getattr(context, "agent", None), "system_config", None)
+        if not profile or system_config is None:
+            return None
+        llm = self._summary_llm(system_config, profile)
+        if llm is None:
+            return None
+        token = getattr(context, "cancellation_token", None)
+
+        async def write(prompt: str) -> str | None:
+            from datetime import datetime as _dt
+            from agent_system.llm.models import ChatMessage
+            answer = await llm.chat(
+                messages=[ChatMessage(role="user", content=prompt, timestamp=_dt.now())],
+                cancellation_token=token)
+            return _answer_text(answer)
+
+        return write
 
     def _summary_llm(self, system_config: Any, profile: str):
         """The summary client of the profile, kept until the config changes -- a
         failure too (None): a profile that does not resolve would otherwise be
-        rebuilt, and logged, for every single result."""
-        return self._summary_llms.get(system_config, profile)
+        rebuilt, and logged, for every single result. No agent wires it: its calls are booked as agent-less, or
+        the summaries' and checkpoints' cost reached no ledger (measured: none of them in the usage tracker)."""
+        llm = self._summary_llms.get(system_config, profile)
+        if llm is not None:
+            book_as_agentless(llm)
+        return llm
 
     def _get_session_components(self, session_id: str,
                                 overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -965,6 +1006,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # a summary is part of that question, and the LLM layer is reached
             # through the agent of THIS call, while the strategy outlives it.
             strategy.summarize = self._summarizer(context, cfg)
+            strategy.checkpoint = self._checkpointer(context, cfg)
 
             # Get actual or estimated token usage (prefer actual from usage_tracker)
             # In a thread: the usage tracker's reading is SQLite with a 10 s busy timeout,

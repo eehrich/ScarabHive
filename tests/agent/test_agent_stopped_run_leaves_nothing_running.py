@@ -49,8 +49,10 @@ async def test_a_hook_task_does_not_outlive_its_step(phase, manager_call):
 
     agent = SimpleNamespace(_hook_manager=SimpleNamespace(**{manager_call: hooks}))
     run = SimpleNamespace(messages=[], request_id="r1", session_id="s1", main_token=None, max_steps=3,
-                          max_steps_note=None, pending_status_events=lambda: [], llm_out=None)
-    st = SimpleNamespace(step=0, current_llm=None, final_call=False, assistant_msg=SimpleNamespace(), llm_out=None)
+                          max_steps_note=None, pending_status_events=lambda: [], llm_out=None,
+                          consecutive_broken_streams=0, max_broken_stream_retries=1)
+    st = SimpleNamespace(step=0, current_llm=None, final_call=False, assistant_msg=SimpleNamespace(), llm_out=None,
+                         finish_reason="stop", content="", tool_calls=[])
 
     await _close_after_first_poll(getattr(Agent, phase)(agent, run, st))
     assert started.is_set(), "fixture: the hooks never ran"

@@ -66,6 +66,9 @@ class HookContext:
         final_call: True on the one LLM call after the step budget
             (step == max_steps; pre/post_llm_call). No step follows it, so the
             loop drops a post_llm_call ``continue`` on it
+        asked_again: True when the loop drops this answer and asks the same step
+            again (post_llm_call; a stream that broke off): a hook that judges
+            the answer skips it, one that counts the call still sees it
         llm: Reference to the LLM client being used
         cancellation_token: Optional cancellation token for graceful cancellation
         llm_request_payload: Raw API request payload (for pre_llm_request hooks)
@@ -97,6 +100,7 @@ class HookContext:
     step: int = 0
     max_steps: Optional[int] = None
     final_call: bool = False
+    asked_again: bool = False
     llm: Optional[Any] = None
     cancellation_token: Optional[Any] = None
     # LLM-client-level fields (for pre_llm_request / post_llm_response hooks)

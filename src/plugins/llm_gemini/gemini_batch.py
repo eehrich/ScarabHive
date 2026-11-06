@@ -38,6 +38,7 @@ from agent_system.llm.batch.models import BatchJob, BatchStatus, TERMINAL_STATUS
 from agent_system.llm.batch.job_tracker import get_job_tracker
 from agent_system.llm.models import LLMRateLimitError, LLMQuotaExhaustedError
 from agent_system.llm.retry_utils import is_rate_limit_error, parse_retry_delay
+from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common.schema_sanitize import sanitize_schema_for_gemini
 
 from .gemini_utils import (
@@ -339,10 +340,9 @@ class GeminiBatchClient(BatchProviderClient):
             logger.error("SDK batch submission failed: %s: %s", type(e).__name__, e)
             # Check if this is a rate limit error and convert to our exception type
             if is_rate_limit_error(e):
-                error_str = str(e).lower()
                 retry_delay = parse_retry_delay(str(e))
-                # Check for quota exhaustion - includes RESOURCE_EXHAUSTED from Gemini API
-                if "quota" in error_str or "insufficient" in error_str or "resource_exhausted" in error_str:
+                # RESOURCE_EXHAUSTED is also Google's per-minute throttle: only a named cap is a spent quota
+                if quota_exhausted(str(e)):
                     raise LLMQuotaExhaustedError(
                         provider="gemini_batch",
                         model=job.model,
@@ -824,10 +824,9 @@ class GeminiBatchClient(BatchProviderClient):
             return {"status": "cancelled"}
         except Exception as e:
             if is_rate_limit_error(e):
-                error_str = str(e).lower()
                 retry_delay = parse_retry_delay(str(e))
-                # Check for quota exhaustion - includes RESOURCE_EXHAUSTED from Gemini API
-                if "quota" in error_str or "insufficient" in error_str or "resource_exhausted" in error_str:
+                # RESOURCE_EXHAUSTED is also Google's per-minute throttle: only a named cap is a spent quota
+                if quota_exhausted(str(e)):
                     raise LLMQuotaExhaustedError(
                         provider="gemini_batch",
                         model="unknown",

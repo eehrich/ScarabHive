@@ -25,6 +25,7 @@ from agent_system.llm.models import (
 from agent_system.config.models import ModelCapabilitiesConfig
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from plugins.llm_common import cancellation, openai_utils
+from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common.structured_output import chat_completions_response_format
 
 
@@ -79,8 +80,7 @@ def _handshake_refusal(error: BaseException, url: str) -> Optional[httpx.HTTPSta
 
 def _is_quota(text: str) -> bool:
     """An exhausted quota (OpenAI: insufficient_quota, "exceeded your current quota"): no wait helps."""
-    text = text.lower()
-    return "quota" in text or "exhausted" in text
+    return quota_exhausted(text)
 
 
 def _usage_dict(usage: Any) -> Optional[dict]:

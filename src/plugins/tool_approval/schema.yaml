@@ -17,7 +17,7 @@ hooks:
     description: >
       Decides each tool call of the model before it runs: deny rules block,
       allow rules pass, and in ask mode everything else is put to the person
-      watching the run (allow once / for the session / deny). Runs nobody
+      watching the run (allow once / calls like this or the whole tool for the session / deny). Runs nobody
       watches get the `unattended` answer.
     # At the end of the chain: a hook after this one could still change the
     # arguments, and nobody would check them again. Argument-changing

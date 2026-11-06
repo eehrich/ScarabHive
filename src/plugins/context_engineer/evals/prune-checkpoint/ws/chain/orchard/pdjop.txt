@@ -1,0 +1,2 @@
+value: 16
+next: gnvlw.txt

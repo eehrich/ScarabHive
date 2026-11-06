@@ -6,10 +6,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
-from agent_system.llm import hook_notify
 from agent_system.llm.models import ChatMessage
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.llm.text_sanitizer import sanitize_for_llm
+from plugins.llm_common.agentless import book_as_agentless
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -183,7 +183,7 @@ class LLMRouterServer(SchemaBasedToolServer):
 
             # Create client using profile-based configuration
             client = self._make_client(profile=profile)
-            _book_as_agentless(client, params.get("_session_id") or "")
+            book_as_agentless(client, params.get("_session_id") or "")
 
             try:
                 content = await client.chat(messages, cancellation_token=cancellation_token)
@@ -299,31 +299,3 @@ async def _close_client(client: Any) -> None:
         logger.debug("llm_router: closing the client failed: %s", e)
 
 
-def _book_as_agentless(client: Any, session_id: str) -> None:
-    """Report the client's requests through llm/hook_notify.py.
-
-    No agent wires a client built here, so without this its requests reached
-    no pre_llm_request/post_llm_response hook: the message debugger, otel and
-    the usage tracker never saw them, and their cost counted nowhere. The
-    agent-less path is the right one, not the calling agent's hooks: the
-    tracker books an agent-less call as spend of its own, and would skip one
-    carrying the agent -- whose own ledger never sees this call.
-    """
-    if not hasattr(client, "set_llm_hooks"):
-        return
-
-    async def on_request(info: dict) -> None:
-        await hook_notify.notify_request(
-            provider=info.get("provider") or "unknown", model=info.get("model") or "",
-            url=info.get("url") or "", payload=info.get("payload"), session_id=session_id)
-
-    async def on_response(info: dict) -> None:
-        await hook_notify.notify_response(
-            provider=info.get("provider") or "unknown", model=info.get("model") or "",
-            url=info.get("url") or "", duration_ms=info.get("duration_ms") or 0.0,
-            response_data=info.get("response_data"), usage=info.get("usage"),
-            session_id=session_id, error=info.get("error"),
-            finish_reason=info.get("finish_reason"),
-            metadata={"served_by": (info.get("routing") or {}).get("selected")})
-
-    client.set_llm_hooks(on_pre_request=on_request, on_post_response=on_response)

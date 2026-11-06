@@ -223,11 +223,44 @@ async def test_the_foreground_reader_keeps_no_more_than_the_cap_and_drains_the_r
     process.stdout = _Chunks(count=10, size=65536)
     process.wait = AsyncMock(return_value=0)
 
-    kept, more = await CommandExecutor._read_capped(process, 100_000)
+    output = await CommandExecutor._read_capped(process, 100_000)
 
-    assert len(kept) == 100_000
-    assert more is True
+    assert len(output.head) + len(output.tail) == 100_000
+    assert output.truncated is True
     assert process.stdout.reads == 11  # read to the end: a full pipe blocks the command
+
+
+@pytest.mark.asyncio
+async def test_an_output_over_the_cap_keeps_its_end_where_the_error_stands():
+    """Only the start was kept, so the line saying what failed was the part that got cut."""
+    server = _server(max_output_size_kb=1)
+    try:
+        result = await server.execute_command({
+            "command": "head -c 5000 /dev/zero | tr '\\0' x; echo; echo FAILED-at-the-end",
+            "_status": _status()})
+        assert result["status"] == "success", result
+        out = result["stdout"]
+        assert out.startswith("xxx") and out.rstrip().endswith("FAILED-at-the-end"), out[-200:]
+        assert result["truncated"] is True and "bytes in the middle omitted" in out
+        assert len(out.encode()) <= 1024 + 200   # the cap plus the marker
+    finally:
+        await server.cleanup()
+
+
+def test_capped_output_is_whole_up_to_the_cap_and_cuts_no_character_in_two():
+    whole = executor_module.CappedOutput(10)
+    whole.feed(b"0123456789")
+    assert whole.text() == "0123456789" and whole.truncated is False
+
+    split = executor_module.CappedOutput(10)
+    # 5 bytes kept at each end: "star" + the first byte of an "ä", the second byte of one + "ends"
+    split.feed(b"star" + "ä".encode() * 20 + b"ends")
+    assert bytes(split.head)[-1:] == b"\xc3" and bytes(split.tail)[:1] == b"\xa4", "fixture: no character split"
+    text = split.text()
+    assert "�" not in text, text
+    assert text.startswith("star\n") and text.endswith("\nends") and split.truncated is True
+    # 48 bytes fed, "star" and "ends" shown: the marker counts the 40 not shown, split characters included
+    assert "- 40 bytes in the middle omitted" in text, text
 
 
 @pytest.mark.asyncio

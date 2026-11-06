@@ -1,0 +1,2 @@
+value: 24
+next: kiswh.txt

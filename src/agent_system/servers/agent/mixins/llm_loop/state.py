@@ -101,6 +101,10 @@ class LoopState:
     #: until a 120k cap must not be sent back for two more rounds of it.
     consecutive_cut_off: int = 0
     max_cut_off_notes: int = 0
+    #: Text answers whose stream broke off without an end signal in a row, each asked again
+    #: (answer.py); the next one is delivered as it is.
+    consecutive_broken_streams: int = 0
+    max_broken_stream_retries: ClassVar[int] = 1
     #: Structured output (response_format): a final answer that does not match is sent back
     #: once. The note that describes the format to a model without the field is looked for
     #: before every call, not remembered: a compaction may have taken it out of the history.
@@ -186,3 +190,10 @@ class StepState:
     def ended(self) -> bool:
         """Whether a phase ended the step (``end`` is set): no further phase of it runs."""
         return self.end is not None
+
+
+def broken_answer_asked_again(run: LoopState, st: StepState) -> bool:
+    """Whether this answer is a fragment of a stream that broke off, to be asked again (answer.py, _text_step).
+    Decided from the answer as it came, before the post-LLM hooks, which are told (HookContext.asked_again)."""
+    return (st.finish_reason == "incomplete_stream" and not st.tool_calls and bool((st.content or "").strip())
+            and not st.final_call and run.consecutive_broken_streams < run.max_broken_stream_retries)

@@ -1,0 +1,107 @@
+# Does the prune checkpoint keep what the agent was told once the start of the run has been pruned out of view?
+#
+# Each task hands the agent a brief through a one-shot script (ws/get_brief.py prints it and deletes itself), then
+# makes it walk a chain of twelve files, one read per step. With max_messages 16 / max_messages_prune_to 8 the
+# brief's tool result leaves the view after a few steps, and the walk prunes two or three more times. The task's
+# own input stays (Pre-Layer P protects the first input), so the input only says "as the brief requires": the
+# brief's four facts reach the final answer through the conversation or not at all. The agent has no
+# context_engineer tools, so the archive is no way back; the checkpoint in the prune notice is.
+#
+# The check scores the four brief facts in the final answer. The sum of the chain values (ledger 817, harbour 667,
+# bluefinch 597, orchard 628, quarry 830, meridian 610) is asked for as well, but not scored: it measures the work
+# state, not the brief.
+#
+# Run it with:  agent-eval run src/plugins/context_engineer/evals/prune-checkpoint/suite.yaml
+name: prune-checkpoint
+agent: file_ops_test_agent
+description: "Prune checkpoint on/off: does a brief given once survive Pre-Layer P?"
+repeats: 3
+timeout_s: 600
+parallel: 2
+arms:
+  no-checkpoint:
+    agent_config:
+      hooks:
+        overrides:
+          context_engineer.engineer_context:
+            enabled: true
+            max_messages: 16
+            max_messages_prune_to: 8
+            min_tokens_between_compactions: 0
+  checkpoint:
+    agent_config:
+      hooks:
+        overrides:
+          context_engineer.engineer_context:
+            enabled: true
+            max_messages: 16
+            max_messages_prune_to: 8
+            min_tokens_between_compactions: 0
+            prune_checkpoint_profile: or-deepseek-flash
+tasks:
+  - id: ledger
+    workspace: ws
+    input: >-
+      Work in data/workspace. First run `python get_brief.py ledger` there with the terminal tool: it prints your
+      brief once and then deletes itself. Then follow the file chain that starts at
+      data/workspace/chain/ledger/start.txt: every file holds a value and names the next file in the same
+      directory; open the files one at a time until a file says `next: END`. Do not create or change any files.
+      Finally, answer with the sum of all values, written as the brief requires.
+    check:
+      expect:
+        regex: ['(?i)vandermolen', '\A[^\n]*TK-8152', '4417', '(?i)\d\s*kg\b']
+  - id: harbour
+    workspace: ws
+    input: >-
+      Work in data/workspace. First run `python get_brief.py harbour` there with the terminal tool: it prints your
+      brief once and then deletes itself. Then follow the file chain that starts at
+      data/workspace/chain/harbour/start.txt: every file holds a value and names the next file in the same
+      directory; open the files one at a time until a file says `next: END`. Do not create or change any files.
+      Finally, answer with the sum of all values, written as the brief requires.
+    check:
+      expect:
+        regex: ['(?i)lerwick', '(?i)fjellstad', '(?i)14(th)?\s*(of\s*)?march|march\s*14', 'Signed:\s*QA-7[\W_]*\Z']
+  - id: bluefinch
+    workspace: ws
+    input: >-
+      Work in data/workspace. First run `python get_brief.py bluefinch` there with the terminal tool: it prints your
+      brief once and then deletes itself. Then follow the file chain that starts at
+      data/workspace/chain/bluefinch/start.txt: every file holds a value and names the next file in the same
+      directory; open the files one at a time until a file says `next: END`. Do not create or change any files.
+      Finally, answer with the sum of all values, written as the brief requires.
+    check:
+      expect:
+        regex: ['(?i)larkspur', '2[,. ]?900', '(?i)wierzba', '#\s?\d{3}\b']
+  - id: orchard
+    workspace: ws
+    input: >-
+      Work in data/workspace. First run `python get_brief.py orchard` there with the terminal tool: it prints your
+      brief once and then deletes itself. Then follow the file chain that starts at
+      data/workspace/chain/orchard/start.txt: every file holds a value and names the next file in the same
+      directory; open the files one at a time until a file says `next: END`. Do not create or change any files.
+      Finally, answer with the sum of all values, written as the brief requires.
+    check:
+      expect:
+        regex: ['(?i)rjukan', '(?i)63\s*(%|percent|per cent)', '(?i)\bteal\b', '\[\s*\d+\s*\]']
+  - id: quarry
+    workspace: ws
+    input: >-
+      Work in data/workspace. First run `python get_brief.py quarry` there with the terminal tool: it prints your
+      brief once and then deletes itself. Then follow the file chain that starts at
+      data/workspace/chain/quarry/start.txt: every file holds a value and names the next file in the same
+      directory; open the files one at a time until a file says `next: END`. Do not create or change any files.
+      Finally, answer with the sum of all values, written as the brief requires.
+    check:
+      expect:
+        regex: ['(?i)oyelaran', '5530', '(?i)basalt', '\A[\W_]*ATTENTION']
+  - id: meridian
+    workspace: ws
+    input: >-
+      Work in data/workspace. First run `python get_brief.py meridian` there with the terminal tool: it prints your
+      brief once and then deletes itself. Then follow the file chain that starts at
+      data/workspace/chain/meridian/start.txt: every file holds a value and names the next file in the same
+      directory; open the files one at a time until a file says `next: END`. Do not create or change any files.
+      Finally, answer with the sum of all values, written as the brief requires.
+    check:
+      expect:
+        regex: ['(?i)kestrel maru', '(?i)B-31', '(?i)sorvik', '(?m)^[\W_]*OVER[\W_]*\Z']

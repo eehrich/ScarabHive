@@ -10,7 +10,8 @@ Tool Approval decides every tool call of an agent before it runs. Deny rules
 block a call, allow rules let it through, and in @{tt}ask@{utt} mode every
 other call is put to the person watching the run in the web chat: the call
 and its arguments appear under the run, with the buttons
-@{b}Allow once@{ub}, @{b}Allow for this session@{ub} and @{b}Deny@{ub} --
+@{b}Allow once@{ub}, @{b}Allow 'git status …' for this session@{ub} (calls like this one),
+@{b}Allow every <tool> call for this session@{ub} and @{b}Deny@{ub} --
 in @{tt}agent-cli chat@{utt} numbered, answered by the next line typed. A
 call nobody answers does not run. The plugin is loaded in the default
 configuration, but it is off for every agent until the agent switches it on.
@@ -70,7 +71,7 @@ The call is printed below the run's status rows: @{tt}? Approve <tool>?@{utt},
 the arguments as the box shows them, a warning where there is one, the
 decisions numbered as the box offers them. The next line you type answers
 it: the number of a decision, the number and a reason for Deny
-(@{tt}3 too wide@{utt} where Deny is 3 -- a script's call offers only Allow
+(@{tt}4 too wide@{utt} where Deny is 4 -- a script's call offers only Allow
 once and Deny, so Deny is 2 there), or the decision's name
 (@{tt}Deny@{utt}). Words go with Deny only: @{tt}2 files left@{utt} allows
 nothing (@{tt}Not taken: a reason goes with Deny only@{utt}). The chat
@@ -91,7 +92,8 @@ message too, and the call keeps waiting.
 @{table}
 Button | What happens
 Allow once | this call runs; the next call of the same tool is asked again
-Allow for this session | this call runs, and every later call of the same tool in this session runs without a question -- whatever its arguments. Not offered for a script
+Allow calls like this for this session | this call runs, and so does every later call in this session that the button names: for a call with a @{tt}command@{utt}, every command that starts with the same words (@{i}Allow 'git status …' for this session@{ui}), with every other argument the same -- the machine, and the environment variables, which could otherwise point an allowed program anywhere; for any other call, exactly these arguments again. Not offered for a script
+Allow every <tool> call for this session | this call runs, and every later call of the same tool in this session runs without a question -- whatever its arguments. Not offered for a script
 Deny | the call does not run. The reason you typed goes to the agent with the refusal
 @{body}
 
@@ -99,16 +101,24 @@ A reason goes with Deny only: typed and then allowed, the call is not
 answered (@{i}Not taken: a reason goes with Deny only@{ui}); clear the field,
 or deny.
 
-"Allow for this session" is kept per tool (@{tt}server/tool@{utt}), not per
-argument: allowing @{tt}terminal_execute@{utt} once for the session allows
-every later command. A deny rule still wins over it. For a spawn without
+A command's words are the first one and up to two more that are plain words:
+@{tt}git status -s@{utt} offers @{tt}git status …@{utt}, and that covers
+@{tt}git status origin@{utt} but not @{tt}git push@{utt}. A command with anything a
+shell reads as more than words -- @{tt};@{utt} @{tt}&&@{utt} @{tt}|@{utt} @{tt}$( )@{utt},
+a redirection, a glob, quotes, a backslash, a character that is not
+printable or a space other than blank and tab -- is allowed as exactly itself, and
+never matches a prefix allowed earlier: an allowed @{tt}ls@{utt} does not let
+@{tt}ls; rm -rf ~@{utt} through. "Allow every <tool> call" is kept per tool
+(@{tt}server/tool@{utt}): allowing @{tt}terminal_execute@{utt} that way allows every
+later command. A deny rule wins over both. For a spawn without
 approvals it is kept per target: allowing agent @{tt}x@{utt} does not allow
 agent @{tt}y@{utt}. It lasts until the server restarts.
 
 After a click the box says @{i}Sending…@{ui}, then @{i}Answered: Allow
 once@{ui}. The row's last line takes the box down in every tab that shows the
-run: @{tt}<tool>: allowed once by <you>@{utt}, @{tt}allowed for this session
-by …@{utt}, @{tt}denied by … -- <reason>@{utt}.
+run: @{tt}<tool>: allowed once by <you>@{utt}, @{tt}<tool>: 'git status …'
+allowed for this session by …@{utt}, @{tt}<tool>: every call allowed for this
+session by …@{utt}, @{tt}denied by … -- <reason>@{utt}.
 
 @{h2}When the answer is refused
 
@@ -205,8 +215,8 @@ blocked. Deny wins over allow rules and over "allow for this session".
 asked with a warning in ask. Allow rules do not let it through.
 @{bullet}A call inside a script: runs.
 @{bullet}Mode auto: runs.
-@{bullet}Mode ask: an allow rule names it, or a person allowed the tool for
-this session: runs. Otherwise the person is asked.
+@{bullet}Mode ask: an allow rule names it, or a person allowed the tool or
+calls like it for this session: runs. Otherwise the person is asked.
 
 @{h2}A rule
 
@@ -474,16 +484,17 @@ GET  /plugins/tool_approval/pending   [?session_id=…&request_id=…]
 @{body}
 
 @{tt}choices@{utt} is one decision: @{tt}allow_once@{utt},
-@{tt}allow_session@{utt} or @{tt}deny@{utt}; @{tt}text@{utt} is a reason,
+@{tt}allow_session@{utt} (calls like this), @{tt}allow_tool@{utt} (every call of the
+tool) or @{tt}deny@{utt}; @{tt}text@{utt} is a reason,
 with deny only, cut to 1000 characters. An unknown decision, several,
-@{tt}allow_session@{utt} for a script or a reason with an allow answer 422; a question that no longer waits, 404; someone else's,
+@{tt}allow_session@{utt} or @{tt}allow_tool@{utt} for a script or a reason with an allow answer 422; a question that no longer waits, 404; someone else's,
 403. @{tt}/pending@{utt} lists the open questions the caller may answer;
 @{tt}request_id@{utt} also takes those of the runs under it,
 @{tt}session_id@{utt} those of the agents that session called as tools.
 
 The question travels as a status line of the run, with
 @{tt}meta.tool_approval@{utt}: @{tt}id, tool, server, arguments,
-arguments_cut, warning, decisions, request_id, session_id, agent, asked_at,
+arguments_cut, warning, decisions, covers (what calls like this covers), request_id, session_id, agent, asked_at,
 expires_at, answer_url@{utt}, and @{tt}form@{utt} -- the question as every client draws it:
 @{tt}prompt, detail, warning, choices@{utt} (each @{tt}value, label@{utt}),
 @{tt}multi_select, text@{utt} (@{tt}label, alone@{utt}: whether words answer
@@ -505,7 +516,10 @@ for the last 1000 sessions.
 
 @{h2}Known gaps
 
-@{bullet}"Allow for this session" is per tool, not per argument.
+@{bullet}"Calls like this" reads a command's words, not what a shell makes of
+them: an allowed @{tt}git status …@{utt} also runs @{tt}git status --output=x@{utt}.
+The button names what it covers; a wider allow than wanted is the person's to
+refuse.
 @{bullet}auto has no reviewer: unmatched calls run.
 @{bullet}A long value is shortened in the middle in the box. When the part
 that matters could be hidden there, deny and ask the agent for a shorter

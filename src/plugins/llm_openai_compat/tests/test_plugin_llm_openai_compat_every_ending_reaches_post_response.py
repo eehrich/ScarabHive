@@ -14,7 +14,7 @@ import pytest
 
 from agent_system.config.models import LLMModelConfig
 from agent_system.core.cancellation import CancellationToken
-from agent_system.llm.models import LLMConnectionError, LLMRateLimitError, LLMServerError
+from agent_system.llm.models import LLMConnectionError, LLMQuotaExhaustedError, LLMRateLimitError, LLMServerError
 from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
 from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
 from plugins.llm_openai_compat.provider import _timeout_config
@@ -564,3 +564,75 @@ async def test_a_responses_refusal_is_reported_once(script, raised, error):
         with pytest.raises(raised):
             await client.chat_tools(MESSAGES, [])
     assert [info["error"] for info in hooks.post] == [error]
+
+
+GOOGLE_PER_MINUTE = json.dumps({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message":
+    "Resource has been exhausted (e.g. check quota). quotaId: GenerateRequestsPerMinutePerProjectPerModel"}})
+CAP_PAST_200 = json.dumps({"error": {"message": "x" * 250, "code": "insufficient_quota"}})
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+@pytest.mark.parametrize("body, raised", [
+    (GOOGLE_PER_MINUTE, LLMRateLimitError),       # "exhausted" and "quota", yet a short wait helps
+    (CAP_PAST_200, LLMQuotaExhaustedError),       # the account cap is named after the first 200 characters
+], ids=["per-minute throttle", "cap late in the body"])
+async def test_a_429_is_a_quota_only_when_its_whole_body_names_an_account_cap(streaming, body, raised):
+    """A quota blocks the model for everyone; a throttle only waits. The old check read 200 characters for both words."""
+    async with Upstream(status(429, body)) as upstream:
+        client = chat_client(upstream.url, streaming=streaming)
+        with pytest.raises(LLMRateLimitError) as limited:
+            await client.chat_tools(MESSAGES, [])
+    assert type(limited.value) is raised, limited.value
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+async def test_a_spent_quota_goes_to_the_fallback_without_the_rate_limit_waits(streaming):
+    """Every call on a spent account waited out its 429 retries first, minutes with the default backoff."""
+    async with Upstream(status(429, CAP_PAST_200)) as upstream:
+        client = chat_client(upstream.url, streaming=streaming, rate_limit_max_retries=2, rate_limit_backoff=0)
+        with pytest.raises(LLMQuotaExhaustedError) as spent:
+            await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == 1 and spent.value.retried is False, hits
+
+
+def _answer_script(streaming: bool):
+    answer = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "da"},
+                           "finish_reason": "stop"}], "usage": USAGE}
+    return (sse(_content("da"), _chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                                        "usage": USAGE}), _chunk("[DONE]"))
+            if streaming else status(200, json.dumps(answer)))
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+async def test_a_pinned_backends_cap_is_asked_once_more_without_the_pin(streaming, monkeypatch):
+    """A cap behind a pin is often that one backend's: the model was blocked for everyone instead."""
+    from plugins.llm_openai_compat import httpx_client as module
+
+    async def pinned(*args, **kwargs):
+        return {"order": ["One Backend"], "allow_fallbacks": False}
+
+    monkeypatch.setattr(module, "routing_pinned_to_last_backend", pinned)
+    async with Upstream(status(429, CAP_PAST_200), _answer_script(streaming)) as upstream:
+        client = chat_client(upstream.url, streaming=streaming, rate_limit_max_retries=2, rate_limit_backoff=0)
+        client._is_openrouter = True
+        result = await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == 2 and result["assistant"]["content"] == "da", (hits, result)
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["stream", "no stream"])
+async def test_a_cap_worded_429_with_a_short_retry_after_is_waited_out(streaming):
+    """Google words its per-minute limit like a cap; a short Retry-After says it is a throttle."""
+    body = json.dumps({"error": {"message": "You exceeded your current quota, please check your plan and billing"}})
+    async def with_retry_after(writer):
+        raw = body.encode()
+        writer.write(f"HTTP/1.1 429 X\r\nContent-Type: application/json\r\nRetry-After: 0\r\n"
+                     f"Content-Length: {len(raw)}\r\nConnection: close\r\n\r\n".encode() + raw)
+        await writer.drain()
+
+    async with Upstream(with_retry_after, _answer_script(streaming)) as upstream:
+        client = chat_client(upstream.url, streaming=streaming, rate_limit_max_retries=2, rate_limit_backoff=0)
+        result = await client.chat_tools(MESSAGES, [])
+        hits = upstream.hits
+    assert hits == 2 and result["assistant"]["content"] == "da", (hits, result)

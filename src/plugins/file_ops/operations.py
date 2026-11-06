@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
+import codecs
 import contextlib
+import difflib
 import errno
 import functools
 import logging
@@ -21,6 +24,82 @@ from . import textsearch
 
 
 logger = logging.getLogger(__name__)
+
+
+#: Typographic characters a model types plainly (and the other way round), each mapped to ONE character, so a
+#: position in the translated text is the same position in the original.
+_PLAIN_TYPOGRAPHY = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"', "«": '"', "»": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "−": "-",
+    " ": " ", " ": " ", " ": " ", " ": " ",
+})
+
+#: Beyond this many lines the closest-line hint is skipped: difflib compares every line.
+_CLOSEST_LINES_MAX_FILE_LINES = 20000
+
+
+def _lf_span_in_original(content: str, start: int, end: int) -> tuple[int, int]:
+    """Where [start, end) of ``content`` with every CRLF read as LF lies in ``content`` itself."""
+    collapsed: list[int] = []      # each CRLF's position in the LF view
+    index = content.find("\r\n")
+    while index != -1:
+        collapsed.append(index - len(collapsed))
+        index = content.find("\r\n", index + 2)
+    # A CRLF before a position adds its \r; one AT the end position belongs to the span only if its \n does.
+    return start + bisect.bisect_left(collapsed, start), end + bisect.bisect_left(collapsed, end)
+
+
+def _line_ending_at(content: str, start: int, end: int) -> str:
+    """The line ending new text takes where it replaces content[start:end]: that of the span, else of its line,
+    else of the file."""
+    span = content[start:end]
+    if "\n" in span:
+        return "\r\n" if "\r\n" in span else "\n"
+    after = content.find("\n", end)
+    if after != -1:
+        return "\r\n" if after > 0 and content[after - 1] == "\r" else "\n"
+    return "\r\n" if "\r\n" in content else "\n"
+
+
+def _utf16_codec(path: Path) -> Optional[str]:
+    """The codec of a file that starts with a UTF-16 BOM -- the one that keeps the BOM as a character, so a
+    rewrite keeps the byte order -- else None."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(2)
+    except OSError:
+        return None
+    return {codecs.BOM_UTF16_LE: "utf-16-le", codecs.BOM_UTF16_BE: "utf-16-be"}.get(head)
+
+
+def _occurrences(text: str, part: str) -> int:
+    """How often ``part`` occurs in ``text``, overlapping matches included (str.count skips them)."""
+    if not part:
+        return len(text) + 1   # as str.count: an empty oldString is ambiguous
+    count, at = 0, text.find(part)
+    while at != -1:
+        count += 1
+        at = text.find(part, at + 1)
+    return count
+
+
+def _closest_lines(content: str, wanted: str, count: int = 3) -> list[str]:
+    """The lines of ``content`` most like the first non-blank line of ``wanted``, as "line N: text".
+
+    Lines split at \\n only: splitlines() also splits at form feeds and U+2028, and its numbers were not
+    read_file's."""
+    probe = next((line.strip() for line in wanted.split("\n") if line.strip()), "")
+    lines = content.split("\n")
+    if not probe or len(lines) > _CLOSEST_LINES_MAX_FILE_LINES:
+        return []
+    stripped = [line.strip() for line in lines]
+    found = difflib.get_close_matches(probe, stripped, n=count, cutoff=0.6)
+    hits = []
+    for text in dict.fromkeys(found):
+        number = stripped.index(text) + 1
+        hits.append(f"line {number}: {lines[number - 1][:200]}")
+    return hits
 
 
 #: Bytes of the file's name a temp name keeps (".<name>.<12 hex>.tmp"): at most
@@ -152,7 +231,25 @@ class FileOperations:
         try:
             # Check file size first
             file_size = path.stat().st_size
-            
+
+            # The first bytes decide. A UTF-16 file (its BOM: PowerShell's Out-File, .reg) is read as UTF-16; a
+            # binary is refused -- read with errors='replace' it came back as a page of replacement characters.
+            # An unreadable file is no binary: the read below says what it is.
+            try:
+                with open(path, "rb") as handle:
+                    head = handle.read(textsearch.SNIFF_BYTES)
+            except OSError:
+                head = b""
+            if head.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+                encoding = "utf-16"
+            elif head and not textsearch.looks_like_text(head):
+                return {
+                    "status": "error",
+                    "error": f"Not a text file: {path.name} ({file_size} bytes of binary content).",
+                    "error_type": "BinaryFileError",
+                    "file_path": str(path)
+                }
+
             # If no pagination (offset=0 and no limit), read entire file preserving original line endings
             # BUT only if file is small enough
             if offset == 0 and limit is None and file_size <= self.max_unpaginated_size:
@@ -180,21 +277,35 @@ class FileOperations:
                     f"limit={limit} lines. Use offset/limit for more control."
                 )
 
-            # Pagination mode: need to process line by line
+            # Pagination mode: need to process line by line. A page also stops at the size an unpaginated read
+            # may have: 500 lines of minified code or JSON were megabytes in one answer.
+            # Counted in UTF-8 bytes, as the answer goes out: in characters a page of umlauts or CJK was
+            # three times the size the note named.
             lines = []
             total_lines = 0
+            page_bytes = 0
+            capped = cut = False
 
             async with aiofiles.open(path, 'r', encoding=encoding, errors='replace', newline='') as f:
                 async for line in f:
-                    if total_lines >= offset and (limit is None or len(lines) < limit):
-                        # Preserve line endings - don't strip them
-                        lines.append(line)
+                    if total_lines >= offset and (limit is None or len(lines) < limit) and not capped:
+                        size = len(line.encode("utf-8", "replace"))
+                        if page_bytes + size > self.max_unpaginated_size:
+                            capped = True
+                            if not lines:   # one line longer than a whole page: its start, said so
+                                start = line.encode("utf-8", "replace")[:self.max_unpaginated_size]
+                                lines.append(start.decode("utf-8", "ignore"))
+                                cut = True
+                        else:
+                            # Preserve line endings - don't strip them
+                            lines.append(line)
+                            page_bytes += size
                     total_lines += 1
 
             # Join without adding extra newlines (they're already in the lines)
             content = ''.join(lines)
 
-            return {
+            result = {
                 "status": "success",
                 "content": content,
                 "total_lines": total_lines,
@@ -203,6 +314,17 @@ class FileOperations:
                 "encoding": encoding,
                 "file_path": str(path)
             }
+            if capped:
+                # offset is 1-indexed for the model (read_file converts it)
+                next_offset = offset + len(lines) + 1
+                result["note"] = (
+                    f"Line {offset + 1} is longer than {self.max_unpaginated_size // 1024} KB: only its start "
+                    f"is shown. The next line starts at offset={next_offset}."
+                    if cut else
+                    f"Page stopped at {self.max_unpaginated_size // 1024} KB after {len(lines)} lines. "
+                    f"Continue with offset={next_offset}.")
+                result["line_cut"] = cut
+            return result
 
         except UnicodeDecodeError as e:
             logger.warning(f"Encoding error reading {path}: {e}")
@@ -324,6 +446,10 @@ class FileOperations:
                     "file_path": str(path)
                 }
 
+            # A UTF-16 file is edited in its own byte order, its BOM kept as the first character: read_file
+            # shows it as text, and a strict UTF-8 read refused the edit -- the next try was an overwrite
+            # that turned the file into UTF-8.
+            encoding = _utf16_codec(path) or encoding
             # newline='' keeps the file's own line endings. The default
             # translation turned every CRLF file into LF on its first edit —
             # the whole file rewritten, whatever the edit was.
@@ -337,26 +463,38 @@ class FileOperations:
                     "error_type": "ValidationError"
                 }
 
-            # Try exact match first
-            replacements = current_content.count(old_string)
+            # Try exact match first. Overlapping matches count: str.count saw one in "q\nq\nq\n" for "\nq\n"
+            # and the edit went to the first of two places.
+            replacements = _occurrences(current_content, old_string)
             if replacements == 1:
-                new_content = current_content.replace(old_string, new_string, 1)
+                # The new text in the line endings of where it lands: the model writes \n, and pasted as it
+                # came it put LF lines into a CRLF file.
+                at = current_content.find(old_string)
+                end = at + len(old_string)
+                # A match that starts on the \n of a CRLF takes its \r along: left in place it stood before the
+                # new text's own line ending (\r\r\n), or alone where the new text joins the lines.
+                if old_string.startswith('\n') and at > 0 and current_content[at - 1] == '\r':
+                    at -= 1
+                ending = _line_ending_at(current_content, at, end)
+                new_content = (current_content[:at] + new_string.replace('\r\n', '\n').replace('\n', ending)
+                               + current_content[end:])
 
             elif replacements == 0:
                 # Flexible matching: the model writes \n, the file may hold \r\n
                 normalized_content = current_content.replace('\r\n', '\n')
                 normalized_old_string = old_string.replace('\r\n', '\n')
                 normalized_new_string = new_string.replace('\r\n', '\n')
-                replacements = normalized_content.count(normalized_old_string)
+                replacements = _occurrences(normalized_content, normalized_old_string)
 
                 if replacements == 1:
                     logger.info("Using normalized line endings for replacement (CRLF/LF flexibility)")
-                    new_content = normalized_content.replace(
-                        normalized_old_string, normalized_new_string, 1)
-                    # Back to the file's style, once, for the whole text —
-                    # converting new_string beforehand as well made \r\r\n.
-                    if '\r\n' in current_content:
-                        new_content = new_content.replace('\n', '\r\n')
+                    # Only the matched span changes, in that span's own line endings: rewriting the whole
+                    # text in one style turned a file with mixed endings into all-CRLF on one edit.
+                    at = normalized_content.find(normalized_old_string)
+                    start, end = _lf_span_in_original(current_content, at, at + len(normalized_old_string))
+                    ending = _line_ending_at(current_content, start, end)
+                    new_content = (current_content[:start] + normalized_new_string.replace('\n', ending)
+                                   + current_content[end:])
                 elif replacements == 0:
                     # Check if it's only whitespace difference (informative error)
                     stripped_content = normalized_content.replace(' ', '').replace('\t', '')
@@ -445,14 +583,45 @@ class FileOperations:
                             "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file."
                         }
 
-                    # True not found
-                    return {
+                    # Typographic quotes, dashes or spaces where oldString has plain ones (or the other way
+                    # round). Not applied: the replacement would silently swap the file's characters.
+                    plain_content = normalized_content.translate(_PLAIN_TYPOGRAPHY)
+                    plain_old = normalized_old_string.translate(_PLAIN_TYPOGRAPHY)
+                    if plain_old and _occurrences(plain_content, plain_old) == 1:
+                        at = plain_content.find(plain_old)
+                        return {
+                            "status": "error",
+                            "error": "String not found with exact characters: the file has different quotes, "
+                                     "dashes or spaces there.",
+                            "error_type": "CharacterMatchError",
+                            "file_path": str(path),
+                            "corrected_old_string": normalized_content[at:at + len(plain_old)],
+                            "hint": "Use 'corrected_old_string' as oldString, and keep the file's characters "
+                                    "in newString."
+                        }
+
+                    # True not found. difflib compares every line: off the event loop.
+                    closest = await asyncio.to_thread(_closest_lines, normalized_content, normalized_old_string)
+                    result = {
                         "status": "error",
                         "error": f"String not found in file: {old_string[:50]}...",
                         "error_type": "StringNotFoundError",
                         "file_path": str(path),
                         "hint": "String does not exist in file. Check spelling and ensure you have the correct content."
                     }
+                    if closest:
+                        result["closest_lines"] = closest
+                        result["hint"] = ("String does not exist in file. The closest lines are in "
+                                          "'closest_lines': read around them and copy the exact text.")
+                    # A retry of an edit that went through (a timeout, a lost answer) finds only its result. Said
+                    # beside "not found", never instead of it, and only for a newString that is more than a word.
+                    new_text = normalized_new_string.strip()
+                    if (new_text != normalized_old_string.strip() and new_text in normalized_content
+                            and ('\n' in new_text or len(new_text) >= 12)):
+                        result["new_string_present"] = True
+                        result["hint"] = ("newString is already in the file: the edit may have been made already. "
+                                          "Read the file before editing again.")
+                    return result
 
             if replacements > 1:
                 # The schema promises ONE occurrence and asks for a unique

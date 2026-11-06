@@ -143,6 +143,17 @@ class TestHookSkipScenarios:
         assert result.metadata.get("continue") is not True
 
     @pytest.mark.asyncio
+    async def test_a_broken_off_answer_the_loop_asks_again_is_not_judged(self):
+        """Judged, "continue" kept the fragment in the history and "final" reset the run's count."""
+        plugin = _make_plugin(agent_rules={"test_agent": {"default": "continue"}})
+        ctx = _make_context(content="Die Antwort lautet: zw")
+        ctx.asked_again = True
+
+        result = await plugin.evaluate_completion(ctx)
+
+        assert result.metadata.get("continue") is not True
+
+    @pytest.mark.asyncio
     async def test_skip_when_content_empty(self):
         """Empty responses are skipped."""
         plugin = _make_plugin(agent_rules={"test_agent": {"default": "continue"}})

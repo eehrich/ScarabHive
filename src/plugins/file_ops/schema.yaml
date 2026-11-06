@@ -5,7 +5,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_read_file"
-      description: "Read a text file. A file over {{ max_unpaginated_kb }} KB returns its first {{ default_line_limit }} lines and total_lines; read the rest with offset and limit."
+      description: "Read a text file (a binary one is refused). A file over {{ max_unpaginated_kb }} KB returns its first {{ default_line_limit }} lines and total_lines; read the rest with offset and limit. A page also stops at {{ max_unpaginated_kb }} KB and then says where to go on."
       parameters:
         type: object
         properties:

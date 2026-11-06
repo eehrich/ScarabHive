@@ -42,6 +42,7 @@ from agent_system.llm.retry_utils import parse_retry_delay
 from agent_system.llm.tls import httpx_verify
 
 from . import anthropic_utils
+from plugins.llm_common.quota import quota_exhausted
 from plugins.llm_common import cancellation
 from plugins.llm_common.model_dialects import (
     reasoning_replay_flags,
@@ -127,9 +128,7 @@ def _typed_error(error: BaseException, kind: Optional[str], model: str,
     status = getattr(error, "status_code", None)
     message = _error_message(error)
     if kind == "rate_limit":
-        lowered = message.lower()
-        cls = (LLMQuotaExhaustedError if "quota" in lowered or "exhausted" in lowered
-               else LLMRateLimitError)
+        cls = LLMQuotaExhaustedError if quota_exhausted(message) else LLMRateLimitError
         return cls(f"Rate limit: {message}", provider="anthropic", model=model,
                    retry_after=retry_after, retried=retried)
     if kind == "server":

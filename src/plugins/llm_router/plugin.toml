@@ -12,3 +12,4 @@ type = ["tool-server"]
 category = "tools"
 license = "MIT"
 requires = { agent_system = ">=0.6.0" }
+plugins = ["llm_common"]

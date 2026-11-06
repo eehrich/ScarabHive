@@ -1,0 +1,2 @@
+value: 29
+next: stlkb.txt

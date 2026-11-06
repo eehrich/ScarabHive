@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from .....llm import schema_worker
 from .....llm.models import ChatMessage
 from .....llm.structured_output import STRUCTURED_OUTPUT_INVALID, repair_text
-from .state import LoopState, StepEnd, StepState
+from .state import LoopState, StepEnd, StepState, broken_answer_asked_again
 
 if TYPE_CHECKING:
     from ...server import Agent
@@ -34,6 +34,31 @@ class AnswerMixin:
 
     async def _text_step(self: Agent, run: LoopState, st: StepState):
         """Phase: an answer without tool calls -- go on, deliver it, or end the run without one."""
+        # The stream broke off with no end signal at all (incomplete_stream: no [DONE], no terminal
+        # event): the text is a fragment, delivered it was a reply cut off mid-sentence, in silence.
+        # Asked again instead -- not continued: a text answer's continuation would be delivered on its
+        # own, without the part before the break. The fragment leaves the history; it is its last
+        # message and no request carried it yet, so no cached prefix changes. Once in a row: a second
+        # break is delivered as before, with the warning llm_call logs. Checked before the post-LLM hooks and
+        # the drain: a hook that judged the fragment (agent_continuation) would keep it in the history on
+        # "continue", or reset its own count on "final" for an answer that never came; a user message waits
+        # for the next step, which drains it first.
+        if broken_answer_asked_again(run, st):
+            run.consecutive_broken_streams += 1
+            for messages in {id(run.messages): run.messages, id(run.context.messages): run.context.messages}.values():
+                if messages and messages[-1] is st.assistant_msg:
+                    messages.pop()
+            self._set_live_messages(run.session_id, run.messages.copy())
+            # The session tracker took the fragment after the LLM response (step.py): its checkpoint must not
+            # write it to disk while the step is asked again.
+            await self._persist_conversation(run.session_id, run.messages, to_disk=False,
+                                             note=f"broken-off answer dropped (step {st.step})")
+            await run.status_worker.progress(
+                "answer broke off before it was complete -- asked again",
+                meta={"step": st.step + 1, "broken_streams": run.consecutive_broken_streams})
+            st.end = StepEnd.NEXT_STEP
+            return
+
         # No tool calls - check if we should treat this as the final answer
         # Track consecutive responses without tool calls
         run.consecutive_no_tool_calls += 1

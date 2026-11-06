@@ -10,6 +10,7 @@ import httpx
 from agent_system.llm.models import LLMQuotaExhaustedError, LLMRateLimitError
 
 from .http_status import retry_after_seconds
+from .quota import quota_exhausted
 
 __all__ = ["DateTimeEncoder", "raise_for_batch_status"]
 
@@ -27,7 +28,7 @@ def raise_for_batch_status(response: httpx.Response, operation: str, *,
                            provider: str, model: str = "unknown") -> None:
     """Raise the typed error for a non-200 batch API answer.
 
-    429 is LLMQuotaExhaustedError when the body names a quota, else
+    429 is LLMQuotaExhaustedError when the body names an account cap (quota_exhausted), else
     LLMRateLimitError with the Retry-After the server sent (seconds or an
     HTTP date; an unreadable one is no hint, never a ValueError that hides the
     429). Anything else is a RuntimeError naming the operation.
@@ -35,8 +36,7 @@ def raise_for_batch_status(response: httpx.Response, operation: str, *,
     if response.status_code == 200:
         return
     if response.status_code == 429:
-        error_text = response.text.lower()
-        if "quota" in error_text or "insufficient" in error_text:
+        if quota_exhausted(response.text):
             raise LLMQuotaExhaustedError(
                 provider=provider, model=model, message=f"{operation}: {response.text}")
         raise LLMRateLimitError(

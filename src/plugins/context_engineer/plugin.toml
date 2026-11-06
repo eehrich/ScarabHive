@@ -11,3 +11,4 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server", "hooks", "web"]
 category = "hooks"
 requires = { agent_system = ">=0.7.0" }
+plugins = ["llm_common"]

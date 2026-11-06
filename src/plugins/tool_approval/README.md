@@ -3,8 +3,9 @@
 Approvals before tool calls. A `pre_tool_call` hook decides every call of an
 agent that switched it on, before it runs: deny rules block it, allow rules let
 it through, and in `ask` mode every other call is put to the person watching the
-run in the web chat, who answers *allow once*, *allow for this session* or
-*deny*. Sub-agents inherit the rules of the run that started them; work that no
+run in the web chat, who answers *allow once*, *allow calls like this for this session* (a
+command's first words, never a chained command), *allow every call of the tool
+for this session* or *deny*. Sub-agents inherit the rules of the run that started them; work that no
 approval would reach (Claude Code, a state machine, a sub-agent with approvals
 off) is asked with a warning or blocked.
 

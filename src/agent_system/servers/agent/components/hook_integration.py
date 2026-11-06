@@ -302,9 +302,13 @@ class HookIntegrationManager:
         llm: Optional[Any] = None,
         max_steps: Optional[int] = None,
         final_call: bool = False,
+        asked_again: bool = False,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Execute post-LLM hooks.
+
+        ``asked_again``: the loop drops this answer and asks the step again (HookContext.asked_again).
+
         
         Args:
             messages: Current conversation messages
@@ -340,6 +344,7 @@ class HookIntegrationManager:
             step=step,
             max_steps=max_steps,
             final_call=final_call,
+            asked_again=asked_again,
             llm=llm,
         )
         

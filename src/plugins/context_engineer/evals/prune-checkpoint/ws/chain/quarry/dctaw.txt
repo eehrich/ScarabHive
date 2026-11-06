@@ -1,0 +1,2 @@
+value: 95
+next: tmwqf.txt

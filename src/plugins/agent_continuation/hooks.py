@@ -374,6 +374,11 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
     async def evaluate_completion(self, context: HookContext) -> HookResult:
         """POST_LLM_CALL hook: decide if response is final or intermediate."""
 
+        if context.asked_again:
+            # A broken-off answer the loop asks again: judged, a "final" would reset this run's
+            # count for an answer that never came, a "continue" keep the fragment in the history.
+            return HookResult(success=True, modified=False)
+
         # Only evaluate text responses (no tool_calls → potential final answer)
         assistant = (context.llm_response or {}).get("assistant", {})
         tool_calls = assistant.get("tool_calls")

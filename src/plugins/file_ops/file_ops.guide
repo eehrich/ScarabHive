@@ -154,8 +154,10 @@ agent reaches whatever the shell reaches.
 
 @{h2}read_file
 
-Reads a text file. Always UTF-8; bytes that are not are replaced, so a
-binary file comes back as unreadable text rather than an error.
+Reads a text file. Always UTF-8; bytes that are not are replaced. A
+binary file -- a NUL byte or many control characters in its first 4 KB --
+is refused with @{tt}BinaryFileError@{utt}; an empty file reads as empty,
+and a UTF-16 file (with its BOM, as PowerShell writes them) as UTF-16.
 
 @{table}
 Parameter | Meaning
@@ -168,14 +170,18 @@ Without @{tt}offset@{utt} and @{tt}limit@{utt} a file up to
 @{tt}max_unpaginated_file_size_kb@{utt} (100 KB) comes back whole, with its
 own line endings; a larger one comes back as its first
 @{tt}default_line_limit@{utt} (500) lines. With an offset and no limit, a
-small file is read to its end, a large one for 500 lines.
+small file is read to its end, a large one for 500 lines. A page also
+stops at @{tt}max_unpaginated_file_size_kb@{utt}: the answer then carries a
+@{tt}note@{utt} with the offset to go on from, and a single line longer
+than that comes back as its start with @{tt}line_cut@{utt} true.
 
 The answer: @{tt}content@{utt}, @{tt}total_lines@{utt},
 @{tt}lines_read@{utt}, @{tt}offset@{utt} (here counted from 0),
 @{tt}encoding@{utt}, @{tt}file_path@{utt}. Refusals are
 @{tt}{"status": "error", "error": ..., "error_type": ...}@{utt} with
-@{tt}FileNotFoundError@{utt} ("File not found: ..."),
-@{tt}NotAFileError@{utt}, @{tt}SecurityError@{utt} (outside the folders)
+@{tt}FileNotFoundError@{utt} ("File not found: ...", then "Did you mean:
+..." with up to three close names from the same folder, never a secret),
+@{tt}BinaryFileError@{utt}, @{tt}NotAFileError@{utt}, @{tt}SecurityError@{utt} (outside the folders)
 or @{tt}ValueError@{utt} for a number it cannot read ("offset: a whole
 number, got 'x'"). Numbers sent as text -- @{tt}"40"@{utt} -- are taken.
 
@@ -370,16 +376,29 @@ Replaces one piece of text in a file: @{tt}filePath@{utt},
 exactly once.
 
 @{bullet}Found once: replaced. The file keeps its line endings and
-permissions, written the same safe way as create. Answer:
+permissions, written the same safe way as create; the new text takes the
+line ending of the place it lands, so a model's @{tt}\\n@{utt} becomes
+@{tt}\\r\\n@{utt} in a CRLF line. Answer:
 @{tt}changes.replacements@{utt} (1) and @{tt}changes.lines@{utt}, the first
 and last line the new text now stands on.
 @{bullet}The model's @{tt}\\n@{utt} matches a file's @{tt}\\r\\n@{utt}.
-@{bullet}Found more than once: @{tt}AmbiguousMatchError@{utt} with
-@{tt}occurrences@{utt} -- nothing is changed; add surrounding lines.
+Only the matched span changes, in that span's own line endings: a file
+with mixed endings keeps them.
+@{bullet}Found more than once, overlapping matches included:
+@{tt}AmbiguousMatchError@{utt} with @{tt}occurrences@{utt} -- nothing is
+changed; add surrounding lines.
 @{bullet}Found only with different indentation:
 @{tt}WhitespaceMatchError@{utt} with the file's line, the searched line
 and a @{tt}corrected_old_string@{utt} to send instead.
-@{bullet}Not found: @{tt}StringNotFoundError@{utt}.
+@{bullet}Found only with plain quotes, dashes or spaces where the file
+has typographic ones (or the other way round): @{tt}CharacterMatchError@{utt}
+with a @{tt}corrected_old_string@{utt}. Nothing is changed, so the file's
+characters are never swapped silently.
+@{bullet}Not found: @{tt}StringNotFoundError@{utt}, with
+@{tt}closest_lines@{utt} ("line N: ...", numbered as read_file counts) when
+there are lines like the first line of @{tt}oldString@{utt}. When
+@{tt}newString@{utt} -- more than a word -- is in the file already, also
+@{tt}new_string_present@{utt} and a hint that the edit may have been made.
 
 @{code json}
 {"operation": "create", "path": "E:/work/app/notes.md", "content": "# Notes\n"}
