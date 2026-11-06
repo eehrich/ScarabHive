@@ -568,7 +568,8 @@ def _judge_task(suite: Suite, run_id: str, task: Task, pending: List[Dict[str, A
     progress(f"judged {task.id}: {len(verdicts)} of {len(labelled)} product(s)"
              + (f" ${result['cost']:.4f}" if result.get("cost") else ""))
     return {"task": task.id, "request_id": request_id, "status": result["status"], "products": len(labelled),
-            "judged": len(verdicts), "cost": result.get("cost"), "models": result.get("models"),
+            "judged": len(verdicts), "cost": result.get("cost"), "estimated_cost": result.get("estimated_cost"),
+            "models": result.get("models"),
             **({"problem": str(problem)[-500:]} if problem else {})}
 
 
@@ -641,7 +642,8 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
     the run's or starts with ``<run's>_`` (sub-requests). *data* is the run's own data directory; None means the
     installation's. Unknown (None) when the store is not where the tracker keeps it by default."""
     db = (data or data_path()) / "context_usage_tracker" / "usage.db"
-    unknown = {"calls": None, "cost": None, "prompt_tokens": None, "completion_tokens": None, "models": None}
+    unknown = {"calls": None, "cost": None, "estimated_cost": None, "prompt_tokens": None, "completion_tokens": None,
+               "models": None}
     if not db.is_file():
         return unknown
     try:
@@ -657,6 +659,14 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
                                         ids).fetchall()
             except sqlite3.OperationalError:  # a store without those columns: its cost still counts
                 by_agent = None
+            # The part no bill names (price table times tokens): a direct route's peak-hour or discount
+            # price is not in the table, and an A/B ranked models by an unmarked estimate.
+            try:
+                (estimated,) = conn.execute(f"SELECT SUM(CASE WHEN cost_is_estimate THEN cost END) {mine}",
+                                            ids).fetchone()
+                estimated = round(estimated or 0.0, 6)
+            except sqlite3.OperationalError:  # an older store: whether a cost was billed is unknown
+                estimated = None
     except sqlite3.Error:
         return unknown
     calls, cost, unpriced, prompt, completion = row
@@ -664,6 +674,7 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
     for agent, model, n in by_agent or ():  # what each agent really ran on: a fallback in its chain shows here
         models.setdefault(agent or "?", {})[model or "?"] = n
     return {"calls": calls, "cost": round(cost, 6) if cost is not None else (0.0 if calls == 0 else None),
+            "estimated_cost": estimated,
             "unpriced_calls": unpriced or 0, "prompt_tokens": prompt or 0, "completion_tokens": completion or 0,
             "models": models}
 

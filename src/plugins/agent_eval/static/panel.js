@@ -94,7 +94,9 @@ async function loadRuns() {
         ${r.status === 'running' ? html`<div class="pk-muted">${r.scored} of ${total}</div>${progress(r.scored, total, r.status)}` : ''}</td>
       <td class="pk-num" data-sort-value="${r.scored ? r.passed / r.scored : ''}"><span class="${tone(r.passed, r.scored)}">${
         r.passed}/${r.scored}</span></td>
-      <td class="pk-num" data-sort-value="${r.cost}">${usd(r.cost)}</td>
+      <td class="pk-num" data-sort-value="${r.cost}">${usd(r.cost)}${r.cost_estimated
+        ? html`<div class="pk-muted" title="price table times tokens, no billed cost">~${usd(r.cost_estimated)} estimated</div>` : ''}${
+        r.cost_estimate_unknown_runs ? html`<div class="pk-muted" title="their usage store cannot tell billed from estimated">estimate unknown for ${r.cost_estimate_unknown_runs} run(s)</div>` : ''}</td>
     </tr>`;
     })}</tbody></table></div>`);
   if (selected) selectRow($('runs').querySelector('table'), selected);
@@ -208,7 +210,10 @@ function arms(rep) {
       ? html` <span class="pk-muted">(reference)</span>` : ''}</td><td class="pk-num">${a.runs}</td>
       <td class="pk-num">${pct(a.pass_rate)}</td><td class="pk-num">${num(a.mean_score)}${a.pooled_score != null
         ? html`<div class="pk-muted" title="every test or expectation counted alike">pooled ${num(a.pooled_score)}</div>` : ''}</td>
-      <td class="pk-num">${usd(a.cost)}${a.cost_unknown_runs ? html`<div class="pk-muted">+ ${a.cost_unknown_runs} run(s) unknown</div>` : ''}</td>
+      <td class="pk-num">${usd(a.cost)}${a.cost_estimated
+        ? html`<div class="pk-muted" title="price table times tokens, no billed cost">~${usd(a.cost_estimated)} estimated</div>` : ''}${
+        a.cost_unknown_runs ? html`<div class="pk-muted">+ ${a.cost_unknown_runs} run(s) unknown</div>` : ''}${
+        a.cost_estimate_unknown_runs ? html`<div class="pk-muted" title="their usage store cannot tell billed from estimated">estimate unknown for ${a.cost_estimate_unknown_runs} run(s)</div>` : ''}</td>
       <td class="pk-num">${usd(a.cost_p90)}</td></tr>`)}</tbody>
   </table></div>
   ${entries.filter(([, a]) => a.learn).map(([name, a]) => html`<div class="pk-card pk-stack">

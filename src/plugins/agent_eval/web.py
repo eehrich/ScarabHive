@@ -94,7 +94,10 @@ class AgentEvalEndpoints:
             runs.append({**meta, "status": _status(meta), "baseline": base.get(meta["suite"]) == meta["run_id"],
                          "done": len(records), "scored": len(scored),
                          "passed": sum(1 for r in scored if r.get("passed")),
-                         "cost": round(sum(float(r.get("cost") or 0) for r in records), 4)})
+                         "cost": round(sum(float(r.get("cost") or 0) for r in records), 4),
+                         "cost_estimated": round(sum(float(r.get("estimated_cost") or 0) for r in records), 4),
+                         "cost_estimate_unknown_runs": sum(1 for r in records if r.get("cost") is not None
+                                                           and r.get("estimated_cost") is None)})
         return {"runs": runs}
 
     async def get_run(self, request: Request, run_id: str, against: str = ""):

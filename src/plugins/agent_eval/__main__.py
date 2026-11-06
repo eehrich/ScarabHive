@@ -57,6 +57,7 @@ def build_report(run_id: str, against: Optional[str] = None) -> Dict[str, Any]:
         costs = [c["cost"] for c in calls if c.get("cost") is not None]
         out["judge"] = {"calls": len(calls), "products": sum(c["products"] for c in calls),
                         "judged": sum(c["judged"] for c in calls), "cost": round(sum(costs), 4) if costs else None,
+                        "cost_estimated": round(sum(c.get("estimated_cost") or 0 for c in calls), 4),
                         "problems": [f"{c['task']}: {c['problem']}" for c in calls if c.get("problem")]}
     out["meta"] = meta
     out["warnings"] = warnings
@@ -76,6 +77,10 @@ def _print_report(rep: Dict[str, Any]) -> None:
         print(f"WARNING: {warning}")
     for name, arm in rep["arms"].items():
         unknown = f" + {arm['cost_unknown_runs']} run(s) unknown" if arm.get("cost_unknown_runs") else ""
+        if arm.get("cost_estimated"):
+            unknown += f", ~${arm['cost_estimated']:.4f} of it estimated from the price table"
+        if arm.get("cost_estimate_unknown_runs"):
+            unknown += f", estimated part unknown for {arm['cost_estimate_unknown_runs']} run(s)"
         p90 = f"${arm['cost_p90']:.4f}" if arm.get("cost_p90") is not None else "n/a"
         rate = f"{arm['pass_rate']:.0%}" if arm.get("pass_rate") is not None else "n/a"
         pooled = f" (pooled {arm['pooled_score']})" if arm.get("pooled_score") is not None else ""
@@ -110,6 +115,8 @@ def _print_report(rep: Dict[str, Any]) -> None:
     judge = rep.get("judge")
     if judge:
         cost = f"${judge['cost']:.4f}" if judge.get("cost") is not None else "cost unknown"
+        if judge.get("cost_estimated"):
+            cost += f" (~${judge['cost_estimated']:.4f} of it estimated from the price table)"
         print(f"\njudge: {judge['judged']} of {judge['products']} product(s) judged in {judge['calls']} call(s), {cost}")
         for problem in judge["problems"]:
             print(f"  {problem}")

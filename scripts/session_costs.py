@@ -254,12 +254,16 @@ def calc_tree_costs(
         row = merged.setdefault((model, agent, batch), {
             "model": model, "agent": agent, "is_batch": batch, "calls": 0,
             "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost": 0.0,
+            # the part of "cost" no bill names: price table times tokens
+            "estimated_cost": 0.0,
         })
         row["calls"] += calls
         row["prompt_tokens"] += pt
         row["completion_tokens"] += ct
         row["cached_tokens"] += cached
         row["cost"] += cost
+        if not billed:
+            row["estimated_cost"] += cost
     rows = sorted(merged.values(), key=lambda r: r["prompt_tokens"], reverse=True)
     return rows, sorted(unpriced)
 
@@ -267,6 +271,7 @@ def calc_tree_costs(
 def _totals(rows: list[dict]) -> dict:
     return {
         "cost": sum(r["cost"] for r in rows),
+        "estimated_cost": sum(r["estimated_cost"] for r in rows),
         "calls": sum(r["calls"] for r in rows),
         "prompt_tokens": sum(r["prompt_tokens"] for r in rows),
         "completion_tokens": sum(r["completion_tokens"] for r in rows),
@@ -341,7 +346,7 @@ def print_human(session_id: str, roots: list[str], stats: dict,
         row_cache_pct = (r["cached_tokens"] / r["prompt_tokens"] * 100) if r["prompt_tokens"] else 0
         print(f"  {model:<28.28} | {r['agent']:<32.32} | {r['calls']:>5} | "
               f"{r['prompt_tokens']:>11,} | {r['cached_tokens']:>11,} | {row_cache_pct:>5.1f}% | "
-              f"{r['completion_tokens']:>11,} | ${r['cost']:>8.4f}")
+              f"{r['completion_tokens']:>11,} | ${r['cost']:>8.4f}{'~' if r['estimated_cost'] else ''}")
     print("  " + "-" * 134)
     cache_pct = (tot["cached_tokens"] / tot["prompt_tokens"] * 100
                  if tot["prompt_tokens"] else 0)
@@ -349,6 +354,9 @@ def print_human(session_id: str, roots: list[str], stats: dict,
           f"{tot['prompt_tokens']:>11,} | {tot['cached_tokens']:>11,} | {cache_pct:>5.1f}% | "
           f"{tot['completion_tokens']:>11,} | ${tot['cost']:>8.4f}")
     print(f"  Cache hit rate: {cache_pct:.1f}%")
+    if tot["estimated_cost"]:
+        # The table is no bill: a provider's peak-hour or discount price is not in it.
+        print(f"  ~ estimated from the price table (no billed cost): ${tot['estimated_cost']:.4f} of the total")
 
     print("\n  Cost by model:")
     for name, c in _by(rows, "model").items():
@@ -384,6 +392,8 @@ def build_json(session_id: str, roots: list[str], stats: dict,
         "session_id": session_id,
         "root_request_ids": roots,
         "total_cost_usd": round(tot["cost"], 6),
+        # the part of total_cost_usd no bill names (price table times tokens)
+        "estimated_cost_usd": round(tot["estimated_cost"], 6),
         "total_calls": tot["calls"],
         "prompt_tokens": tot["prompt_tokens"],
         "completion_tokens": tot["completion_tokens"],

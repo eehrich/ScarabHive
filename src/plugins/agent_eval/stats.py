@@ -243,6 +243,11 @@ def report(records: List[Dict[str, Any]], reference_arm: str, arms: List[str],
             "mean_score": round(statistics.fmean([m["mean"] for m in means.values()]), 4) if means else None,
             "pooled_score": _pooled(ran, records),
             "cost": round(sum(costs), 4),
+            # the part of it no bill names: the price table's estimate
+            "cost_estimated": round(sum(float(r.get("estimated_cost") or 0) for r in spent), 4),
+            # runs whose store could not tell billed from estimated: their part is unknown, not 0
+            "cost_estimate_unknown_runs": sum(1 for r in spent if r.get("cost") is not None
+                                              and r.get("estimated_cost") is None),
             "cost_unknown_runs": len(spent) - len(costs),
             "cost_p90": round(_p90(costs), 4) if costs else None,
             "models": _models(r for r in records if r.get("arm") == name),

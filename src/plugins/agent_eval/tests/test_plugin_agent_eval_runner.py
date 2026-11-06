@@ -652,6 +652,7 @@ def test_usage_of_sums_the_run_and_its_sub_requests(tmp_path):
     usage = runner.usage_of("ev-1", data)
     assert usage["calls"] == 3 and usage["cost"] == pytest.approx(0.15) and usage["unpriced_calls"] == 1
     assert usage["models"] is None, "a store without agent_name/model columns: its cost counts, its models are unknown"
+    assert usage["estimated_cost"] is None, "a store that cannot tell billed from estimated said: all billed"
     assert runner.usage_of("ev-1", tmp_path / "nothing")["cost"] is None
 
 
@@ -962,3 +963,32 @@ def test_check_arms_passes_every_suite_in_the_repository():
             refused.append(f"{path.relative_to(root)}: {e}")
     assert any(p.parent.name == "hello" for p in found), "the scan found not even the shipped hello suite"
     assert not refused, "\n".join(refused)
+
+
+def test_usage_of_names_the_part_of_the_cost_no_bill_names(tmp_path):
+    """The tracker marks a cost from the price table (cost_is_estimate); an A/B between a direct route and a
+    billed one ranked models by an unmarked estimate."""
+    import sqlite3
+    from plugins.agent_eval import stats
+    db = tmp_path / "context_usage_tracker" / "usage.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE usage_snapshots (request_id TEXT, cost REAL, cost_is_estimate INTEGER NOT NULL "
+                     "DEFAULT 0, prompt_tokens INTEGER, completion_tokens INTEGER)")
+        conn.executemany("INSERT INTO usage_snapshots VALUES (?, ?, ?, 10, 2)",
+                         [("ev-1", 0.10, 0), ("ev-1_sub", 0.04, 1), ("ev-2", 9.0, 1)])
+    usage = runner.usage_of("ev-1", tmp_path)
+    assert usage["cost"] == pytest.approx(0.14) and usage["estimated_cost"] == pytest.approx(0.04)
+
+    records = [{"arm": "a", "task": "t", "scored": True, "passed": True, "score": 1.0, **usage}]
+    assert stats.report(records, "a", ["a"])["arms"]["a"]["cost_estimated"] == pytest.approx(0.04)
+
+
+def test_a_run_whose_store_cannot_tell_estimates_is_counted_not_zeroed():
+    from plugins.agent_eval import stats
+    records = [{"arm": "a", "task": "t", "scored": True, "passed": True, "score": 1.0, "cost": 0.1,
+                "estimated_cost": None},
+               {"arm": "a", "task": "t", "scored": True, "passed": True, "score": 1.0, "cost": 0.1,
+                "estimated_cost": 0.0}]
+    arm = stats.report(records, "a", ["a"])["arms"]["a"]
+    assert arm["cost_estimate_unknown_runs"] == 1, "an unknown estimate went in as 0"

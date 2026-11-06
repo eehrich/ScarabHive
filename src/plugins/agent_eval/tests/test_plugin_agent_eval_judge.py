@@ -69,7 +69,7 @@ def _judge(asked, verdict=lambda text, criterion: criterion == "warm" and "warm"
         criteria = re.findall(r"^- ([\w-]+): ", job["input"], re.M)
         said = {label: {c: verdict(text, c) for c in criteria} for label, text in products.items()}
         return {"status": "done", "answer": answer(said) if answer else "thinking...\n" + json.dumps(said),
-                "cost": 0.5, "request_id": job["request_id"], "models": {"j": {"m-judge": 1}}}
+                "cost": 0.5, "estimated_cost": 0.2, "request_id": job["request_id"], "models": {"j": {"m-judge": 1}}}
     return child
 
 
@@ -304,6 +304,7 @@ def test_the_report_warns_of_a_judge_that_follows_length_or_shares_a_family(tmp_
     assert rep["arms"]["alpha"]["length"]["longer_higher"] > 0 == rep["arms"]["alpha"]["length"]["longer_lower"]
     assert any("may be judging length" in w for w in rep["warnings"]), rep["warnings"]
     assert rep["judge"]["calls"] == 2 and rep["judge"]["cost"] == 1.0
+    assert rep["judge"]["cost_estimated"] == pytest.approx(0.4), "the judge's estimate went unmarked"
     records = store.read_records(run_id)
     store.append_record(run_id, {**records[0], "n": 999, "models": {"a": {"m-judge-2": 1}}})
     assert any("of the family 'm'" in w for w in build_report(run_id)["warnings"])

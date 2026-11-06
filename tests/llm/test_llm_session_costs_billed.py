@@ -68,3 +68,25 @@ def test_a_model_without_price_or_cost_is_still_named_but_not_for_its_errors(tmp
                                     ("billed-model", {})])
 
     assert unpriced == ["no-such-model"]
+
+
+def test_the_part_no_bill_names_is_marked_as_estimated(tmp_path, capsys):
+    """A table price is no bill (peak-hour prices, discounts): an A/B between a
+    direct and a billed route ranked models by an unmarked estimate."""
+    rows, _ = _costs(tmp_path, [(PRICED, {"prompt_tokens": 1_000_000, "cost": 0.5}),
+                                (PRICED, {"prompt_tokens": 1_000_000})])
+    estimate = estimate_cost(PRICED, 1_000_000, 0, 0)
+    assert rows[0]["estimated_cost"] == pytest.approx(estimate)
+
+    module = _session_costs()
+    report = module.build_json("s", ["root1"], {"root_calls": 2, "sub_calls": 0, "max_depth": 0}, rows, [])
+    assert report["estimated_cost_usd"] == pytest.approx(estimate, abs=1e-6)
+    module.print_human("s", ["root1"], {"tree_calls": 2, "root_calls": 2, "sub_calls": 0, "max_depth": 0}, rows, [])
+    assert "estimated from the price table" in capsys.readouterr().out
+
+
+def test_a_fully_billed_report_claims_no_estimate(tmp_path, capsys):
+    rows, _ = _costs(tmp_path, [(PRICED, {"prompt_tokens": 1_000_000, "cost": 0.5})])
+    assert rows[0]["estimated_cost"] == 0
+    _session_costs().print_human("s", ["root1"], {"tree_calls": 1, "root_calls": 1, "sub_calls": 0, "max_depth": 0}, rows, [])
+    assert "estimated" not in capsys.readouterr().out
