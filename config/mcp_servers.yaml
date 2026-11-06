@@ -80,6 +80,56 @@ external_servers:
       features:
         tools: true
 
+    # --- Trying out a server that asks the person --------------------------
+    # A few pretend tools (book a table, order a pizza, connect an account)
+    # that ask in the chat before they answer: the feature_demo_agent uses
+    # them. "python" is the interpreter the app runs on, not whatever python
+    # PATH finds; the path is relative to the repo root. on_demand: only a
+    # run of an agent that names feature_demo.* starts it.
+    feature_demo:
+      enabled: true
+      connect: on_demand
+      transport: stdio
+      command: python
+      args: ["src/plugins/mcp_client/demo_server.py"]
+      description: Demo tools that ask the person in the chat (elicitation)
+
+    # --- A remote server behind OAuth: Notion --------------------------------
+    # No token in this file: `/mcp-authorize notion` answers with a link, the
+    # browser signs in at Notion and comes back to this app's
+    # /plugins/mcp_client/oauth/callback. Without redirect_uri that is
+    # http://<network.host>:<network.port>/... (127.0.0.1 for host 0.0.0.0),
+    # so open the link in a browser that is signed in to the app at that very
+    # address -- Notion takes http only for a loopback one; for an app reached
+    # under another name set auth.redirect_uri to it. Notion registers the
+    # client itself (dynamic registration), no client_id needed. The
+    # feature_demo_agent names notion.*.
+    notion:
+      enabled: true
+      connect: on_demand
+      transport: streaming
+      url: "https://mcp.notion.com/mcp"
+      description: Notion (pages, databases, search) -- needs /mcp-authorize notion once
+      auth:
+        type: oauth
+        # redirect_uri: "https://hive.example.org/plugins/mcp_client/oauth/callback"
+
+    # --- Figma's remote server: OFF, it does not let this app register ------
+    # Figma's MCP server takes OAuth with dynamic registration, but refuses
+    # the registration of clients it has not admitted (403 Forbidden,
+    # measured 06.11.2026). Kept for when that changes; enabled, it only
+    # fails. Figma without that: the Figma desktop app's own MCP server
+    # (Preferences > Enable Dev Mode MCP Server), streaming at
+    # http://127.0.0.1:3845/mcp, no auth.
+    figma:
+      enabled: false
+      connect: on_demand
+      transport: streaming
+      url: "https://mcp.figma.com/mcp"
+      description: Figma (designs, components, variables) -- refuses this app's registration
+      auth:
+        type: oauth
+
     # A headless browser for the coder (Microsoft's Playwright MCP): open a
     # page, read it as an accessibility snapshot, click, type, read the
     # console and network, take a screenshot. The coder defers these tools

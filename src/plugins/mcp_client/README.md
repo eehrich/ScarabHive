@@ -15,8 +15,10 @@ tools. Speaks the protocol through the official `mcp` SDK.
 - **Questions to the person** -- a server that asks during one of its tools (MCP elicitation: a form or an
   address) gets the question into the chat, field by field; answered there like ask_user's, cancelled unasked
   when nobody watches the run (`elicitation: false` turns it off).
+  `demo_server.py` is a small server whose tools ask (`feature_demo` in `config/mcp_servers.yaml`).
 - **OAuth** -- `auth: {type: oauth}` for remote servers that need a login (dynamic registration or a configured
-  client id); a person authorizes once with `/mcp-authorize <server>`, the tokens are kept and refreshed.
+  client id); a person authorizes once with `/mcp-authorize <server>`, the tokens are kept and refreshed. Until
+  then a connect nobody can authorize stops at the server's 401, before registering this app anywhere.
 - **Tools** `mcp_client_list_servers`, `_connect`, `_authorize`, `_disconnect`, `_tools` -- see and steer the
   connections; granted with `"+mcp_client/*"`, which grants no external tool.
 - **Chat commands** `/mcp`, `/mcp-connect`, `/mcp-authorize`, `/mcp-disconnect`, `/mcp-tools` -- the same five, at

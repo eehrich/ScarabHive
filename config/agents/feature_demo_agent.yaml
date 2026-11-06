@@ -1,0 +1,72 @@
+plugins:
+  servers:
+    # Hands-on tour of the chat features: file checkpoints (the Files panel,
+    # diffs, /rewind), tool calls drawn as fields and edits, ask_user, tool
+    # approvals, a server that asks the person (elicitation), a remote server
+    # behind OAuth (Notion) and a headless browser (Playwright MCP). Say "tour" in the chat and it walks
+    # through them one by one; or ask for one of them by name.
+    #
+    # Its files live in data/workspace/demo/ (file_ops is limited to
+    # data/workspace). Admins only: the Notion authorization is one for the
+    # whole installation, and data/workspace is shared.
+    feature_demo_agent:
+      type: basic_agent
+      enabled: true
+      description: "Tour of the chat features - file checkpoints and diffs, rewind, ask_user, approvals, MCP questions, Notion via OAuth"
+
+      agent_config:
+        llm_profile: [normal]
+        llm_profile_advanced: []
+        max_steps: 40
+        system_template: "./prompts/feature_demo_prompt.md"
+
+        tools:
+          allowed:
+            - "file_ops/*"
+            - "ask_user/*"
+            - "datetime/*"
+            - "mcp_client/*"        # /mcp, /mcp-authorize notion, ... in the chat
+            - "feature_demo.*"      # dot: tools of the external demo server (config/mcp_servers.yaml)
+            - "notion.*"
+            - "playwright.*"        # a headless browser (config/mcp_servers.yaml; starts on the first run)
+
+        hooks:
+          enabled: true
+          overrides:
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
+            # Reads, edits and creating a file run unasked -- creating also with overwrite: true, which
+            # replaces a file whole (a rule cannot ask for an argument's absence; the checkpoint keeps
+            # the old one). Deleting, moving or renaming a file, every Notion call and going to an
+            # address in the browser (browser_navigate) are asked first. Reading, screenshots, clicking
+            # and typing are not -- a click on a link or a submitted form does open another page.
+            tool_approval.check_tool_call:
+              enabled: true
+              mode: ask
+              allow:
+                - "file_ops/file_ops_read_file"
+                - "file_ops/file_ops_list_directory"
+                - "file_ops/file_ops_replace_string_in_file"
+                - "file_ops/*search*"
+                - tool: "file_ops/file_ops_manage"
+                  arguments:
+                    operation: "^create\\Z"
+                - "datetime/*"
+                - "mcp_client/*"
+                - "feature_demo.*"
+                - "playwright.browser_snapshot"
+                - "playwright.browser_take_screenshot"
+                - "playwright.browser_click"
+                - "playwright.browser_type"
+                - "playwright.browser_wait_for"
+                - "playwright.browser_console_messages"
+                - "playwright.browser_close"
+
+      metadata:
+        version: "1.0.0"
+        tags: ["test", "demo", "file_checkpoints", "ask_user", "tool_approval", "mcp", "elicitation", "oauth"]
+        category: "Testing"
+        visibility: "ui"
+        min_role: "admin"
