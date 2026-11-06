@@ -42,7 +42,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_tools"
-      description: List the tools offered by the connected external MCP servers. Blocked tools are included and marked, not hidden.
+      description: List the tools offered by the connected external MCP servers. Blocked tools are included and marked, not hidden. call_as is the name to call a tool by, when this agent is allowed it.
       parameters:
         type: object
         properties:

@@ -1205,6 +1205,26 @@ class TestPluginRole:
             await plugin.pool.close_all()
 
     @pytest.mark.asyncio
+    async def test_the_listing_names_the_tool_the_way_a_model_calls_it(self):
+        """A model that read only the server's own name called browser_navigate, which no agent has: the
+        listing says the name the model's tool list carries (server prefix, dot made an underscore)."""
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+        from plugins.mcp_client.server import MCPClientServer
+
+        plugin = MCPClientServer("mcp_client", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
+        # a server name the model's tool name cannot carry as it is
+        plugin.pool.configure({"my probe": make_config(tools=tool_config(blocked=["echo"]))})
+        await plugin.pool.connect("my probe")
+        try:
+            shown = {t["name"]: t for t in (await plugin.tools({"server": "my probe"}))["servers"]["my probe"]}
+            assert shown["add"]["call_as"] == "my_probe_add", shown["add"]
+            assert "call_as" not in shown["echo"]  # blocked: nobody calls it
+            # the pool's cached lists, which the core builds the model's tools from, stay as they were
+            assert all("call_as" not in t for t in (await plugin.list_external_tools())["my probe"])
+        finally:
+            await plugin.pool.close_all()
+
+    @pytest.mark.asyncio
     async def test_connect_reports_failure_instead_of_raising(self):
         from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from plugins.mcp_client.server import MCPClientServer

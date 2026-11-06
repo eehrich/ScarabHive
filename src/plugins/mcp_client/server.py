@@ -316,8 +316,14 @@ class MCPClientServer(SchemaBasedToolServer):
         all_by_server = await self.pool.list_tools_by_server(
             force_refresh=bool(params.get("force_refresh"))
         )
+        from agent_system.servers.agent.components.tool_integration import model_tool_name
         server = params.get("server")
-        by_server = {server: all_by_server.get(server, [])} if server else all_by_server
+        picked = {server: all_by_server.get(server, [])} if server else all_by_server
+        # call_as: the name an agent that allows the tool calls it by -- `name` is the server's own, which no
+        # agent can call (a model that saw only it called browser_navigate). Copies: the pool caches its lists.
+        by_server = {name: [tool if tool["blocked"] else {**tool, "call_as": model_tool_name(f"{name}.{tool['name']}")}
+                            for tool in tools]
+                     for name, tools in picked.items()}
         total = sum(len(tools) for tools in by_server.values())
         scope = params.get("_status")
         if scope:

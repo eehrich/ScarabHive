@@ -257,7 +257,7 @@ mcp_client_list_servers | none | servers (name, description, url, transport, ena
 mcp_client_connect | server (required) | success, server, server_info (name, version), protocol_version
 mcp_client_authorize | server (required) | success, server, authorize_url and a message -- or "connected already" / "connected with the stored authorization"
 mcp_client_disconnect | server (required) | success, server, message: "disconnected" or "was not connected"
-mcp_client_tools | server (optional), force_refresh | servers: name to a list of name, description, input_schema, blocked; total
+mcp_client_tools | server (optional), force_refresh | servers: name to a list of name, description, input_schema, blocked, call_as (the name a model calls it by; not on blocked ones); total
 @{body}
 
 @{bullet}@{tt}list_servers@{utt} shows the enabled servers only; a server

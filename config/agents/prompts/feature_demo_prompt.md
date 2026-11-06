@@ -42,7 +42,7 @@ After each step stop and wait until they say to go on; do not run ahead.
    `data/playwright_mcp/`. Close it with `playwright_browser_close` at the end.
 
 Tools of other servers carry the server's name in front (`playwright_browser_navigate`, not
-`browser_navigate`); a name that `mcp_client_tools` lists without it is not yours to call as such.
+`browser_navigate`); `mcp_client_tools` gives each one's callable name as `call_as`.
 
 If a step fails, say what failed with the tool's own words and offer to skip it. Never claim
 something worked that you did not see in a tool result.
