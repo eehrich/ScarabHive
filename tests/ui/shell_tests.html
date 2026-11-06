@@ -1744,10 +1744,10 @@
       if (message.getAttribute('aria-expanded') !== 'true') return false;
       // one click, both halves -- there is no second thing to press
       if (parts.some((p) => p.getClientRects().length === 0)) return false;
-      if (!parts[0].querySelector('pre').textContent.includes('README.md')) return false;
+      if (!parts[0].textContent.includes('README.md')) return false;
       // a big result is capped rather than poured into the page, and says it was
-      const result = parts[1].querySelector('pre').textContent;
-      if (result.length > 4300 || !result.includes('more characters')) return false;
+      const result = parts[1].textContent;
+      if (result.length > 4300 || !parts[1].querySelector('pre').textContent.includes('more characters')) return false;
       // and a result is DATA: tags in it are shown, not parsed. Rendered as markup the
       // angle brackets would be gone from textContent -- and a tool could put anything
       // it liked into the page.
@@ -1841,11 +1841,26 @@
       detail.querySelector('.tool-detail-name').click();
       if (body.getClientRects().length === 0) return false;
       if (!parts[0].textContent.includes('README.md')) return false;
-      // stored as a JSON string and shown as the object it is, not as a quoted blob
-      if (!parts[1].textContent.includes('"status"')) return false;
-      // and still DATA: the tag is shown, not parsed
+      // stored as a JSON string and shown as the object it is: a field per key, not a quoted blob
+      const keys = [...parts[1].querySelectorAll('.tool-field-key')].map((k) => k.textContent);
+      if (keys.join() !== 'status,note,content,<i>key</i>') return false;
+      // a text over several lines is shown as its lines, not with its newlines escaped
+      if (![...parts[1].querySelectorAll('pre')].some((p) => p.textContent === 'line one\nline two')) return false;
+      // and still DATA, in every place a part puts text -- a short value, a key, a text of its own:
+      // the tags are shown, not parsed
       if (!parts[1].textContent.includes('<b>not markup</b>')) return false;
-      if (parts[1].querySelector('b')) return false;
+      if (![...parts[1].querySelectorAll('pre')].some((p) => p.textContent === '<i>text</i>\nsecond')) return false;
+      if (parts[1].querySelector('b, i')) return false;
+      // a result of five hundred fields is cut as one: a line says how many more there are
+      const many = step.querySelector('.status-body > .tool-detail[data-key="call_2"] .tool-detail-part[data-kind="result"]');
+      if (!many || many.textContent.length > 4500 || many.querySelectorAll('.tool-field').length > 90) return false;
+      if (!/… \d+ more fields$/.test(many.lastElementChild.textContent)) return false;
+      // an edit is shown as the lines it took out and the lines it put in
+      const edit = step.querySelector('.status-body > .tool-detail[data-key="call_2"] .tool-detail-part[data-kind="arguments"]');
+      if (!edit) return false;
+      const lines = (kind) => [...edit.querySelectorAll(`.tool-diff-${kind}`)].map((l) => l.textContent).join('|');
+      if (lines('del') !== '- a|- b' || lines('add') !== '+ a|+ B') return false;
+      if (edit.textContent.includes('newString')) return false;
       // the answer is still there, and the call that answered adds no empty step
       if (!box.querySelector('.response-text').textContent.includes('Done')) return false;
       return box.querySelectorAll('.step-section').length === 1;
@@ -1927,7 +1942,7 @@
       // its lines sit flat inside it: indented once, by where the run hangs, not again per line
       need(!(late.getAttribute('data-depth') !== '0'), "late.getAttribute('data-depth') !== '0'");
       // what its tool was asked hangs on its tool's row, as in the caller's steps
-      need(!(!late.classList.contains('has-detail') || !late.textContent.includes('"icons"')), "!late.classList.contains('has-detail') || !late.textContent.includes('\"icons\"')");
+      need(!(!late.classList.contains('has-detail') || ![...late.querySelectorAll('.tool-field')].some((f) => f.querySelector('.tool-field-key')?.textContent === 'query' && f.textContent.endsWith('icons'))), "!late.classList.contains('has-detail') || no field query: icons");
       // its answer is its own, drawn from its Markdown; the caller's stays the caller's
       const answer = sub.querySelector(':scope > .sub-run-body > .container-section .response-text');
       need(!(!answer || answer.textContent !== 'Icons found.' || !answer.querySelector('strong')), "!answer || answer.textContent !== 'Icons found.' || !answer.querySelector('strong')");

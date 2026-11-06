@@ -140,6 +140,14 @@
   color: var(--text-secondary); background: var(--surface-1);
   border-left: 2px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
+/* An object's fields one per line; a text over several lines in a pre of its own. */
+.tool-field { font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-secondary); overflow-wrap: anywhere; }
+.tool-field-key { color: var(--text-muted); }
+.tool-field-key::after { content: ": "; }
+/* an edit: the lines it took out and the lines it put in */
+.tool-diff > span { display: block; }
+.tool-diff-del { color: var(--danger); background: var(--danger-subtle); }
+.tool-diff-add { color: var(--ok); background: var(--ok-subtle); }
 /* A call that opened no status scope has no line to click and brings one of its own. */
 .tool-detail { padding-left: var(--space-5); }
 .tool-detail-name {

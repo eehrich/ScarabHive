@@ -2185,10 +2185,6 @@
    */
   function toolDetail(blk, data, kind, payload, live = false) {
     if (!blk || !blk.steps) return;
-    const text = JSON.stringify(payload, null, 2) || '';
-    const shown = text.length > TOOL_DETAIL_CHARS
-      ? `${text.slice(0, TOOL_DETAIL_CHARS)}\n… ${text.length - TOOL_DETAIL_CHARS} more characters`
-      : text;
     const action = data.action || 'tool';
     const key = data.request_id ? CSS.escape(data.request_id) : null;
     // Where this call's parts already are: a stored run taken over by its live events
@@ -2216,10 +2212,78 @@
     const label = document.createElement('span');
     label.className = 'tool-detail-label';
     label.textContent = kind;
-    const pre = document.createElement('pre');
-    pre.textContent = shown;  // a tool's answer is data, never markup
-    part.append(label, pre);
+    part.append(label, ...toolPartNodes(payload));
     body.appendChild(part);
+  }
+
+  /** The spellings of an edit's two halves, as file tools name them. */
+  const EDIT_FIELDS = [['oldString', 'newString'], ['old_string', 'new_string']];
+
+  /**
+   * What a tool was asked or answered, as something to read rather than JSON to decode.
+   *
+   * An object's fields one per line, and a text over several lines as the lines it is: a
+   * command, a file's content, stdout -- JSON put every newline of them into a "\n". An
+   * edit (oldString/newString) as the lines it took out and the lines it put in. Anything
+   * else -- a list, a number, a plain string -- as before. TOOL_DETAIL_CHARS caps the
+   * whole part, and the text where it is cut says how much is missing. Text only, never
+   * markup: a tool's answer is data.
+   */
+  function toolPartNodes(payload) {
+    let left = TOOL_DETAIL_CHARS;
+    const take = (text) => {
+      const kept = text.slice(0, Math.max(0, left));
+      left -= kept.length;
+      return kept.length < text.length ? `${kept}\n… ${text.length - kept.length} more characters` : kept;
+    };
+    const node = (tag, className, text) => {
+      const el = document.createElement(tag);
+      if (className) el.className = className;
+      if (text !== undefined) el.textContent = text;
+      return el;
+    };
+    const entries = payload && typeof payload === 'object' && !Array.isArray(payload) ? Object.entries(payload) : [];
+    if (!entries.length) {   // not an object, or one without fields: as JSON ({} stays visible as {})
+      return [node('pre', '', take(typeof payload === 'string' ? payload : (JSON.stringify(payload, null, 2) || '')))];
+    }
+    const edit = EDIT_FIELDS.find(([before, after]) => typeof payload[before] === 'string'
+      && typeof payload[after] === 'string');
+    const nodes = [];
+    // The fields shown: an edit's second half is part of its first.
+    const shown = entries.filter(([key]) => !(edit && key === edit[1]));
+    for (const [index, [key, value]] of shown.entries()) {
+      if (left <= 0) {   // the cap holds for the fields too: a dict of thousands of keys is one line here
+        const more = shown.length - index;
+        nodes.push(node('div', 'tool-field', `… ${more} more field${more === 1 ? '' : 's'}`));
+        break;
+      }
+      const field = node('div', 'tool-field');
+      // a key counts against the cap like a value, and is cut like one
+      const label = key.length > left ? `${key.slice(0, left)}…` : key;
+      left -= key.length;
+      field.appendChild(node('span', 'tool-field-key', label));
+      if (edit && key === edit[0]) {
+        const diff = node('pre', 'tool-diff');
+        const half = (text, kind, mark) => {
+          const kept = text.slice(0, Math.max(0, left));
+          left -= kept.length;
+          // nothing kept, nothing drawn: an empty "+ " would read as a line put in
+          if (kept) kept.split('\n').forEach((line) => diff.appendChild(node('span', `tool-diff-${kind}`, `${mark} ${line}`)));
+          // the cut said on a line of its own, not as one more line taken out or put in
+          if (kept.length < text.length) diff.appendChild(node('span', '', `… ${text.length - kept.length} more characters`));
+        };
+        half(payload[edit[0]], 'del', '-');
+        half(payload[edit[1]], 'add', '+');
+        field.firstChild.textContent = 'edit';
+        field.appendChild(diff);
+      } else {
+        const text = typeof value === 'string' ? value : (JSON.stringify(value, null, 2) ?? String(value));
+        const short = (value === null || typeof value !== 'object') && !text.includes('\n') && text.length <= 160;
+        field.appendChild(short ? node('span', 'tool-field-value', take(text)) : node('pre', '', take(text)));
+      }
+      nodes.push(field);
+    }
+    return nodes;
   }
 
   /**

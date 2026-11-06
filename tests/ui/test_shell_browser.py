@@ -1609,9 +1609,17 @@ def stub_app() -> FastAPI:
                 {"role": "assistant", "content": "", "reasoning_content": "weighing the first move.",
                  "tool_calls": [{"id": "call_1", "type": "function",
                                  "function": {"name": "file_ops_read_file",
-                                              "arguments": '{"filePath": "README.md"}'}}]},
+                                              "arguments": '{"filePath": "README.md"}'}},
+                                {"id": "call_2", "type": "function",
+                                 "function": {"name": "file_ops_replace_string_in_file",
+                                              "arguments": json.dumps({"filePath": "README.md",
+                                                                       "oldString": "a\nb", "newString": "a\nB"})}}]},
                 {"role": "tool", "tool_call_id": "call_1", "name": "file_ops_read_file",
-                 "content": '{"status": "success", "note": "<b>not markup</b>"}'},
+                 "content": json.dumps({"status": "success", "note": "<b>not markup</b>",
+                                        "content": "line one\nline two", "<i>key</i>": "<i>text</i>\nsecond"})},
+                # A dict of many keys: the cap holds for the fields, not only for their values.
+                {"role": "tool", "tool_call_id": "call_2", "name": "file_ops_replace_string_in_file",
+                 "content": json.dumps({f"file_{i:04d}": "y" * 40 for i in range(500)})},
                 {"role": "assistant", "content": "Done", "content_format": "text"},
             ]
             if found["run"] == "mid":  # read back while the run still works: no answer yet
