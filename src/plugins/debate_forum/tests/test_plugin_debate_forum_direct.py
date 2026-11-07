@@ -182,6 +182,29 @@ class TestDirectMessages:
 
         assert listed["sessions"] == [{"session_id": "sb", "status": "running", "agent": "agent_b"}]
 
+    async def test_list_sessions_walks_the_directory_off_the_loop(self, server, presence, monkeypatch):
+        """The walk covers every sub-agent's session too; on the loop it stalled it for seconds under load."""
+        import asyncio
+
+        on_a_loop = []
+        original = sp.SessionPresence.list_for_user
+
+        def watched(self, *args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_a_loop.append(True)
+            except RuntimeError:
+                on_a_loop.append(False)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(sp.SessionPresence, "list_for_user", watched)
+        presence.hold("sb", USER, "agent_b")
+
+        listed = await server.list_sessions({"_session_id": "sa", "_user_id": USER})
+
+        assert on_a_loop == [False], f"the directory was walked on the event loop: {on_a_loop}"
+        assert [s["session_id"] for s in listed["sessions"]] == ["sb"]
+
     async def test_an_idle_session_is_woken_for_the_message(self, server, sessions, monkeypatch):
         spawned = []
         monkeypatch.setattr(sp.presence, "spawn_wake", lambda session_id, user_id, depth:

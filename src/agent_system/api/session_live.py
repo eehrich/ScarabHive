@@ -139,7 +139,10 @@ def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
     whole session file to tell an idle session from none -- measured here at
     0.4 ms over a 92 KB median, so a sidebar poll over its rows would spend
     tens of milliseconds parsing JSON inside the event loop, for an answer
-    that is almost always "nobody holds anything".
+    that is almost always "nobody holds anything". The ``scandir`` itself is
+    called off the loop all the same (list_active_sessions): the directory
+    holds every sub-agent's session as well, and under a busy thread its
+    walk stalled the loop for seconds.
 
     What that leaves out is a SUB-agent's session: ``list_for_user`` keeps
     those out, because they are run by the orchestrator that spawned them.
@@ -159,6 +162,10 @@ def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
         return
     # No catch: list_for_user swallows the OSErrors it can meet (an unreadable
     # directory answers "nobody holds anything") -- one here would never run.
+    # Asked before the listing as well as after: this runs off the loop, and the loop may take or let go of a hold
+    # meanwhile. A hold of this process seen by the probe is one it had before or still has after; the gap left is one
+    # taken and let go again within the listing, which then reads as elsewhere for one poll.
+    here_before = {s for s in wanted if presence.held_here(s, user_id)}
     held = {s["session_id"]: s for s in presence.list_for_user(user_id)}
     for session_id in wanted:
         if session_id in answer:
@@ -171,7 +178,7 @@ def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
         # the save, the session-end hooks -- and an append being persisted. A
         # probe of the lock cannot tell that from another process, and reading
         # it as one refused a delete "because another process works on it".
-        if presence.held_here(session_id, user_id):
+        if session_id in here_before or presence.held_here(session_id, user_id):
             continue
         answer[session_id] = {"request_id": None,
                               "agent_name": state.get("agent") or None,

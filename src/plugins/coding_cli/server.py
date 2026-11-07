@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import concurrent.futures
 import contextlib
 import functools
 import hashlib
@@ -106,6 +107,69 @@ CLAIM_WAIT_S = 30
 STALE_LEASE_S = 10
 # How often a started instance looks for runs whose owner is gone and for rings that were lost.
 SWEEP_S = 30
+
+# Every instance of the plugin sweeps the same runs folder, all of them on the same beat (they start together), and the
+# folder holds every file of every run ever made. Measured: 20 instances listing 67k entries at once, each listing
+# handing the GIL back per entry and then filtering every name in Python -- they starved the event loop for seconds,
+# and a thread with an open SQLite write transaction beside them, whose lock the other writers then waited out.
+# Ended records by folder, names: the process's, shared by every instance (an ended run is ended for all of them).
+_READ_ENDED: dict[str, set[str]] = {}
+_listing_guard = threading.Lock()
+# folder -> [listings started, (number, future) of the one under way or None]
+_listings: dict[str, list] = {}
+
+
+class _Listing:
+    """The runs folder's records and wakes by name, sorted out once per listing for every caller."""
+
+    def __init__(self, names: list[str]) -> None:
+        self.records = frozenset(n for n in names if n.endswith(".json"))
+        self.wakes = tuple(n for n in names if n.endswith(".wake"))
+
+
+def _run_folder_listing(folder: Path) -> _Listing:
+    """``folder`` listed no earlier than the call: a caller joins a listing only when it started after the caller
+    arrived, and waits out an older one before starting its own -- a record saved before the call is always in it
+    (run_task counts the runs going right after saving one). Callers arriving together share one listing, and
+    nothing is kept between calls, so nothing goes stale. A folder that cannot be read has no names."""
+    key = str(folder)
+    with _listing_guard:
+        state = _listings.setdefault(key, [0, None])
+        arrived = state[0]
+    while True:
+        with _listing_guard:
+            under_way = state[1]
+            if under_way is None:
+                state[0] += 1
+                mine: Optional[concurrent.futures.Future] = concurrent.futures.Future()
+                state[1] = (state[0], mine)
+                joined = None
+            else:
+                mine, joined = None, under_way
+        if joined is not None:
+            number, future = joined
+            if number > arrived:
+                return future.result()
+            with contextlib.suppress(Exception):
+                future.result()              # older than this call: wait it out, then list or join anew
+            continue
+        assert mine is not None
+        try:
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                names = []
+            listing = _Listing(names)
+            mine.set_result(listing)
+            return listing
+        except BaseException as exc:
+            mine.set_exception(exc)
+            raise
+        finally:
+            with _listing_guard:
+                state[1] = None
+
+
 SAVE_ATTEMPTS = 40
 # A refused run never reports, and only reports and this question write quota.json: a window that reset early kept
 # refusing until its old reset (measured: the file far above what the subscription reported, the reset moved). A state that
@@ -536,8 +600,9 @@ class CodingCliServer(SchemaBasedToolServer):
         self._stopped = False
         self._start_lock = asyncio.Lock()
         self._probe_lock = asyncio.Lock()
-        # The paths of records read as ended (_unended).
-        self._read_ended: set[str] = set()
+        # The records read as ended (_unended), by folder: the process's, shared by every instance -- an ended run is
+        # ended for all of them, and each reading the same thousands of records for itself is that many times the work.
+        self._read_ended = _READ_ENDED
         self._probed_at = 0.0
         self._instance = secrets.token_hex(6)
         self._me = {"pid": os.getpid(), "started": cli.process_start(os.getpid()), "instance": self._instance}
@@ -608,9 +673,9 @@ class CodingCliServer(SchemaBasedToolServer):
             if record.get("state") == "running" and not self._owner_alive(record):
                 await self._adopt(record)
         # A wake still on disk is one nobody rang to the end; _ring reads whether its run has ended.
-        for wake in await asyncio.to_thread(lambda: list((self._root() / "runs").glob("*.wake"))):
-            if _RUN_ID.fullmatch(wake.stem):
-                self._ring(wake.stem)
+        for name in (await asyncio.to_thread(_run_folder_listing, self._root() / "runs")).wakes:
+            if _RUN_ID.fullmatch(name[:-len(".wake")]):
+                self._ring(name[:-len(".wake")])
 
     async def _adopt(self, record: dict) -> None:
         """Becomes the owner of an orphaned run -- one instance per dead owner."""
@@ -739,14 +804,15 @@ class CodingCliServer(SchemaBasedToolServer):
         then passed by its path: every start and every sweep read each record ever made, and they pile up by the
         thousand."""
         found = []
-        for path in (self._root() / "runs").glob("*.json"):
-            if str(path) in self._read_ended:
-                continue
-            record = self._load(path.stem)
+        runs = self._root() / "runs"
+        ended = self._read_ended.setdefault(str(runs), set())
+        # The set difference at C speed: twenty instances each walking every name in Python was the load itself.
+        for name in sorted(_run_folder_listing(runs).records - ended):
+            record = self._load(name[:-len(".json")])
             if not record or not _RUN_ID.fullmatch(str(record.get("run_id"))):
                 continue
             if record.get("state") in FINAL_STATES:
-                self._read_ended.add(str(path))
+                ended.add(name)
             else:
                 found.append(record)
         return found

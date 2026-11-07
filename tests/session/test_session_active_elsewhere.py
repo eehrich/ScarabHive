@@ -137,6 +137,48 @@ def test_the_endpoint_actually_asks(root, holder, monkeypatch):
     assert answer["woken"]["request_id"] is None
 
 
+def test_the_endpoint_lists_the_directory_off_the_loop(root, holder, monkeypatch):
+    """The listing walks the user's whole session directory, sub-agents' sessions included. On the loop, a busy
+    thread beside it made that walk take seconds, and the sidebar asks every four seconds: the loop stood still,
+    and every hook waiting on it timed out."""
+    import asyncio
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from agent_system.api import session_endpoints as endpoints
+
+    holder("woken")
+    listed_on_a_loop: list[bool] = []
+    original = sp.SessionPresence.list_for_user
+
+    def watched(self, *args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            listed_on_a_loop.append(True)
+        except RuntimeError:
+            listed_on_a_loop.append(False)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(sp.SessionPresence, "list_for_user", watched)
+
+    async def no_jobs():
+        return {}
+
+    monkeypatch.setattr(endpoints, "get_background_job_manager",
+                        lambda: type("JM", (), {"active_sessions": staticmethod(no_jobs)})())
+    app = FastAPI()
+    app.include_router(endpoints.session_router)
+    app.dependency_overrides[endpoints.get_optional_user] = lambda: type("U", (), {"username": USER})()
+    app.dependency_overrides[endpoints.get_session_manager] = lambda: None
+    app.dependency_overrides[endpoints.get_agent_optional] = _Agent
+
+    answer = TestClient(app).get("/api/sessions/active?ids=woken").json()["active"]
+
+    assert listed_on_a_loop == [False], f"the directory was listed on the event loop: {listed_on_a_loop}"
+    assert answer.get("woken", {}).get("elsewhere") is True, "the answer got lost on the way off the loop"
+
+
 def test_what_this_process_already_knows_is_left_alone(root, holder):
     """Jobs and trackers win: they can be followed, and this cannot. Overwritten
     here, a run the page could stream would be downgraded to one it can only
@@ -169,6 +211,27 @@ def test_a_session_this_process_holds_is_not_reported_as_elsewhere(root):
         assert answer == {}, "this process's own hold was reported as another process"
     finally:
         store.release("mine", USER)
+
+
+def test_a_hold_let_go_during_the_listing_is_not_reported_as_elsewhere(root, monkeypatch):
+    """Off the loop, the loop lets go of its own hold while the directory is listed: the probe saw it running,
+    and asked only afterwards, this process no longer holds it -- one poll of "working elsewhere" for nobody."""
+    store = sp.presence_for(_Agent().system_config)
+    assert store.hold("mine", USER, "agent_b"), "fixture could not hold the session"
+    original = sp.SessionPresence.list_for_user
+
+    def listing_then_release(self, *args, **kwargs):
+        listed = original(self, *args, **kwargs)
+        store.release("mine", USER)
+        return listed
+
+    monkeypatch.setattr(sp.SessionPresence, "list_for_user", listing_then_release)
+    answer: dict = {}
+    _add_sessions_running_elsewhere(["mine"], USER, _Agent(), answer)
+
+    assert not store.held_here("mine", USER), "fixture: the hold was not let go during the listing"
+    assert answer == {}, "a hold this process let go during the listing was reported as another process"
+
 
 def test_presence_switched_off_reports_nothing(root, holder):
     """Without presence there are no lock files to read, and a session held by

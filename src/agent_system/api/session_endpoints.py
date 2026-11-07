@@ -8,6 +8,7 @@ what a session is doing right now in session_live.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from typing import Optional, List, Dict, Any
@@ -264,7 +265,10 @@ async def list_active_sessions(
                               "attachable": bool(info.get("attachable")),
                               "answered": bool(info.get("answered")),
                               "elsewhere": False}
-    _add_sessions_running_elsewhere(wanted, user_id, agent, answer)
+    # Off the loop: it lists the user's session directory, which holds every sub-agent's session too (74k entries
+    # measured). scandir hands the GIL back on every entry, and with one busy thread beside it the listing took
+    # 7.5 s instead of 0.05 -- a stalled loop every time the sidebar asked, every four seconds.
+    await asyncio.to_thread(_add_sessions_running_elsewhere, wanted, user_id, agent, answer)
     return {"active": answer}
 
 

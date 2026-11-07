@@ -201,6 +201,62 @@ async def unwatched(repo, task, max_run_s=None, **config):
     return first._load(started["run_id"])
 
 
+async def test_an_ended_run_read_by_one_instance_is_not_read_by_the_next(repo):
+    """Every instance sweeps the same folder; each reading every ended record for itself was that many times the
+    work, in a process with twenty of them."""
+    first = make_server(repo)
+    ended, _ = await call(first, "run_task", task="WRITE b.txt hello")
+    assert first._unended() == [] and first._load(ended["run_id"])["state"] == "done", "fixture: the run did not end"
+    second = make_server(repo)
+    reads = []
+    load = second._load
+    second._load = lambda run_id: reads.append(run_id) or load(run_id)
+
+    assert second._unended() == []
+    assert reads == [], f"the second instance read the ended record again: {reads}"
+
+
+def test_callers_arriving_together_share_one_listing_made_after_they_came(tmp_path, monkeypatch):
+    """Twenty instances sweep on the same beat: they share a listing -- but never one that began before they came.
+    run_task counts the runs going right after the previous start saved its record: a listing already under way
+    would leave that record out, and max_parallel with it."""
+    (tmp_path / "abc.json").write_text("{}", encoding="utf-8")
+    listed = []
+    gate = threading.Event()
+    real = os.listdir
+
+    def slow_listdir(folder):
+        names = real(folder)              # what this listing saw, before it was held up
+        listed.append(names)
+        if len(listed) == 1:
+            gate.wait(5)
+        return names
+
+    monkeypatch.setattr(server_module.os, "listdir", slow_listdir)
+    first = []
+    early = threading.Thread(target=lambda: first.append(server_module._run_folder_listing(tmp_path)))
+    early.start()
+    deadline = time.time() + 5
+    while not listed and time.time() < deadline:
+        time.sleep(0.01)
+    assert listed, "fixture: the first listing never started"
+    (tmp_path / "new.json").write_text("{}", encoding="utf-8")   # saved before the next callers come
+    later = []
+    callers = [threading.Thread(target=lambda: later.append(server_module._run_folder_listing(tmp_path)))
+               for _ in range(4)]
+    for caller in callers:
+        caller.start()
+    time.sleep(0.2)                       # all four are waiting by now
+    gate.set()
+    for thread in (early, *callers):
+        thread.join(5)
+
+    assert first[0].records == {"abc.json"}
+    assert [listing.records for listing in later] == [{"abc.json", "new.json"}] * 4, (
+        "a caller got a listing that began before it came, without the record saved before it")
+    assert len(listed) == 2, f"{len(listed)} listings for four callers arriving together"
+
+
 async def test_a_run_leaves_its_changes_committed_on_its_branch(repo):
     server = make_server(repo)
     head = git(repo, "rev-parse", "HEAD")
@@ -1517,8 +1573,9 @@ async def test_an_ended_run_is_read_once_and_a_running_one_every_time(repo):
     await server._running()
     assert reads == [ended["run_id"]], reads
     reads.clear()
-    server._read_ended.clear()
     going = await unwatched(repo, "SLEEP 30")
+    # After the second instance: it read the ended record into the process's set, which it shares with this one.
+    server._read_ended.clear()
     try:
         for _ in range(3):
             assert [r["run_id"] for r in server._unended()] == [going["run_id"]]

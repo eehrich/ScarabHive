@@ -5,6 +5,7 @@ Used by moderator agents (e.g. a panel comparing API designs) to run structured 
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, TYPE_CHECKING
 
@@ -389,8 +390,9 @@ class DebateForumServer(SchemaBasedToolServer):
         presence = presence_for(self.system_config)
         if presence is None:
             return {"error": PRESENCE_OFF}
-        sessions = presence.list_for_user(
-            _caller_user(params), exclude=params.get("_session_id") or "")
+        # Off the loop: the listing walks the user's whole session directory (see session_endpoints).
+        sessions = await asyncio.to_thread(
+            presence.list_for_user, _caller_user(params), exclude=params.get("_session_id") or "")
         status = params.get("_status")
         if status:
             await status.end(f"Listed {len(sessions)} session(s)")
