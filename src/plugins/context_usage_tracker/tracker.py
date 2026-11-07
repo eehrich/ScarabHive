@@ -1,18 +1,76 @@
 """Context usage tracking for the context_usage_tracker plugin."""
 
+import atexit
+import concurrent.futures
+import contextlib
 import json
 import logging
+import queue
 import threading
 import time
 from pathlib import Path
 
 from agent_system.paths import data_path
-from typing import List, Dict, Any, Optional, Sequence
+from typing import Callable, List, Dict, Any, Optional, Sequence
 from dataclasses import dataclass, asdict, fields as dataclass_fields
 
+from . import database
 from .database import UsageDatabase
 
 logger = logging.getLogger(__name__)
+
+
+class _Writer:
+    """One thread for every write of the process, in the order they were asked for.
+
+    A write that waits out a locked database (database.LOCKED_ATTEMPTS) waits here, not in the loop's
+    executor, whose threads every other off-loop call needs; and not on the loop, where invalidate_session is
+    called from the context hooks. In order: an invalidation is never overtaken by a snapshot from before it.
+
+    A job runs even when its future was cancelled: the hook that waits for a snapshot gives up after its timeout,
+    and the snapshot is still a call that was made. For the same reason the process waits for the queue at exit
+    (drain), for as long as one write may wait out a lock; past that the daemon thread is let go, so a lock that
+    never ends does not keep the process from exiting.
+    """
+
+    def __init__(self) -> None:
+        self._jobs: "queue.SimpleQueue[tuple[concurrent.futures.Future, Callable[..., Any], tuple]]" = queue.SimpleQueue()
+        self._thread: Optional[threading.Thread] = None
+        self._start_guard = threading.Lock()
+
+    def submit(self, fn: Callable[..., Any], *args: Any) -> concurrent.futures.Future:
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._jobs.put((future, fn, args))
+        with self._start_guard:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="usage-writer", daemon=True)
+                self._thread.start()
+        return future
+
+    def _run(self) -> None:
+        while True:
+            future, fn, args = self._jobs.get()
+            try:
+                result = fn(*args)
+            except BaseException as exc:  # noqa: BLE001 - handed to whoever waits
+                with contextlib.suppress(concurrent.futures.InvalidStateError):
+                    future.set_exception(exc)
+            else:
+                with contextlib.suppress(concurrent.futures.InvalidStateError):
+                    future.set_result(result)
+
+    def drain(self) -> None:
+        """Wait for every write asked for so far, at most as long as one write may wait out a lock."""
+        if self._thread is None:
+            return
+        with contextlib.suppress(concurrent.futures.TimeoutError):
+            self.submit(lambda: None).result(database.LOCKED_ATTEMPTS * database.BUSY_TIMEOUT_S)
+
+
+_WRITER = _Writer()
+# A short-lived process (agent_run, an eval child) often makes its last call just before it exits; without this
+# its snapshot, still queued behind a lock, dies with the daemon thread.
+atexit.register(_WRITER.drain)
 
 
 @dataclass
@@ -122,6 +180,10 @@ class UsageTracker:
         self.db_path = self.data_dir / "usage.db"
         self._db: Optional[UsageDatabase] = None
         self._db_lock = threading.Lock()
+        # Session -> invalidations the writer has not landed yet (invalidate_session). A count, not a set: the first
+        # of two landing must not take the second, still queued, out of the answer.
+        self._pending_invalidations: dict[str, int] = {}
+        self._pending_guard = threading.Lock()
 
     @property
     def db(self) -> UsageDatabase:
@@ -166,11 +228,15 @@ class UsageTracker:
                     model: str = "",
                     request_id: str = "",
                     latency_ms: Optional[float] = None,
-                    reflects_context: bool = True) -> None:
+                    reflects_context: bool = True,
+                    wait: bool = True) -> concurrent.futures.Future:
         """Record a context usage snapshot. ``reflects_context`` False: the counts are not the size of the
         conversation the call carried -- a coding CLI's run, summed over the CLI's own model calls. Kept as a call
         without a conversation (context_window 0): it counts in the totals and the cache share, never as how full
-        the context is (get_latest, the context series, the percentage)."""
+        the context is (get_latest, the context series, the percentage).
+
+        Written by the process's writer thread (_Writer). ``wait`` False returns at once with the write's future:
+        the hooks await it on the loop, off the executor."""
         if not reflects_context:
             context_window = 0
 
@@ -200,13 +266,18 @@ class UsageTracker:
         # One transaction: the snapshot, the agent's totals and, for a call
         # that carried a conversation, clearing the session's stale flag. Accumulation happens IN SQL, so two processes
         # recording at the same moment add up instead of overwriting each other.
-        self.db.record(asdict(snapshot))
+        # self.db inside the job: the first use opens the store and imports a legacy file, which is no work for the loop.
+        data = asdict(snapshot)
+        future = _WRITER.submit(lambda: self.db.record(data))
 
         logger.debug(
             f"📊 Context usage recorded: agent={agent_name}, "
             f"tokens={total_tokens} ({usage_percentage:.1f}%), "
             f"messages={message_count}"
         )
+        if wait:
+            future.result()
+        return future
 
     async def session_tree(self, sessions: Any, user_id: str, session_id: str) -> List[str]:
         """The sessions below ``session_id`` whose calls count with it: what the web's and the terminal's
@@ -265,7 +336,7 @@ class UsageTracker:
             result = self.db.latest_for_session(session_id)
             if result is None:
                 return None
-            if self.db.is_invalidated(session_id):
+            if session_id in self._pending_invalidations or self.db.is_invalidated(session_id):
                 result['is_stale'] = True
                 logger.debug(
                     f"Session {session_id} usage data marked as stale - "
@@ -275,7 +346,7 @@ class UsageTracker:
 
         return self.db.latest_snapshot()
     
-    def invalidate_session(self, session_id: str, reason: str = "context_optimization") -> None:
+    def invalidate_session(self, session_id: str, reason: str = "context_optimization") -> concurrent.futures.Future:
         """Mark usage data for a session as stale after context optimization.
         
         This marks the session's snapshots with 'is_stale': True in get_latest(),
@@ -293,10 +364,31 @@ class UsageTracker:
         # In the database, not in a per-process set: the process that renders
         # the panel is usually NOT the one that ran the compaction, and a flag
         # only the writer can see marks nothing.
-        self.db.invalidate_session(session_id)
+        # Through the writer, not here: the context hooks call this on the loop, and the write may wait out a lock.
+        # Until it has landed, this tracker answers stale from the pending set -- the very next hook asks.
+        with self._pending_guard:
+            self._pending_invalidations[session_id] = self._pending_invalidations.get(session_id, 0) + 1
+        def land() -> None:
+            # Counted down in the job, not in a done-callback: a future cancelled while queued is done at once,
+            # and its write still lands later (_Writer runs it anyway).
+            try:
+                self.db.invalidate_session(session_id)
+            finally:
+                self._invalidation_landed(session_id)
+
+        future = _WRITER.submit(land)
         logger.info(
             f"📊 Marked usage data as stale for session {session_id} (reason: {reason})"
         )
+        return future
+
+    def _invalidation_landed(self, session_id: str) -> None:
+        with self._pending_guard:
+            left = self._pending_invalidations.get(session_id, 0) - 1
+            if left > 0:
+                self._pending_invalidations[session_id] = left
+            else:
+                self._pending_invalidations.pop(session_id, None)
 
     def get_agent_stats(self, session_id: Optional[str] = None,
                         tree: Sequence[str] = ()) -> Dict[str, Dict[str, Any]]:
@@ -406,7 +498,8 @@ class UsageTracker:
 
     def clear_history(self) -> None:
         """Clear all usage history."""
-        self.db.clear()
+        # In line with the writes: an invalidation still queued would otherwise land after the clear.
+        _WRITER.submit(lambda: self.db.clear()).result()
         logger.info("🗑️  Context usage history cleared")
 
     # ------------------------------------------------------------------

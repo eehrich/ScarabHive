@@ -146,6 +146,30 @@ def test_only_an_admin_clears_everyones_figures(served):
     assert tracker.get_history() == []
 
 
+def test_the_clear_waits_off_the_loop(served, monkeypatch):
+    """It waits in line behind every write queued before it, each of which may be waiting out a lock."""
+    import asyncio
+
+    client, viewer, tracker = served
+    on_a_loop = []
+    clear = tracker.clear_history
+
+    def watched():
+        try:
+            asyncio.get_running_loop()
+            on_a_loop.append(True)
+        except RuntimeError:
+            on_a_loop.append(False)
+        clear()
+
+    monkeypatch.setattr(tracker, "clear_history", watched)
+    viewer["user"] = user("admin", UserRole.ADMIN)
+
+    assert client.post(f"{PREFIX}/clear").status_code == 200
+    assert on_a_loop == [False], f"the clear waited on the event loop: {on_a_loop}"
+    assert tracker.get_history() == []
+
+
 def test_a_run_session_shows_the_calls_of_the_sessions_below_it(served):
     """A state machine's run session makes no call of its own: its agents' sessions hang below it, and their
     calls are what /usage shows for it -- read under its owner, also when an admin asks."""

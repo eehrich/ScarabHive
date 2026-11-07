@@ -1237,7 +1237,7 @@ async def test_the_list_and_the_map_show_the_messages_and_the_tokens_of_each_sub
                          prompt_tokens=12000, completion_tokens=1000, context_window=200000)
     tracker.record_usage(agent_id="b", agent_name="writer_agent", session_id=below, total_tokens=5000,
                          prompt_tokens=4000, completion_tokens=1000, context_window=100000)
-    tracker.invalidate_session(below)
+    tracker.invalidate_session(below).result()  # landed: the panel reads it through its own tracker
     factory = SubAgentManagerWebFactory(server)
 
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):

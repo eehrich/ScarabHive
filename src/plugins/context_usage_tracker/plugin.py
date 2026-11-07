@@ -140,13 +140,14 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 )
 
             # Off the event loop. The write is a SQLite transaction with an
-            # fsync, and on a cross-process conflict it waits on busy_timeout —
-            # blocking C that `asyncio.wait_for` cannot cancel, so the hook's
-            # declared timeout would be inert exactly when it mattered. The old
-            # file-based tracker was off-loop too (run_in_executor); this keeps
-            # that property.
-            await asyncio.to_thread(
-                self.tracker.record_usage,
+            # fsync, and on a conflict it waits out the lock -- blocking C that
+            # `asyncio.wait_for` cannot cancel, so the hook's declared timeout
+            # would be inert exactly when it mattered. The tracker's writer
+            # thread does it, not the loop's executor: a write waiting out a lock
+            # holds no thread every other off-loop call needs. Shielded: the
+            # hook's timeout gives up waiting, never the write.
+            await asyncio.shield(asyncio.wrap_future(self.tracker.record_usage(
+                wait=False,
                 agent_id=agent_id,
                 agent_name=agent_name,
                 session_id=session_id,
@@ -166,7 +167,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 # A client that ran a conversation of its own (a coding CLI) says so: its counts are throughput,
                 # not how full the agent's context is.
                 reflects_context=usage.get("reflects_context") is not False,
-            )
+            )))
 
             return HookResult(success=True, modified=False, context=context)
 
@@ -236,8 +237,8 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             # window would put it on a percentage scale it does not live on.
             who = context.agent_name or context.llm_provider or "llm"
 
-            await asyncio.to_thread(
-                self.tracker.record_usage,
+            await asyncio.shield(asyncio.wrap_future(self.tracker.record_usage(
+                wait=False,
                 agent_id=who,
                 agent_name=who,
                 session_id=context.session_id or "",
@@ -253,7 +254,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 model=model,
                 request_id=context.request_id or "",
                 latency_ms=context.llm_duration_ms,
-            )
+            )))
             return HookResult(success=True, modified=False, context=context)
 
         except Exception as e:

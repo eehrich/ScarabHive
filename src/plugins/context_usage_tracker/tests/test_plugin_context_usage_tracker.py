@@ -1,6 +1,7 @@
 """Tests for context_usage_tracker plugin."""
 
 import json
+import time
 
 import pytest
 from unittest.mock import Mock
@@ -1163,7 +1164,8 @@ class TestCrossProcessStorage:
         api, worker = self._two_trackers(tmp_path)
         self._record(worker, "a", session_id="s1")
 
-        worker.invalidate_session("s1")
+        # Written by the worker's writer thread: another process sees it once it has landed.
+        worker.invalidate_session("s1").result()
 
         assert api.get_latest(session_id="s1").get("is_stale") is True
         # ...and a fresh call clears it, in both processes.
@@ -1340,3 +1342,186 @@ class TestSharedStoreRegressions:
             "EXPLAIN QUERY PLAN DELETE FROM usage_snapshots WHERE timestamp < 1"
         ).fetchall())
         assert "idx_usage_timestamp" in plan, f"retention still scans: {plan}"
+
+
+class TestLockedDatabase:
+    """A snapshot is a call in every total the costs are read from: a writer holding the lock past one
+    busy_timeout must not drop it."""
+
+    @staticmethod
+    def _hold_lock(path, seconds):
+        import sqlite3
+        import threading
+
+        holder = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+        holder.execute("BEGIN IMMEDIATE")
+
+        def release():
+            holder.execute("ROLLBACK")
+            holder.close()
+
+        released = threading.Timer(seconds, release)
+        released.start()
+        return released
+
+    def test_a_lock_held_past_one_timeout_is_waited_out(self, tmp_path, monkeypatch):
+        from plugins.context_usage_tracker import database
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        monkeypatch.setattr(database, "BUSY_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(database, "LOCKED_ATTEMPTS", 20)   # 4 s of attempts: a loaded runner keeps its margin
+        db = UsageDatabase(tmp_path / "u.db")
+        released = self._hold_lock(tmp_path / "u.db", 0.7)   # past three timeouts, well inside the attempts
+        try:
+            db.record({"agent_id": "a", "agent_name": "a", "session_id": "s", "total_tokens": 7,
+                       "context_window": 100})
+        finally:
+            released.join()
+
+        assert db.count() == 1, "the snapshot was dropped on the first busy_timeout"
+        assert db.agent_stats()["a"]["total_tokens"] == 7
+
+    def test_a_lock_that_never_ends_gives_up_without_raising(self, tmp_path, monkeypatch, caplog):
+        from plugins.context_usage_tracker import database
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        monkeypatch.setattr(database, "BUSY_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(database, "LOCKED_ATTEMPTS", 3)
+        db = UsageDatabase(tmp_path / "u.db")
+        released = self._hold_lock(tmp_path / "u.db", 2.0)
+        try:
+            db.record({"agent_id": "a", "agent_name": "a", "session_id": "s", "total_tokens": 7})
+        finally:
+            released.join()
+
+        assert db.count() == 0
+        assert "attempt 3" in caplog.text, caplog.text
+
+
+class TestWriterThread:
+    """Every write of the process goes through one thread, in order, and nobody else waits out a lock for it."""
+
+    def test_a_snapshot_still_queued_at_exit_lands_before_the_process_ends(self, tmp_path):
+        """A short-lived process makes its last call and exits while another holds the lock: the daemon writer
+        thread would die with the snapshot still queued."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        from plugins.context_usage_tracker.database import UsageDatabase
+
+        child = f"""
+import sys, sqlite3, threading
+sys.path.insert(0, {str(Path(__file__).resolve().parents[3])!r})
+from plugins.context_usage_tracker import database
+from plugins.context_usage_tracker.tracker import UsageTracker
+database.BUSY_TIMEOUT_S = 0.2
+database.LOCKED_ATTEMPTS = 20
+tracker = UsageTracker(storage_path={str(tmp_path / "u.json")!r})
+tracker.record_usage("a", "a", "s", total_tokens=5, context_window=100)
+holder = sqlite3.connect(str(tracker.db_path), isolation_level=None, check_same_thread=False)
+holder.execute("BEGIN IMMEDIATE")
+def release():
+    holder.execute("ROLLBACK")
+    holder.close()
+timer = threading.Timer(0.7, release)
+timer.daemon = True   # nothing but the writer's drain may keep the process alive
+timer.start()
+tracker.record_usage("a", "a", "s", total_tokens=9, context_window=100, wait=False)
+"""
+        done = subprocess.run([sys.executable, "-c", child], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+
+        db = UsageDatabase(tmp_path / "u" / "usage.db")   # UsageTracker keeps it beside u.json
+        assert db.count() == 2, "the snapshot queued behind the lock died with the process"
+
+    @staticmethod
+    def _locked_tracker(tmp_path, monkeypatch, hold_s):
+        from plugins.context_usage_tracker import database
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        monkeypatch.setattr(database, "BUSY_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(database, "LOCKED_ATTEMPTS", 20)
+        tracker = UsageTracker(storage_path=tmp_path / "u.json")
+        tracker.record_usage("a", "a", "s", total_tokens=5, context_window=100)   # opens the store
+        return tracker, TestLockedDatabase._hold_lock(tracker.db_path, hold_s)
+
+    def test_an_invalidation_under_a_lock_neither_blocks_nor_is_lost(self, tmp_path, monkeypatch):
+        """The context hooks invalidate on the loop: waiting out the lock there stalls every run of the process."""
+        from plugins.context_usage_tracker.tracker import UsageTracker
+
+        tracker, released = self._locked_tracker(tmp_path, monkeypatch, 0.7)
+        try:
+            started = time.monotonic()
+            landed = tracker.invalidate_session("s", "compaction")
+            assert time.monotonic() - started < 0.15, "the caller waited for the locked database"
+            assert tracker.get_latest(session_id="s").get("is_stale") is True, "stale only once written"
+            landed.result(timeout=10)
+        finally:
+            released.join()
+        other = UsageTracker(storage_path=tmp_path / "u.json")
+        assert other.get_latest(session_id="s").get("is_stale") is True, "the invalidation was lost to the lock"
+
+    def test_a_write_whose_waiter_gave_up_still_lands(self, tmp_path, monkeypatch):
+        """The hook stops waiting after its timeout; the call was made all the same."""
+        tracker, released = self._locked_tracker(tmp_path, monkeypatch, 0.5)
+        try:
+            pending = tracker.record_usage("a", "a", "s", total_tokens=7, context_window=100, wait=False)
+            assert pending.cancel(), "fixture: the write was not waiting for the lock"
+        finally:
+            released.join()
+        tracker.record_usage("a", "a", "s", total_tokens=1, context_window=100)   # behind it in the queue
+        assert tracker.db.count() == 3, "the write whose waiter gave up was dropped"
+
+    def test_a_second_invalidation_still_queued_keeps_the_session_stale(self, tmp_path):
+        """Invalidated, a call clears it, invalidated again: the first landing must not take the second out."""
+        import threading
+
+        from plugins.context_usage_tracker.tracker import UsageTracker, _WRITER
+
+        tracker = UsageTracker(storage_path=tmp_path / "u.json")
+        tracker.record_usage("a", "a", "s", total_tokens=5, context_window=100)
+        tracker.invalidate_session("s", "compaction")
+        cleared = tracker.record_usage("a", "a", "s", total_tokens=6, context_window=100, wait=False)
+        gate = threading.Event()
+        _WRITER.submit(gate.wait, 5)                       # holds the second invalidation in the queue
+        second = tracker.invalidate_session("s", "compaction")
+        try:
+            cleared.result(timeout=5)
+            assert not second.done(), "fixture: the second invalidation was not held back"
+            assert tracker.get_latest(session_id="s").get("is_stale") is True, (
+                "the session answered fresh while its second invalidation was still queued")
+        finally:
+            gate.set()
+        second.result(timeout=5)
+        assert tracker.get_latest(session_id="s").get("is_stale") is True
+
+    def test_an_invalidation_whose_waiter_gave_up_keeps_the_session_stale_until_it_lands(self, tmp_path):
+        import threading
+
+        from plugins.context_usage_tracker.tracker import UsageTracker, _WRITER
+
+        tracker = UsageTracker(storage_path=tmp_path / "u.json")
+        tracker.record_usage("a", "a", "s", total_tokens=5, context_window=100)
+        gate = threading.Event()
+        _WRITER.submit(gate.wait, 5)
+        queued = tracker.invalidate_session("s", "compaction")
+        try:
+            assert queued.cancel(), "fixture: the invalidation was not queued"
+            assert tracker.get_latest(session_id="s").get("is_stale") is True, (
+                "a cancelled wait took the queued invalidation out of the answer")
+        finally:
+            gate.set()
+
+    @pytest.mark.asyncio
+    async def test_the_hook_writes_on_the_writer_thread(self, plugin, mock_hook_context, monkeypatch):
+        """Not in the loop's executor, whose threads every other off-loop call needs."""
+        import threading
+
+        threads = []
+        record = plugin.tracker.db.record
+        monkeypatch.setattr(plugin.tracker.db, "record", lambda data: threads.append(
+            threading.current_thread().name) or record(data))
+
+        await plugin.hooks_plugin.track_usage(mock_hook_context)
+
+        assert threads == ["usage-writer"], threads

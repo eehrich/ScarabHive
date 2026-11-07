@@ -135,7 +135,7 @@ def panel_app(tmp_path: Path) -> FastAPI:
                          prompt_tokens=12000, completion_tokens=1000, context_window=200000)
     tracker.record_usage(agent_id="n", agent_name="writer_agent", session_id=ids["n"], total_tokens=5000,
                          prompt_tokens=4000, completion_tokens=1000, context_window=100000)
-    tracker.invalidate_session(ids["n"])
+    tracker.invalidate_session(ids["n"]).result()  # landed: the panel reads it through its own tracker
 
     plugin = PLUGIN_FACTORY(NAME, AgentSystemConfig(), ToolServerConfig(**CONFIG))  # served in the app's own event loop
     service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path)))

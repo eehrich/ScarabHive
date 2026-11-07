@@ -1,5 +1,6 @@
 """Web UI endpoints for context usage tracker plugin."""
 
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -92,5 +93,6 @@ class ContextUsageWebFactory:
                             current_user: Optional[User] = Depends(get_optional_user)) -> JSONResponse:
         """Clear usage history -- every session's, so only an admin may."""
         require_everything(request, current_user, "Clearing the figures of every session")
-        self.tracker.clear_history()
+        # Off the loop: the clear waits in line behind every write queued before it (tracker._Writer).
+        await asyncio.to_thread(self.tracker.clear_history)
         return JSONResponse({"status": "cleared"})

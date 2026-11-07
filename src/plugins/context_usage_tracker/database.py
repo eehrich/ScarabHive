@@ -31,7 +31,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,16 @@ MAX_SNAPSHOT_ROWS = 500_000
 #: How often retention runs, in write calls. Every write would cost a DELETE
 #: scan per LLM call for nothing.
 _RETENTION_EVERY_N_WRITES = 500
+
+#: How long one attempt waits for another writer (busy_timeout), in seconds.
+BUSY_TIMEOUT_S = 10.0
+
+#: Attempts of one write against a locked database. Each waits BUSY_TIMEOUT_S, so a
+#: snapshot survives a writer holding the lock this long. A snapshot dropped is a
+#: call missing from every total the costs are read from. The waiting happens on
+#: the tracker's writer thread (tracker._Writer): the hook gives up after its own
+#: timeout as before, and nothing else waits behind it.
+LOCKED_ATTEMPTS = 6
 
 
 class UsageDatabase:
@@ -73,14 +83,14 @@ class UsageDatabase:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
-                                   timeout=10.0)
+                                   timeout=BUSY_TIMEOUT_S)
             conn.row_factory = sqlite3.Row
             # busy_timeout FIRST. Two processes starting together both run the
             # schema init, and `PRAGMA journal_mode=WAL` itself takes an
             # exclusive lock — measured: setting the timeout afterwards leaves
             # that very pragma without one, and the loser died with
             # "database is locked" before it had a connection at all.
-            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_S * 1000)}")
             mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
             actual = (mode[0] if mode else "").lower()
             if actual != "wal":
@@ -231,102 +241,13 @@ class UsageDatabase:
         Both in one transaction: a snapshot the totals do not know about (or the
         reverse) is exactly the kind of disagreement that made the old cache-rate
         read 799 %.
+
+        A locked database is waited out (_write_through_locks): dropped on the
+        first busy_timeout, a writer holding the lock a little longer cost
+        calls from every total the costs are read from.
         """
-        conn = self._get_conn()
-        cost = snapshot.get("cost")
-        latency = snapshot.get("latency_ms")
-        try:
-            with conn:  # BEGIN ... COMMIT / ROLLBACK
-                conn.execute("""
-                    INSERT INTO usage_snapshots
-                    (timestamp, agent_id, agent_name, session_id, request_id,
-                     total_tokens, prompt_tokens, completion_tokens, message_count,
-                     context_window, usage_percentage, cached_tokens,
-                     tool_definition_tokens, cache_write_tokens, cost,
-                     cost_is_estimate, model, latency_ms)
-                    VALUES (:timestamp, :agent_id, :agent_name, :session_id, :request_id,
-                            :total_tokens, :prompt_tokens, :completion_tokens, :message_count,
-                            :context_window, :usage_percentage, :cached_tokens,
-                            :tool_definition_tokens, :cache_write_tokens, :cost,
-                            :cost_is_estimate, :model, :latency_ms)
-                """, {
-                    "timestamp": snapshot.get("timestamp", time.time()),
-                    "agent_id": snapshot.get("agent_id", ""),
-                    "agent_name": snapshot.get("agent_name", ""),
-                    "session_id": snapshot.get("session_id", ""),
-                    "request_id": snapshot.get("request_id", ""),
-                    "total_tokens": snapshot.get("total_tokens", 0),
-                    "prompt_tokens": snapshot.get("prompt_tokens", 0),
-                    "completion_tokens": snapshot.get("completion_tokens", 0),
-                    "message_count": snapshot.get("message_count", 0),
-                    "context_window": snapshot.get("context_window", 0),
-                    "usage_percentage": snapshot.get("usage_percentage", 0.0),
-                    "cached_tokens": snapshot.get("cached_tokens", 0),
-                    "tool_definition_tokens": snapshot.get("tool_definition_tokens", 0),
-                    "cache_write_tokens": snapshot.get("cache_write_tokens", 0),
-                    "cost": cost,
-                    "cost_is_estimate": 1 if snapshot.get("cost_is_estimate") else 0,
-                    "model": snapshot.get("model", ""),
-                    "latency_ms": latency,
-                })
-
-                # The accumulators are folded in SQL so two processes recording
-                # at the same moment add up instead of overwriting each other —
-                # the whole point of the move off the JSON file.
-                conn.execute("""
-                    INSERT INTO agent_stats (
-                        agent_id, agent_name, total_calls, total_tokens, peak_tokens,
-                        message_count, last_activity, total_cached_tokens,
-                        total_prompt_tokens, total_completion_tokens,
-                        cache_rate_cached_tokens, cache_rate_prompt_tokens,
-                        total_cache_write_tokens, total_cost, cost_known_calls,
-                        cost_estimated_calls, total_latency_ms, latency_calls
-                    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(agent_id) DO UPDATE SET
-                        agent_name = excluded.agent_name,
-                        total_calls = agent_stats.total_calls + 1,
-                        total_tokens = agent_stats.total_tokens + excluded.total_tokens,
-                        peak_tokens = MAX(agent_stats.peak_tokens, excluded.peak_tokens),
-                        message_count = excluded.message_count,
-                        last_activity = excluded.last_activity,
-                        total_cached_tokens = agent_stats.total_cached_tokens + excluded.total_cached_tokens,
-                        total_prompt_tokens = agent_stats.total_prompt_tokens + excluded.total_prompt_tokens,
-                        total_completion_tokens = agent_stats.total_completion_tokens + excluded.total_completion_tokens,
-                        cache_rate_cached_tokens = agent_stats.cache_rate_cached_tokens + excluded.cache_rate_cached_tokens,
-                        cache_rate_prompt_tokens = agent_stats.cache_rate_prompt_tokens + excluded.cache_rate_prompt_tokens,
-                        total_cache_write_tokens = agent_stats.total_cache_write_tokens + excluded.total_cache_write_tokens,
-                        total_cost = agent_stats.total_cost + excluded.total_cost,
-                        cost_known_calls = agent_stats.cost_known_calls + excluded.cost_known_calls,
-                        cost_estimated_calls = agent_stats.cost_estimated_calls + excluded.cost_estimated_calls,
-                        total_latency_ms = agent_stats.total_latency_ms + excluded.total_latency_ms,
-                        latency_calls = agent_stats.latency_calls + excluded.latency_calls
-                """, (
-                    snapshot.get("agent_id", ""), snapshot.get("agent_name", ""),
-                    snapshot.get("total_tokens", 0), snapshot.get("total_tokens", 0),
-                    snapshot.get("message_count", 0), time.time(),
-                    snapshot.get("cached_tokens", 0),
-                    snapshot.get("prompt_tokens", 0), snapshot.get("completion_tokens", 0),
-                    # Lockstep pair: same statement, same call. See AgentStats.
-                    snapshot.get("cached_tokens", 0), snapshot.get("prompt_tokens", 0),
-                    snapshot.get("cache_write_tokens", 0),
-                    cost or 0.0,
-                    1 if cost is not None else 0,
-                    1 if (cost is not None and snapshot.get("cost_is_estimate")) else 0,
-                    latency or 0.0,
-                    1 if latency is not None else 0,
-                ))
-
-                # A new snapshot of the CONVERSATION means fresh data for this
-                # session. A call without one (context_window 0: a decision, a
-                # synthesis) is never what get_latest answers with, so it must
-                # not clear the flag either -- it would declare the snapshot
-                # from before the compaction fresh again.
-                if (snapshot.get("context_window") or 0) > 0:
-                    conn.execute("DELETE FROM session_invalidations WHERE session_id = ?",
-                                 (snapshot.get("session_id", ""),))
-        except sqlite3.Error as e:
-            # Telemetry must never sink the call it measures.
-            logger.error(f"Failed to record usage snapshot: {e}")
+        if not self._write_through_locks(lambda conn: self._write_snapshot(conn, snapshot),
+                                         "record usage snapshot"):
             return
 
         self._writes_since_retention += 1
@@ -334,17 +255,135 @@ class UsageDatabase:
             self._writes_since_retention = 0
             self._apply_retention()
 
-    def invalidate_session(self, session_id: str) -> None:
+    def _write_through_locks(self, write: Callable[[sqlite3.Connection], None], what: str) -> bool:
+        """One write transaction, attempted again while another writer holds the lock past busy_timeout:
+        LOCKED_ATTEMPTS times BUSY_TIMEOUT_S in all. False when it was given up; telemetry must never sink
+        the call it measures, so nothing raises."""
         try:
             conn = self._get_conn()
+        except sqlite3.Error as e:
+            logger.error(f"Failed to {what}: {e}")
+            return False
+        for attempt in range(1, LOCKED_ATTEMPTS + 1):
+            try:
+                write(conn)
+                return True
+            except sqlite3.OperationalError as e:
+                if not _is_locked(e) or attempt == LOCKED_ATTEMPTS:
+                    logger.error(f"Failed to {what} (attempt {attempt}): {e}")
+                    return False
+                logger.warning(f"Usage database locked, trying to {what} again "
+                               f"(attempt {attempt} of {LOCKED_ATTEMPTS}): {e}")
+            except sqlite3.Error as e:
+                logger.error(f"Failed to {what}: {e}")
+                return False
+        return False
+
+    @staticmethod
+    def _write_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> None:
+        """The snapshot, the agent's totals and the stale flag, in one transaction."""
+        cost = snapshot.get("cost")
+        latency = snapshot.get("latency_ms")
+        with conn:  # BEGIN ... COMMIT / ROLLBACK
+            conn.execute("""
+                INSERT INTO usage_snapshots
+                (timestamp, agent_id, agent_name, session_id, request_id,
+                 total_tokens, prompt_tokens, completion_tokens, message_count,
+                 context_window, usage_percentage, cached_tokens,
+                 tool_definition_tokens, cache_write_tokens, cost,
+                 cost_is_estimate, model, latency_ms)
+                VALUES (:timestamp, :agent_id, :agent_name, :session_id, :request_id,
+                        :total_tokens, :prompt_tokens, :completion_tokens, :message_count,
+                        :context_window, :usage_percentage, :cached_tokens,
+                        :tool_definition_tokens, :cache_write_tokens, :cost,
+                        :cost_is_estimate, :model, :latency_ms)
+            """, {
+                "timestamp": snapshot.get("timestamp", time.time()),
+                "agent_id": snapshot.get("agent_id", ""),
+                "agent_name": snapshot.get("agent_name", ""),
+                "session_id": snapshot.get("session_id", ""),
+                "request_id": snapshot.get("request_id", ""),
+                "total_tokens": snapshot.get("total_tokens", 0),
+                "prompt_tokens": snapshot.get("prompt_tokens", 0),
+                "completion_tokens": snapshot.get("completion_tokens", 0),
+                "message_count": snapshot.get("message_count", 0),
+                "context_window": snapshot.get("context_window", 0),
+                "usage_percentage": snapshot.get("usage_percentage", 0.0),
+                "cached_tokens": snapshot.get("cached_tokens", 0),
+                "tool_definition_tokens": snapshot.get("tool_definition_tokens", 0),
+                "cache_write_tokens": snapshot.get("cache_write_tokens", 0),
+                "cost": cost,
+                "cost_is_estimate": 1 if snapshot.get("cost_is_estimate") else 0,
+                "model": snapshot.get("model", ""),
+                "latency_ms": latency,
+            })
+
+            # The accumulators are folded in SQL so two processes recording
+            # at the same moment add up instead of overwriting each other —
+            # the whole point of the move off the JSON file.
+            conn.execute("""
+                INSERT INTO agent_stats (
+                    agent_id, agent_name, total_calls, total_tokens, peak_tokens,
+                    message_count, last_activity, total_cached_tokens,
+                    total_prompt_tokens, total_completion_tokens,
+                    cache_rate_cached_tokens, cache_rate_prompt_tokens,
+                    total_cache_write_tokens, total_cost, cost_known_calls,
+                    cost_estimated_calls, total_latency_ms, latency_calls
+                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    agent_name = excluded.agent_name,
+                    total_calls = agent_stats.total_calls + 1,
+                    total_tokens = agent_stats.total_tokens + excluded.total_tokens,
+                    peak_tokens = MAX(agent_stats.peak_tokens, excluded.peak_tokens),
+                    message_count = excluded.message_count,
+                    last_activity = excluded.last_activity,
+                    total_cached_tokens = agent_stats.total_cached_tokens + excluded.total_cached_tokens,
+                    total_prompt_tokens = agent_stats.total_prompt_tokens + excluded.total_prompt_tokens,
+                    total_completion_tokens = agent_stats.total_completion_tokens + excluded.total_completion_tokens,
+                    cache_rate_cached_tokens = agent_stats.cache_rate_cached_tokens + excluded.cache_rate_cached_tokens,
+                    cache_rate_prompt_tokens = agent_stats.cache_rate_prompt_tokens + excluded.cache_rate_prompt_tokens,
+                    total_cache_write_tokens = agent_stats.total_cache_write_tokens + excluded.total_cache_write_tokens,
+                    total_cost = agent_stats.total_cost + excluded.total_cost,
+                    cost_known_calls = agent_stats.cost_known_calls + excluded.cost_known_calls,
+                    cost_estimated_calls = agent_stats.cost_estimated_calls + excluded.cost_estimated_calls,
+                    total_latency_ms = agent_stats.total_latency_ms + excluded.total_latency_ms,
+                    latency_calls = agent_stats.latency_calls + excluded.latency_calls
+            """, (
+                snapshot.get("agent_id", ""), snapshot.get("agent_name", ""),
+                snapshot.get("total_tokens", 0), snapshot.get("total_tokens", 0),
+                snapshot.get("message_count", 0), time.time(),
+                snapshot.get("cached_tokens", 0),
+                snapshot.get("prompt_tokens", 0), snapshot.get("completion_tokens", 0),
+                # Lockstep pair: same statement, same call. See AgentStats.
+                snapshot.get("cached_tokens", 0), snapshot.get("prompt_tokens", 0),
+                snapshot.get("cache_write_tokens", 0),
+                cost or 0.0,
+                1 if cost is not None else 0,
+                1 if (cost is not None and snapshot.get("cost_is_estimate")) else 0,
+                latency or 0.0,
+                1 if latency is not None else 0,
+            ))
+
+            # A new snapshot of the CONVERSATION means fresh data for this
+            # session. A call without one (context_window 0: a decision, a
+            # synthesis) is never what get_latest answers with, so it must
+            # not clear the flag either -- it would declare the snapshot
+            # from before the compaction fresh again.
+            if (snapshot.get("context_window") or 0) > 0:
+                conn.execute("DELETE FROM session_invalidations WHERE session_id = ?",
+                             (snapshot.get("session_id", ""),))
+
+    def invalidate_session(self, session_id: str) -> None:
+        """Waits out a lock like record: lost, the flag lets a snapshot from before a compaction answer as current."""
+        def write(conn: sqlite3.Connection) -> None:
             with conn:
                 conn.execute(
                     "INSERT INTO session_invalidations (session_id, invalidated_at) "
                     "VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET "
                     "invalidated_at = excluded.invalidated_at",
                     (session_id, time.time()))
-        except sqlite3.Error as e:
-            logger.error(f"Failed to invalidate session {session_id}: {e}")
+
+        self._write_through_locks(write, f"invalidate session {session_id}")
 
     def is_invalidated(self, session_id: str) -> bool:
         try:
@@ -556,6 +595,14 @@ class UsageDatabase:
             return conn.execute("SELECT COUNT(*) FROM usage_snapshots").fetchone()[0]
         except sqlite3.Error:
             return 0
+
+
+def _is_locked(error: sqlite3.OperationalError) -> bool:
+    """Another writer held the database past busy_timeout: worth another attempt."""
+    code = getattr(error, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+    return "locked" in str(error) or "busy" in str(error)
 
 
 def _row_to_snapshot(row: sqlite3.Row) -> Dict[str, Any]:
