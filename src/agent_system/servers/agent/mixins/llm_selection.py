@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Optional
 
 from ....llm.models import ChatMessage, LLMClient
 from ..components.tool_execution import tool_result_is_error

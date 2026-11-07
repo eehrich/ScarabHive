@@ -22,7 +22,6 @@ Feature parity with gemini_client.py:
 from __future__ import annotations
 
 import asyncio
-import base64
 import importlib
 import importlib.util
 import json

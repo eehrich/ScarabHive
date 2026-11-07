@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from agent_system.config.models import LLMModelConfig
 from agent_system.llm.batch.models import BatchJob, BatchRequest
