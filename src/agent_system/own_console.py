@@ -10,7 +10,8 @@ up only the thread that writes to it.
     python -m agent_system.own_console uvicorn.main:main agent_system.app:build_app --factory --port 8000
 
 agent-api goes this way by itself. Ctrl+C reaches the server as before: the first stops it, a second hurries
-it; a third ends it outright. The server and what it starts die with this process (a job object), as they
+it; a third ends it outright. A server that exits with RESTART_EXIT_CODE (an admin's restart) is started
+again -- not after a Ctrl+C here. The server and what it starts die with this process (a job object), as they
 did on the terminal's console when the task ended: closing the terminal, ending or restarting the task end
 them at once -- a hung server too, whose port a restarted task needs. What is meant to outlive the server
 (a woken run, a coding run) starts through popen_outliving. Elsewhere than on Windows there is no such
@@ -158,7 +159,9 @@ def relaunch(target: str, args: list[str]) -> int:
         for handle in (ctrl_c, job):  # the job's last handle: whatever of the server is left goes with it
             if handle:
                 k32.CloseHandle(ctypes.c_void_p(handle))
-    return ctypes.c_int32(code).value  # Windows hands it over unsigned: 0xC000013A, not -1073741510
+    code = ctypes.c_int32(code).value  # Windows hands it over unsigned: 0xC000013A, not -1073741510
+    # a Ctrl+C here outweighs an admin's restart still under way: whoever pressed it wants the server down
+    return 0 if presses and code == RESTART_EXIT_CODE else code
 
 
 def _copy(source, target, limit: int = BUFFER_BYTES) -> None:
@@ -261,7 +264,9 @@ def main() -> None:
         sys.exit("usage: python -m agent_system.own_console module:function [args...]")
     target, args = sys.argv[1], sys.argv[2:]
     if needed():
-        sys.exit(relaunch(target, args))
+        # as agent-api does: a server that asks for a restart (the shell's power button) comes back -- the VS Code
+        # tasks start it this way, and a plain relaunch handed the exit code to the terminal instead
+        sys.exit(relaunch_restarting(target, args))
     module, _, function = target.partition(":")
     sys.argv = [module, *args]
     getattr(importlib.import_module(module), function)()

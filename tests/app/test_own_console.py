@@ -93,6 +93,17 @@ def start_children():
 
 def end_as_on_ctrl_c():
     os._exit(-1073741510)  # 0xC000013A, how Windows ends a process on Ctrl+C
+
+def restart_on_ctrl_c():
+    mark(str(os.getpid()))
+    try:
+        while True:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        os._exit(75)  # as a server an admin asked to restart, stopped meanwhile by a Ctrl+C
+
+def restart_at_once():
+    os._exit(75)  # as a server an admin asked to restart
 '''
 
 
@@ -334,6 +345,16 @@ def test_a_third_ctrl_c_ends_a_server_that_does_not_stop(targets, capfd):
     assert seen["presses"] == 3
     assert not seen.get("killed by the test"), "the third Ctrl+C did not end it"
     assert code != 0
+
+
+def test_a_ctrl_c_during_an_admins_restart_leaves_the_server_down(targets, capfd):
+    code, seen = _relaunch_pressing_ctrl_c("console_targets:restart_on_ctrl_c", targets, targets)
+    assert seen.get("serving") and not seen.get("killed by the test")
+    assert code == 0  # not RESTART_EXIT_CODE: relaunch_restarting would start it again
+
+
+def test_without_a_ctrl_c_a_restart_is_passed_on(targets, capfd):
+    assert own_console.relaunch("console_targets:restart_at_once", []) == own_console.RESTART_EXIT_CODE
 
 
 def test_a_windows_exit_code_is_passed_on_signed(targets, capfd):

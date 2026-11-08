@@ -144,6 +144,19 @@ def test_the_launcher_starts_the_server_again_for_as_long_as_it_asks(monkeypatch
     assert capsys.readouterr().out.count("starting it again") == 2
 
 
+def test_started_through_python_m_own_console_the_server_comes_back_too(monkeypatch, capsys):
+    # the VS Code tasks start the API this way, not through agent-api
+    codes = iter([75, 0])
+    started = []
+    monkeypatch.setattr(own_console, "needed", lambda: True)
+    monkeypatch.setattr(own_console, "relaunch", lambda target, args: started.append((target, args)) or next(codes))
+    monkeypatch.setattr(sys, "argv", ["own_console", "agent_system.app:run"])
+    with pytest.raises(SystemExit) as exited:
+        own_console.main()
+    assert exited.value.code == 0
+    assert started == [("agent_system.app:run", [])] * 2
+
+
 # ── the routes ────────────────────────────────────────────────────────────
 
 @pytest.fixture

@@ -132,8 +132,9 @@ and tool calls -- hooks, parallel execution -- run in `ToolExecutionManager`
 
 On Windows, `agent-api` (`own_console.api`) and `app.run()` first start the
 server as a process of its own on a hidden console (`agent_system/own_console.py`)
-and pass its output on to the terminal; the VS Code tasks start uvicorn the
-same way. On the terminal's console, a console host that stopped answering froze
+and pass its output on to the terminal; the VS Code tasks start `app.run` through
+`python -m agent_system.own_console` the same way. That launcher starts the server again when it exits with
+`RESTART_EXIT_CODE` (an admin's restart, `services/lifecycle.py`), unless a Ctrl+C reached it meanwhile. On the terminal's console, a console host that stopped answering froze
 the whole server: starting a process with pipes, CPython asks the console,
 holding the GIL, whether a pipe is a console. The server's process is not the
 one that was started; it and what it starts die with that one (a job object
