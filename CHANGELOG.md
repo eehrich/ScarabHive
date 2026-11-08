@@ -55,8 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result to check, a failure, a question) are marked until they are seen (`POST /api/agent-runs/{id}/ack`).
 - An agent in a panel run asks its person in the panel: `ask_user` writes the question as a run event and waits up to
   `panel_ask_timeout` for the answer from the "Agent runs" sheet. A run that waits can be cancelled.
-- Admins restart and stop the server from the shell's head (`/admin/server/restart`, `/admin/server/stop`): both ask
-  first and name the requests still running.
+- Admins power off, reload the config of or restart the server from one power button in the shell's head
+  (`/admin/server/stop`, `/admin/reload-config`, `/admin/server/restart`): it asks which, names the requests still
+  running, and starts on Cancel.
 - Styles beside the theme: classic, apple and petrol (Settings, the command palette, the kit page); `setStyle`,
   `currentStyle`, `onStyleChange` in the kit, cookie `ui_style`.
 - Kit: a status badge carries the mark of its tone (status is never colour alone); one severity vocabulary

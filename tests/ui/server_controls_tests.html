@@ -51,29 +51,46 @@
   const cookie = (value) => { document.cookie = value ? `stub_server=${value}; path=/` : 'stub_server=; path=/; max-age=0'; };
   cookie('');
 
-  await check('the buttons are there for an admin only', async () => {
+  const button = () => $('#serverButton');
+  // the power button's question, answered with one of its choices
+  const choose = async (label) => { button().click(); return answer(label); };
+
+  await check('the button is there for an admin only', async () => {
     await go('user');
-    const hidden = $('#stopServerButton').hidden && $('#restartServerButton').hidden
-      && getComputedStyle($('#stopServerButton')).display === 'none';
+    const hidden = button().hidden && getComputedStyle(button()).display === 'none';
     await go('admin');
-    return hidden && !$('#stopServerButton').hidden && !$('#restartServerButton').hidden;
+    return hidden && !button().hidden;
   });
 
-  await check('stopping asks first and names the running requests: cancelled, nothing is asked of the server', async () => {
-    $('#stopServerButton').click();
+  await check('the power button asks which action, names the running requests and starts on Cancel: cancelled, nothing is asked of the server', async () => {
+    button().click();
+    const dialog = await until('the question', question);
+    const labels = [...dialog.querySelectorAll('.pk-dialog-actions button')].map((b) => b.textContent.trim()).join();
+    const focused = frame.contentDocument.activeElement?.textContent.trim();
     const text = await answer('Cancel');
     await sleep(200);
-    return text.includes('2 requests are running and end with it.') && text.includes('Stop the ScarabHive server?')
-      && await asked() === '' && !$('#stopServerButton').disabled && state() === '';
+    return labels === 'Cancel,Power off,Reload config,Restart' && focused === 'Cancel'
+      && text.includes('2 requests are running: a power off or a restart ends them, a config reload does not.')
+      && await asked() === '' && !button().disabled && state() === '';
   });
 
-  await check('a refusal of the server is shown and the buttons work again', async () => {
+  await check('a double click opens one question', async () => {
+    button().click();
+    button().click();
+    await until('the question', question);
+    await sleep(300);
+    const open = frame.contentDocument.querySelectorAll('dialog.pk-dialog[open]').length;
+    await answer('Cancel');
+    await sleep(200);
+    return open === 1 && !question() && await asked() === '';
+  });
+
+  await check('a refusal of the server is shown and the button works again', async () => {
     cookie('refuses');
     try {
-      $('#restartServerButton').click();
-      await answer('Restart server');
+      await choose('Restart');
       await until('the refusal', () => toasts().includes('This server was not started by agent-api'));
-      await until('the buttons back', () => !$('#restartServerButton').disabled && !$('#stopServerButton').disabled);
+      await until('the button back', () => !button().disabled);
       return await asked() === '' && win().busy.join() === 'true,false';
     } finally {
       cookie('');
@@ -83,12 +100,11 @@
   await check('restarting waits for the server to go and come back, then loads the page anew', async () => {
     await go('admin');
     const before = loads;
-    $('#restartServerButton').click();
-    const text = await answer('Restart server');
+    await choose('Restart');
     await until('the wait', () => state() === 'Restarting');
-    const waiting = $('#restartServerButton').disabled && $('#stopServerButton').disabled && loads === before;
+    const waiting = button().disabled && loads === before;
     await until('the page loaded anew', () => loads > before && win().loaded, 15000);
-    return text.includes('Plugins, agents and skills are loaded anew') && waiting && await asked() === 'restart';
+    return waiting && await asked() === 'restart';
   });
 
   await check('a server back before it was seen down counts as restarted by its uptime', async () => {
@@ -96,8 +112,7 @@
     try {
       await go('admin');
       const before = loads;
-      $('#restartServerButton').click();
-      await answer('Restart server');
+      await choose('Restart');
       await until('the page loaded anew', () => loads > before && win().loaded, 15000);
       return await asked() === 'restart,restart';
     } finally {
@@ -105,15 +120,46 @@
     }
   });
 
-  await check('confirmed, stop asks the server and leaves the buttons off', async () => {
+  await check('reload config asks the server, says what changed, what failed and what waits for a restart, and leaves the page as it is', async () => {
     await go('admin');
-    $('#stopServerButton').click();
-    await answer('Stop server');
+    const before = loads;
+    await choose('Reload config');
+    await until('the report', () => toasts().includes('Config reloaded'));
+    await until('the button back', () => !button().disabled);
+    await sleep(300);
+    return toasts().includes('Config reloaded: 2 servers changed; 1 failed: broken_server; auth changed on disk: takes effect on a restart')
+      && (await asked()).endsWith('reload') && win().busy.join() === 'true,false' && loads === before;
+  });
+
+  await check('from the palette an action asks on its own first: cancelled, nothing is asked of the server', async () => {
+    await go('admin');
+    const sent = await asked();
+    win().controls.reload();
+    const text = await answer('Cancel');
+    await sleep(200);
+    return text.includes('Re-read the config files') && await asked() === sent && !button().disabled;
+  });
+
+  await check("from the palette power off and restart ask on their own too and name the running requests", async () => {
+    await go('admin');
+    const sent = await asked();
+    win().controls.stop();
+    const stopping = await answer('Cancel');
+    win().controls.restart();
+    const restarting = await answer('Cancel');
+    await sleep(200);
+    return stopping.includes('2 requests are running and end with it.') && stopping.includes('Stop the ScarabHive server?')
+      && restarting.includes('2 requests are running and end with it.') && restarting.includes('Restart the ScarabHive server?')
+      && await asked() === sent && !button().disabled && state() === '';
+  });
+
+  await check('power off asks the server and leaves the button off', async () => {
+    await go('admin');
+    await choose('Power off');
     await until('the server asked', async () => (await asked()).endsWith('stop'));
     await until('the state', () => state() === 'Stopping');
     // the page's own health poll takes over again: this script no longer holds the status item
-    return $('#stopServerButton').disabled && $('#restartServerButton').disabled && win().busy.join() === 'true,false'
-      && toasts().includes('The server is stopping');
+    return button().disabled && win().busy.join() === 'true,false' && toasts().includes('The server is stopping');
   });
 
   cookie('');

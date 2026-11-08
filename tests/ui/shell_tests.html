@@ -4394,7 +4394,7 @@
     const marked = $$('#userMenu [data-theme-choice]').map((b) => `${b.dataset.themeChoice}=${b.getAttribute('aria-pressed')}`).join(' ');
     const stays = $('#userMenu').matches(':popover-open');
     $('#userMenu').hidePopover();
-    return order === 'launcherButton dockToggle app-header-divider agentRunsPill agentRunsBell restartServerButton stopServerButton helpButton userButton'
+    return order === 'launcherButton dockToggle app-header-divider agentRunsPill agentRunsBell serverButton helpButton userButton'
       && marked === 'light=true dark=false system=false' && stays
       && doc().documentElement.dataset.theme === 'light' && doc().cookie.includes('ui_theme=light')
       && probeFrame().contentDocument.documentElement.dataset.theme === 'light';

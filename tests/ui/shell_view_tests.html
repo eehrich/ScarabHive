@@ -115,7 +115,7 @@
   };
   const roleSees = async () => {
     await until('the agents', () => frame.contentWindow.selectorModule?.agents().length);
-    return { buttons: !$('#restartServerButton').hidden && !$('#stopServerButton').hidden,
+    return { buttons: !$('#serverButton').hidden,
       palette: await paletteHas('Restart server'), system: !$('#userMenu [data-open-panel="system"]').hidden };
   };
 
@@ -125,6 +125,17 @@
     await go();
     const seen = await roleSees();
     return seen.buttons && seen.palette && seen.system;
+  });
+
+  await check("an admin's palette finds the config reload for \"reload\", not the restart", async () => {
+    $('#paletteButton').click();
+    const input = await until('the palette', () => $('#paletteInput'));
+    input.value = 'reload';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(150);
+    const listed = all('#paletteList .palette-item').map((item) => item.textContent);
+    $('#palette').close();
+    return listed.length > 0 && listed[0].includes('Reload config') && !listed.some((text) => text.includes('Restart server'));
   });
 
   await check("a user gets no server buttons, none of the palette's actions and no System", async () => {

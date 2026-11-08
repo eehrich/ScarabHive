@@ -258,9 +258,12 @@ function paletteEntries(sessions) {
     ...STYLES.map((style) => ({ group: 'Actions', icon: 'layers', label: `Style: ${style}`, keywords: ['appearance', 'look', 'design'], run: () => applyStyle(style) })),
   ];
   if (user?.role === 'admin') {
+    // the power button's three, in its order; "reload" names the config reload only -- a restart ends the running requests
+    entries.push({ group: 'Actions', icon: 'power', label: 'Power off server', keywords: ['stop', 'shutdown', 'quit'], run: () => server.stop() });
+    entries.push({ group: 'Actions', icon: 'refresh-cw', label: 'Reload config', hint: 'Re-reads the config files into the running server',
+      keywords: ['config', 'settings', 'yaml'], run: () => server.reload() });
     entries.push({ group: 'Actions', icon: 'rotate-ccw', label: 'Restart server', hint: 'Loads plugins, agents and skills anew',
-      keywords: ['reload', 'plugins', 'agents', 'skills'], run: () => server.restart() });
-    entries.push({ group: 'Actions', icon: 'power', label: 'Stop server', keywords: ['shutdown', 'quit'], run: () => server.stop() });
+      keywords: ['plugins', 'agents', 'skills'], run: () => server.restart() });
   }
   if (user) entries.push({ group: 'Actions', icon: 'log-out', label: 'Log out', run: logout });
   const groups = new Set();
@@ -371,7 +374,7 @@ async function start() {
   });
   $('logoutButton').addEventListener('click', logout);
   server = new ServerControls({
-    stopButton: $('stopServerButton'), restartButton: $('restartServerButton'), state: $('connectionState'),
+    button: $('serverButton'), state: $('connectionState'),
     onBusy: (busy) => { serverBusy = busy; },
   });
   server.show(user?.role === 'admin');  // without authentication there are no admin routes, and no buttons

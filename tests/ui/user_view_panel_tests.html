@@ -64,7 +64,7 @@
 
   await check('panels only admins may open are not offered', async () => {
     const ids = all('[data-panel]').map((box) => box.dataset.panel);
-    return !ids.includes('user_view') && $('.uv-locked').textContent.includes('Restart and stop the server');
+    return !ids.includes('user_view') && $('.uv-locked').textContent.includes('Power off, reload config and restart the server');
   });
 
   await check('a refused save says why and keeps the choice to correct', async () => {

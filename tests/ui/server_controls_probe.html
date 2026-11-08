@@ -6,16 +6,15 @@
   <link rel="stylesheet" href="/static/kit/kit.css">
 </head>
 <body>
-<!-- the two buttons and the status item as index.html has them -->
-<button id="restartServerButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" hidden>restart</button>
-<button id="stopServerButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" hidden>stop</button>
+<!-- the power button and the status item as index.html has them -->
+<button id="serverButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" hidden>power</button>
 <span id="connectionState"></span>
 <script type="module">
   import { ServerControls } from '/static/js/shell/server.js';
   const $ = (id) => document.getElementById(id);
   window.busy = [];
   window.controls = new ServerControls({
-    stopButton: $('stopServerButton'), restartButton: $('restartServerButton'), state: $('connectionState'),
+    button: $('serverButton'), state: $('connectionState'),
     onBusy: (busy) => window.busy.push(busy),
   });
   window.controls.show(new URLSearchParams(location.search).get('role') === 'admin');

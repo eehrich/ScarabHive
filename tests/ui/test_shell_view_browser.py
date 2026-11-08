@@ -66,6 +66,7 @@ EXPECTED = [
     "the account menu tells a user who released their panels",
     "an admin is offered every panel and opens the User view from the account menu",
     "an admin who has not switched keeps the server buttons, the palette's actions and System",
+    "an admin's palette finds the config reload for \"reload\", not the restart",
     "a user gets no server buttons, none of the palette's actions and no System",
 ]
 
