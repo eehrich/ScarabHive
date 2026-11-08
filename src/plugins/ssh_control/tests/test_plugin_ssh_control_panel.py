@@ -57,15 +57,15 @@ class Connection:
 
     async def run(self, command: str, check: bool = False):
         if self.host in self.broken:
-            return SimpleNamespace(stdout="", stderr="", exit_status=255)
+            return SimpleNamespace(stdout="", stderr="", exit_status=255, exit_signal=None)
         if command == "echo 1":
             await asyncio.sleep(0.02)
         if command in ("sleep", "hang"):
             await asyncio.sleep(1.5 if command == "sleep" else 10)
         if command == "false":
-            return SimpleNamespace(stdout="", stderr="failed\n", exit_status=1)
+            return SimpleNamespace(stdout="", stderr="failed\n", exit_status=1, exit_signal=None)
         stdout = {"hostname": f"{self.host}\n", "big": "x" * 12000}.get(command, f"ran {command}\n")
-        return SimpleNamespace(stdout=stdout, stderr="", exit_status=0)
+        return SimpleNamespace(stdout=stdout, stderr="", exit_status=0, exit_signal=None)
 
     def close(self):
         if self.host == "stuck.test":

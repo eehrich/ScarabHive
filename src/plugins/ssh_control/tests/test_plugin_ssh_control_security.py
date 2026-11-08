@@ -55,7 +55,7 @@ class Connection:
     async def run(self, command, check=False):
         if command == "hang":
             await asyncio.sleep(10)
-        return SimpleNamespace(stdout="", stderr="", exit_status=0)
+        return SimpleNamespace(stdout="", stderr="", exit_status=0, exit_signal=None)
 
     async def create_process(self, command):
         async def eof():
@@ -64,7 +64,7 @@ class Connection:
 
         async def wait():
             process.exit_status = 0
-        process = SimpleNamespace(stdout=stream, stderr=stream, exit_status=None, wait=wait, close=lambda: None)
+        process = SimpleNamespace(stdout=stream, stderr=stream, exit_status=None, exit_signal=None, wait=wait, close=lambda: None)
         return process
 
     def close(self):

@@ -425,10 +425,10 @@ class TestBatchRegistration:
 
     def test_backends_reach_the_queue_manager_through_the_registry(self):
         registered = self._run({
-            "anthropic": LLMModelConfig(provider="batch", batch_provider="anthropic",
-                                        model="claude-x", api_key="sk-test"),
-            "openai": LLMModelConfig(provider="batch", batch_provider="openai",
-                                     model="gpt-x", api_key="sk-test"),
+            "anthropic": [LLMModelConfig(provider="batch", batch_provider="anthropic",
+                                        model="claude-x", api_key="sk-test")],
+            "openai": [LLMModelConfig(provider="batch", batch_provider="openai",
+                                     model="gpt-x", api_key="sk-test")],
         })
         assert set(registered) == {"anthropic", "openai"}, (
             "the registry lookup in _register_batch_clients no longer reaches "
@@ -442,16 +442,16 @@ class TestBatchRegistration:
         queue manager forgets the provider then."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         registered = self._run({
-            "anthropic": LLMModelConfig(provider="batch", batch_provider="anthropic",
-                                        model="claude-x"),
+            "anthropic": [LLMModelConfig(provider="batch", batch_provider="anthropic",
+                                        model="claude-x")],
         })
         assert set(registered) == {"anthropic"}
         assert registered["anthropic"]() is None
 
     def test_unknown_batch_provider_registers_nothing(self):
         registered = self._run({
-            "bogus": LLMModelConfig(provider="batch", batch_provider="anthropic",
-                                    model="m", api_key="sk-test"),
+            "bogus": [LLMModelConfig(provider="batch", batch_provider="anthropic",
+                                     model="m", api_key="sk-test")],
         })
         assert registered == {}
 

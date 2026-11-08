@@ -277,8 +277,12 @@ run to the end has @{tt}error@{utt} and @{tt}success: false@{utt} and no
 output: "Timed out after 300s", "Unknown machine: x. Available: [...]",
 the connection's failure, or "No connection slot available to ... within
 30.0s" when every connection of the machine stays busy for 30 seconds.
+A command killed by a signal or cut off by a closed connection has no exit
+status: @{tt}exit_code: -1@{utt}, @{tt}success: false@{utt} (also with
+@{tt}check_exit_code: false@{utt}) and @{tt}error@{utt} says which, for
+instance "Command killed by signal KILL".
 A foreground answer carries at most 30,000 characters per stream, the
-start of it, and says so (@{tt}truncated@{utt}); a command with a lot of output should
+end of it, and says so (@{tt}truncated@{utt}); a command with a lot of output should
 be cut on the machine (@{tt}| tail -50@{utt}). On a timeout the plugin
 stops waiting and sends no signal: the command may go on running on the
 host.

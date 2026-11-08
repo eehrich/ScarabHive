@@ -116,6 +116,8 @@ class Skill:
     metadata: Mapping[str, str] = field(default_factory=dict, hash=False)
     #: Declared by the skill, NOT enforced here — see the warning at discovery.
     allowed_tools: tuple[str, ...] = ()
+    #: The ``arguments`` frontmatter: names for ``$name``, in argument order.
+    argument_names: tuple[str, ...] = ()
 
     @property
     def entry(self) -> str:
@@ -293,6 +295,13 @@ def _parse_frontmatter(skill_dir: Path) -> Optional[Skill]:
             skill_dir, " ".join(tools),
         )
 
+    # A space-separated string or a YAML list, as Claude Code takes it.
+    raw_args = front.get("arguments") or ()
+    if isinstance(raw_args, str):
+        raw_args = raw_args.split()
+    argument_names = (tuple(str(a).strip() for a in raw_args if str(a).strip())
+                      if isinstance(raw_args, (list, tuple)) else ())
+
     raw_tags = front.get("tags") or meta.get("tags") or ()
     if isinstance(raw_tags, str):
         raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
@@ -309,6 +318,7 @@ def _parse_frontmatter(skill_dir: Path) -> Optional[Skill]:
                                 MAX_COMPATIBILITY_LEN, "compatibility", skill_dir),
         metadata=meta,
         allowed_tools=tools,
+        argument_names=argument_names,
     )
 
 

@@ -241,7 +241,7 @@ class TestTheProviderList:
 
 
 def _ok():
-    return httpx.Response(200, json={"output": []})
+    return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})
 
 
 @pytest.mark.usefixtures("published")
@@ -257,9 +257,9 @@ class TestTheResponsesRoutes:
 
     def test_format_response_records_the_serving_backend(self):
         c = self._client()
-        data = {"output": [], "openrouter_metadata": _meta("Google AI Studio")}
+        data = {"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}], "openrouter_metadata": _meta("Google AI Studio")}
         assert c._format_response(data)["assistant"]["served_by"] == "Google AI Studio"
-        assert "served_by" not in c._format_response({"output": []})["assistant"]
+        assert "served_by" not in c._format_response({"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})["assistant"]
 
     async def test_the_request_is_pinned(self, lookup):
         c = self._client()
@@ -471,7 +471,7 @@ class TestTheAgentTypesBackend:
     @pytest.mark.usefixtures("published")
     async def test_the_responses_route_starts_the_next_run_where_the_type_was_served(self):
         def served(backend):
-            return httpx.Response(200, json={"output": [], "openrouter_metadata": _meta(backend)})
+            return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}], "openrouter_metadata": _meta(backend)})
 
         first = TestTheResponsesRoutes()._client()
         first.set_app_title("v6_story_coordinator")
@@ -572,11 +572,11 @@ class TestARefusalReleasesThePin:
         httpx.Response(429, text="rate limited"),
         httpx.Response(503, text="upstream unavailable"),
         httpx.Response(200, json={"error": {"code": "server_error", "message": "upstream"},
-                                  "output": []}),
+                                  "output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]}),
     ], ids=["http-429", "http-5xx", "body-error"])
     async def test_the_responses_route_retries_without_the_pin(self, refusal):
         client, sent = self._responses(
-            dict(VERTEX_FIRST), [refusal, httpx.Response(200, json={"output": []})])
+            dict(VERTEX_FIRST), [refusal, httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})])
         await client.chat_tools(list(self.FIRST_TURN), [])
         assert sent == [self.PINNED, VERTEX_FIRST]
         # And the type stops starting there until something answers again.
@@ -585,7 +585,7 @@ class TestARefusalReleasesThePin:
     async def test_an_entry_without_an_order_retries_with_no_provider_at_all(self):
         client, sent = self._responses(
             None, [httpx.Response(429, text="rate limited"),
-                   httpx.Response(200, json={"output": []})])
+                   httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})])
         await client.chat_tools(list(self.FIRST_TURN), [])
         assert sent == [self.PINNED, None]
 
@@ -594,7 +594,7 @@ class TestARefusalReleasesThePin:
         the heal stays on it, or the replayed chain breaks again."""
         client, sent = self._responses(dict(VERTEX_FIRST), [
             httpx.Response(400, text="encrypted reasoning produced under a different model"),
-            httpx.Response(200, json={"output": []})])
+            httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})])
         await client.chat_tools(_history("Google AI Studio"), [])
         assert sent == [self.PINNED, self.PINNED]
         assert client.recent_backend() == "Google AI Studio"
@@ -613,7 +613,7 @@ class TestARefusalReleasesThePin:
         """Otherwise the hard pin kills a call every other backend could answer."""
         client, sent = self._responses(dict(VERTEX_FIRST), [
             httpx.Response(404, json=self.NO_ENDPOINTS),
-            httpx.Response(200, json={"output": []})])
+            httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})])
         await client.chat_tools(list(self.FIRST_TURN), [])
         assert sent == [self.PINNED, VERTEX_FIRST]
         assert client.recent_backend() is None
@@ -663,7 +663,7 @@ class TestARefusalReleasesThePin:
         monkeypatch.setattr(OpenAIResponsesClient, "_cancellable_sleep",
                             AsyncMock(side_effect=lambda d, t: slept.append(d)))
         client, _ = self._responses(dict(VERTEX_FIRST), [httpx.Response(503, text="down"),
-                                                         httpx.Response(200, json={"output": []})])
+                                                         httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})])
         client.retry_backoff = 30.0
         await client.chat_tools(list(self.FIRST_TURN), [])
         assert slept == [0.0]
@@ -856,7 +856,7 @@ class TestOnlyTheGatewaysChoiceIsRemembered:
                                        ssl_verify=False, max_retries=1, retry_backoff=0.0)
         client.set_app_title("checker_agent")
         client._post = AsyncMock(return_value=httpx.Response(
-            200, json={"output": [], "openrouter_metadata": _meta(answer)}))
+            200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}], "openrouter_metadata": _meta(answer)}))
         return client
 
     async def test_a_run_held_on_a_backend_by_its_history_does_not_stamp_it(self):
@@ -977,7 +977,7 @@ async def test_the_answer_after_a_released_pin_is_remembered():
                                    max_retries=1, retry_backoff=0.0)
     client.set_app_title("retry_agent")
     answers = [httpx.Response(429, text="rate limited"),
-               httpx.Response(200, json={"output": [], "openrouter_metadata": _meta("Google")})]
+               httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}], "openrouter_metadata": _meta("Google")})]
     sent = []
 
     async def post(_client, _url, payload, **_kwargs):

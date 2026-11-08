@@ -71,10 +71,10 @@ def _collect_batch_providers(
     log: logging.Logger,
 ) -> tuple:
     """Models with provider='batch', and what they need: (batch_models,
-    providers_needing_clients (batch_provider -> model_config), providers with
-    cancel_on_startup)."""
+    providers_needing_clients (batch_provider -> its models' configs, in
+    config order), providers with cancel_on_startup)."""
     batch_models = []
-    providers_needing_clients: dict = {}  # batch_provider -> model_config
+    providers_needing_clients: dict = {}  # batch_provider -> [model_config, ...]
     providers_cancel_on_startup: set = set()  # providers that need cancel_on_startup
     
     for model_name, model_config in config.llm_system.models.items():
@@ -84,8 +84,7 @@ def _collect_batch_providers(
                 continue
             batch_models.append(model_name)
             batch_provider = model_config.batch_provider
-            if batch_provider not in providers_needing_clients:
-                providers_needing_clients[batch_provider] = model_config
+            providers_needing_clients.setdefault(batch_provider, []).append(model_config)
             # Check cancel_on_startup from global provider config
             provider_config = batch_system_config.providers.get(batch_provider)
             if provider_config and provider_config.cancel_on_startup:
@@ -381,6 +380,23 @@ async def init_batch_system(
         return None
 
 
+def _build_batch_client(backend_factory: Any, model_configs: list) -> Any:
+    """The backend, built from the first of its models' entries, knowing all of them.
+
+    One backend serves every model with its batch_provider, and the line it
+    writes for a request must take THAT model's settings (whether it takes
+    images, its reasoning setup): with the first entry only, the first model's
+    spoke for all of them.
+    """
+    client = backend_factory(model_configs[0])
+    if client is not None:
+        # By the API model id a request carries; the first entry naming one wins.
+        client.model_configs = {}
+        for cfg in model_configs:
+            client.model_configs.setdefault(cfg.model, cfg)
+    return client
+
+
 async def _register_batch_clients(
     queue_manager: "BatchQueueManager",
     providers_needing_clients: dict,
@@ -391,7 +407,7 @@ async def _register_batch_clients(
     
     Args:
         queue_manager: BatchQueueManager instance
-        providers_needing_clients: Dict of batch_provider -> model_config
+        providers_needing_clients: Dict of batch_provider -> its models' configs
         batch_system_config: Global BatchSystemConfig
         log: Logger instance
     """
@@ -400,7 +416,7 @@ async def _register_batch_clients(
     # happens inside each plugin's factory, which returns None to skip.
     from agent_system.llm import registry
 
-    for batch_provider, model_config in providers_needing_clients.items():
+    for batch_provider, model_configs in providers_needing_clients.items():
         try:
             backend_factory = registry.get_batch_backend(batch_provider)
             if backend_factory is None:
@@ -410,7 +426,7 @@ async def _register_batch_clients(
             # unknown or broken provider still shows up at startup; only the
             # client -- SDK import, HTTP client, API key -- waits for first use.
             queue_manager.register_batch_client_factory(
-                batch_provider, functools.partial(backend_factory, model_config))
+                batch_provider, functools.partial(_build_batch_client, backend_factory, model_configs))
         except Exception as e:
             log.error(f"Failed to register batch client for {batch_provider}: {e}")
 

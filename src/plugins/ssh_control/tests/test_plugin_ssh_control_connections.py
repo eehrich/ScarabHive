@@ -22,7 +22,7 @@ class Connection:
             await asyncio.sleep(self.ping_delay)
         if command == "hang":
             await asyncio.sleep(10)
-        return SimpleNamespace(stdout=f"ran {command}\n", stderr="", exit_status=0)
+        return SimpleNamespace(stdout=f"ran {command}\n", stderr="", exit_status=0, exit_signal=None)
 
     def close(self):
         pass

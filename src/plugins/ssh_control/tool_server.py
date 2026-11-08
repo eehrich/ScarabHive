@@ -34,15 +34,18 @@ logger = logging.getLogger(__name__)
 _RECORDED_STREAM_CAP = 30_000
 #: What one foreground answer carries of a stream (terminal's 60 KB, half each).
 _ANSWER_STREAM_CAP = 30_000
-_TRUNCATION_NOTE = ("\n... [OUTPUT TRUNCATED - exceeded size limit. Use filters like "
-                    "'head', 'tail', 'grep' to limit output]")
+_TRUNCATION_NOTE = ("[OUTPUT TRUNCATED - exceeded size limit, the start is cut off. Use "
+                    "filters like 'head', 'tail', 'grep' to limit output] ...\n")
 
 
 def _capped(text: Any) -> Any:
-    """A stream of a foreground answer, at most _ANSWER_STREAM_CAP characters."""
+    """A stream of a foreground answer: its last _ANSWER_STREAM_CAP characters.
+
+    The end, not the start: a failing build or script says why in its last lines.
+    """
     if not isinstance(text, str) or len(text) <= _ANSWER_STREAM_CAP:
         return text
-    return text[:_ANSWER_STREAM_CAP] + _TRUNCATION_NOTE
+    return _TRUNCATION_NOTE + text[-_ANSWER_STREAM_CAP:]
 
 
 #: Windows device names (CON, NUL, COM1, ...). Windows 11 treats them as plain
@@ -566,7 +569,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     'machine': result.machine,
                     'command': result.command,
                     # Bounded: `cat big.log` returned megabytes into the
-                    # model's context. The head is kept, as terminal does.
+                    # model's context. The tail is kept, where errors stand.
                     'stdout': _capped(result.stdout),
                     'stderr': _capped(result.stderr),
                     'exit_code': result.exit_code,
@@ -582,11 +585,14 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     # test); it is read by the calling AGENT, in the returned
                     # `results` list and the `successful`/`failed` counts --
                     # which is exactly where the two answers used to disagree.
-                    'success': result.exit_code == 0 or not check_exit_code
+                    # A command that ended without an exit status did not
+                    # finish: no check_exit_code=false makes that a success.
+                    'success': result.ended is None and (result.exit_code == 0 or not check_exit_code)
                 }
 
-                # Check exit code if required
-                if check_exit_code and result.exit_code != 0:
+                if result.ended is not None:
+                    response['error'] = result.ended
+                elif check_exit_code and result.exit_code != 0:
                     response['error'] = f"Command failed with exit code {result.exit_code}"
                 if any(len(text or "") > _ANSWER_STREAM_CAP for text in (result.stdout, result.stderr)):
                     response['truncated'] = True

@@ -217,6 +217,13 @@ class RemoteProcessManager:
             # arrives with the channel's close.
             await process.wait()
             proc_info["exit_code"] = process.exit_status
+            # As in the foreground: a signal or a closed channel says why it ended.
+            if process.exit_signal:
+                proc_info["exit_code"] = -1
+                proc_info["error"] = f"Command killed by signal {process.exit_signal[0]}"
+            elif process.exit_status is None:
+                proc_info["exit_code"] = -1
+                proc_info["error"] = "Command ended without an exit status (connection closed)"
         except Exception as e:
             proc_info["error"] = str(e)
             logger.warning(f"Background command {process_id} ended badly: {e}")

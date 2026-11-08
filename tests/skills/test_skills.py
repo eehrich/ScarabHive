@@ -572,6 +572,18 @@ class TestAgentSkillsStandard:
         assert s.metadata["author"] == "example-org"
         assert s.version == "2.1"              # version lives in metadata per spec
 
+    @pytest.mark.parametrize("declared", ["arguments: issue branch",
+                                          "arguments: [issue, branch]"])
+    def test_named_arguments_reach_the_invoked_body(self, skill_root, declared):
+        """The ``arguments`` frontmatter, a string or a list, names $issue and $branch."""
+        from agent_system.skills import invoke
+
+        _write_standard_skill(skill_root, "fix", f"name: fix\ndescription: d\n{declared}",
+                              body="Fix $issue on $branch.\n")
+        reg = SkillRegistry(); reg.discover([str(skill_root)])
+        assert reg.get("fix").argument_names == ("issue", "branch")
+        assert invoke(reg.get("fix"), "12 main") == "Fix 12 on main.\n"
+
     def test_unenforced_allowed_tools_is_reported(self, skill_root, caplog):
         """We have no per-skill tool gating. Dropping a declared RESTRICTION
         silently would widen it — the skill must at least say so out loud."""

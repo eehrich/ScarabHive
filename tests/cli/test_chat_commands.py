@@ -153,16 +153,54 @@ class TestExpansion:
     def test_arguments_placeholder(self):
         assert expand("Fix issue $ARGUMENTS now", "123") == "Fix issue 123 now"
 
-    def test_positional_placeholders(self):
-        body = "from $1 to $2"
-        assert expand(body, "alt neu") == "from alt to neu"
+    def test_positional_placeholders_count_from_zero(self):
+        """Claude Code's rule: $0 is the first argument, $1 the second."""
+        assert expand("from $0 to $1", "alt neu") == "from alt to neu"
 
-    def test_indexed_form(self):
-        assert expand("take $ARGUMENTS[2]", "a b c") == "take b"
+    def test_indexed_form_counts_from_zero(self):
+        assert expand("take $ARGUMENTS[2]", "a b c") == "take c"
+        assert expand("take $ARGUMENTS[0]", "a b c") == "take a"
 
-    def test_missing_position_is_empty_not_an_error(self):
-        """An optional second argument is legitimate."""
-        assert expand("$1|$2", "nur-eins") == "nur-eins|"
+    def test_a_missing_position_stays_as_written(self):
+        assert expand("$0|$1", "nur-eins") == "nur-eins|$1"
+
+    def test_more_than_ten_arguments(self):
+        assert expand("$10", " ".join(str(i) for i in range(11))) == "10"
+
+    def test_named_arguments_map_to_positions(self):
+        out = expand("issue $issue on $branch", "12 main", ["issue", "branch"])
+        assert out == "issue 12 on main"
+
+    def test_a_named_argument_without_a_value_is_empty_and_counts(self):
+        """It received nothing but still counts: no ARGUMENTS footer."""
+        assert expand("[$issue|$branch]", "12", ["issue", "branch"]) == "[12|]"
+
+    def test_a_name_does_not_take_the_front_of_a_longer_word(self):
+        assert expand("$issue $issue_id", "12", ["issue"]) == "12 $issue_id"
+
+    def test_a_hyphen_ends_a_name(self):
+        assert expand("$issue-specific", "12", ["issue"]) == "12-specific"
+        assert expand("$issue-id", "12 7", ["issue", "issue-id"]) == "7", "the longer declared name wins"
+
+    def test_an_undeclared_name_is_left_alone(self):
+        out = expand("cost $issue", "12")
+        assert out.startswith("cost $issue")
+        assert out.endswith("ARGUMENTS: 12")
+
+    def test_a_backslash_keeps_a_placeholder_literal(self):
+        assert expand(r"costs \$1.00, then $0", "a b") == "costs $1.00, then a"
+        assert expand(r"\$ARGUMENTS and \$issue", "x", ["issue"]) == "$ARGUMENTS and $issue\n\nARGUMENTS: x"
+
+    def test_a_doubled_backslash_does_not_escape(self):
+        assert expand(r"\\$0", "a") == r"\\a"
+
+    def test_an_escaped_placeholder_does_not_count_as_received(self):
+        assert expand(r"\$0", "a").endswith("ARGUMENTS: a")
+
+    def test_an_unfilled_index_does_not_count_as_received(self):
+        out = expand("only $3", "a b")
+        assert out.startswith("only $3")
+        assert out.endswith("ARGUMENTS: a b")
 
     def test_input_is_appended_when_the_skill_declares_no_placeholder(self):
         """Typed input must never vanish silently."""
@@ -196,15 +234,20 @@ class TestExpansion:
         assert "$100" in out
         assert out.endswith("ARGUMENTS: pruefe Kapitel 3")
 
-    def test_single_digit_placeholders_still_work_next_to_prose(self):
-        assert expand("copy $1 -> $2 (max $500)", "alt neu") == "copy alt -> neu (max $500)"
+    def test_placeholders_still_work_next_to_prose(self):
+        assert expand("copy $0 -> $1 (max $500)", "alt neu") == "copy alt -> neu (max $500)"
+
+    def test_hex_with_arguments_typed_stays(self):
+        assert expand("dc.w $0180 ; $0", "x") == "dc.w $0180 ; x"
+        assert expand("dc.w $0180,$0F00 ; $0", "x") == "dc.w $0180,$0F00 ; x", "$0F00 is hex, not $0 + F00"
+        assert expand("$1a $1.", "a b") == "$1a b."
 
     def test_windows_paths_survive_positional_substitution(self):
         r"""shlex's POSIX mode ate the backslashes: C:\Users\me -> C:Usersme."""
-        assert expand("Read $1", r"C:\Users\someone\notes.md") == r"Read C:\Users\someone\notes.md"
+        assert expand("Read $0", r"C:\Users\someone\notes.md") == r"Read C:\Users\someone\notes.md"
 
     def test_quoted_group_still_arrives_unquoted(self):
-        assert expand("[$1]", '"zwei woerter" rest') == "[zwei woerter]"
+        assert expand("[$0]", '"zwei woerter" rest') == "[zwei woerter]"
 
     def test_huge_arguments_do_not_go_quadratic(self):
         """shlex is a char-at-a-time state machine; 900 KB blocked the loop.

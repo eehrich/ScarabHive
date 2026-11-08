@@ -172,6 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Skills take their arguments as Claude Code does: `$0` and `$ARGUMENTS[0]` are the first argument, `$1` and
+  `$ARGUMENTS[1]` the second (both `1` forms were the first before, and `$0` stayed as written), `$name` names a
+  position declared in the `arguments` frontmatter, an index without an argument stays as written (a price like
+  `$100` too, unless a hundred and one arguments were typed), and `\$1` keeps a placeholder literal.
+- ssh_control: a foreground answer longer than its limit keeps the end of each stream, where an error stands, not
+  the start.
 - Shared helpers for plugins, used instead of private copies: `agent_system.utils.params` (`as_bool`, `as_int`,
   `as_float`, `flag_param`; `bool_param` accepts `on`/`off`), `agent_system.utils.clip`, `agent_system.llm.tls.
   network_ssl_verify`, `agent_system.auth.agent_access.agent_allowed` (agent_editor and stategraph no longer import
@@ -197,6 +203,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A 200 without choices (Chat Completions) or without output (Responses) is no answer: it is retried and then reaches
+  the fallback chain as a server error. It became an empty answer before, which the loop finally took as the final
+  one.
+- OpenAI batch on Chat Completions: a tool result's images reach the request, after the run of tool results, as on
+  the sync route. They were dropped, and without the model entry an image-capable model got a text note.
+- ssh_control: a command killed by a signal or cut off by a closed connection is no success, in the foreground and
+  in the background (`exit_code: -1` and an `error` that says why). A closed connection reported exit code 0, and a
+  signal counted as success with `check_exit_code: false`.
+- Batch: a request's line takes its own model's entry (image support, reasoning setup). One backend serves every
+  model with its `batch_provider`, and the first model's entry spoke for all of them.
+- todo: a change survives another session's load evicting its list from the cache before the save, and a new task
+  no longer takes the id of an existing one then.
 - stategraph: starting and resuming a large machine takes milliseconds instead of a second when its files were loaded
   before. A companion module is compiled once per source, a machine file parsed and walked once per text, a valid JSON
   schema and a piece of code checked once, and the machine folders searched once per load. Expressions that cannot

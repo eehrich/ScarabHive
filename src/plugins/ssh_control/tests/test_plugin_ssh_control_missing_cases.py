@@ -94,6 +94,7 @@ async def test_execute_basic(mock_system_config, empty_server_config):
             # tool_server expects integer exit_code
             self.exit_code = int(exit_code)
             self.duration = duration
+            self.ended = None
 
     # Patch execute_command to return a success object
     with patch.object(plugin.tool_server.connection_manager, 'execute_command', AsyncMock(return_value=ExecResult('mexec','echo hi','ok','',0,0.05))):

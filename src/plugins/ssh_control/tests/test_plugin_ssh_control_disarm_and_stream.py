@@ -58,7 +58,7 @@ class Connection:
         self.started = []
 
     async def run(self, command, check=False):
-        return SimpleNamespace(stdout="", stderr="", exit_status=0)
+        return SimpleNamespace(stdout="", stderr="", exit_status=0, exit_signal=None)
 
     async def create_process(self, command):
         self.started.append(command)

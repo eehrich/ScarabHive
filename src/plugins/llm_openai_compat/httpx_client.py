@@ -1609,6 +1609,24 @@ class HTTPXOpenAIClient(LLMClient):
                             logger.warning("  body tail[-300:]: %r", tail)
                             raise
 
+                        # A 200 without choices (`{}`, `{"choices": []}`) carries no
+                        # answer at all -- not an empty one the model gave. It used to
+                        # become content "", which the loop finally took as the final
+                        # answer. A body error is no such case: _format_response reports it.
+                        if not isinstance(response_data, dict) or (
+                                not response_data.get("choices") and not response_data.get("error")):
+                            if attempt < self.max_retries:
+                                backoff_time = self.retry_backoff * (2 ** attempt)
+                                logger.warning(f"200 without choices from {self.model}, retrying in "
+                                               f"{backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1})")
+                                await self._notify_retry("openai_httpx", self.model, url, False,
+                                                         "200 without choices", attempt, self.max_retries + 1)
+                                await self._cancellable_sleep(backoff_time, cancellation_token)
+                                continue
+                            error_msg = f"{self.model} answered 200 without choices (attempt {attempt + 1})"
+                            await _report_end(error=error_msg)
+                            raise LLMServerError(error_msg, provider="httpx", model=self.model)
+
                         # Body-level upstream 429 (e.g. OpenRouter proxying upstream
                         # rate-limit from OpenAI/Gemini Flex). Same backoff schedule
                         # as HTTP-status 429. Drop service_tier from the *local*

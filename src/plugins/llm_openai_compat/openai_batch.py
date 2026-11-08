@@ -192,15 +192,27 @@ class OpenAIBatchClient(BatchProviderClient):
         model and limits, aimed at this batch's endpoint.
         """
         from .openai_responses_client import OpenAIResponsesClient
-        if self.model_config is None:
+        cfg = self._config_for(model)
+        if cfg is None:
             return OpenAIResponsesClient(model=model, api_key=self.api_key, base_url=self.base_url,
                                          max_tokens=max_tokens, thinking_level=thinking_level)
         from .provider import build_openai_responses
-        cfg = self.model_config
         return build_openai_responses(cfg.model_copy(update={
             "model": model, "base_url": self.base_url, "api_key": self.api_key, "service_tier": None,
             "max_tokens": max_tokens or cfg.max_tokens,
             "thinking_level": thinking_level or cfg.thinking_level}))
+
+    def _config_for(self, model: str) -> Any:
+        """The entry of the request's model; this backend's own when it does not know that one."""
+        return self.model_configs.get(model, self.model_config)
+
+    def _tool_images(self, tool_msg: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
+        """The user message carrying a stored tool result's images (the sync route's helper)."""
+        from agent_system.utils.multimodal_tool_content import check_vision_support, create_multimodal_injection
+        capabilities = getattr(self._config_for(model), "capabilities", None)
+        return create_multimodal_injection(
+            ChatMessage.model_validate(tool_msg), supports_vision=check_vision_support(capabilities),
+            model_name=model, supports_audio=bool(getattr(capabilities, "audio_input", False)))
 
     def _raise_for_status(
         self, response: httpx.Response, operation: str, model: str = "unknown"
@@ -274,13 +286,20 @@ class OpenAIBatchClient(BatchProviderClient):
                 else:
                     # Another model's tool-call signatures stay home, as on the
                     # sync route (the queue keeps reasoning_model for this).
-                    messages = []
+                    # A tool result's images follow the run of tool messages as a
+                    # user message, as on the sync route: normalize_messages keeps
+                    # API fields only, and multimodal_content is none of them.
+                    normalized_messages: List[Dict[str, Any]] = []
+                    injections = openai_utils.ToolRunInjections()
                     for msg in request.messages:
                         msg = dict(msg)
                         own_tool_call_signatures_only(msg, msg, request.model)
-                        messages.append(msg)
-                    # Normalize messages for OpenAI API compatibility
-                    normalized_messages = openai_utils.normalize_messages(messages)
+                        injections.add(normalized_messages, openai_utils.normalize_messages([msg])[0])
+                        if msg.get("role") == "tool" and msg.get("multimodal_content"):
+                            injection = self._tool_images(msg, request.model)
+                            if injection:
+                                injections.hold(injection)
+                    injections.flush(normalized_messages)
 
                     body: Dict[str, Any] = {
                         "model": request.model,

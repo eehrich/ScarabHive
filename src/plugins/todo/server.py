@@ -349,20 +349,25 @@ class TodoServer(SchemaBasedHookToolServer):
         with open(path, "r", encoding="utf-8") as f:
             return bool(json.load(f).get("tasks"))
 
-    def _save_session(self, session_id: str) -> None:
+    def _save_session(self, session_id: str, collection: Optional[TaskCollection] = None) -> None:
         """
         Persist task collection to JSON file.
 
         Args:
             session_id: Session identifier
+            collection: The collection the caller changed. Looked up in the
+                cache otherwise -- and another session's load may have evicted
+                it between the caller's load and this save, which dropped the
+                change without a word. So a tool that changed one hands it in.
 
         Raises:
             StorageError: If file write fails
         """
         # Resolve the collection atomically (membership check + fetch) so a
         # concurrent eviction cannot delete it between the two statements.
-        with self._cache_lock:
-            collection = self._sessions.get(session_id)
+        if collection is None:
+            with self._cache_lock:
+                collection = self._sessions.get(session_id)
         if collection is None:
             logger.warning(f"Cannot save non-existent session {session_id}")
             return
@@ -427,14 +432,15 @@ class TodoServer(SchemaBasedHookToolServer):
         async with self._session_locks[session_id]:
             return await asyncio.to_thread(self._load_session, session_id)
 
-    async def _save_session_async(self, session_id: str) -> None:
+    async def _save_session_async(self, session_id: str,
+                                  collection: Optional[TaskCollection] = None) -> None:
         """Async wrapper for _save_session - runs in thread pool with locking."""
         # Get or create lock for this session
         if session_id not in self._session_locks:
             self._session_locks[session_id] = asyncio.Lock()
-        
+
         async with self._session_locks[session_id]:
-            await asyncio.to_thread(self._save_session, session_id)
+            await asyncio.to_thread(self._save_session, session_id, collection)
 
     def _get_storage_path(self, session_id: str) -> Path:
         """Get file path for session storage.
@@ -452,12 +458,16 @@ class TodoServer(SchemaBasedHookToolServer):
             raise StorageError(f"session_id escapes storage directory: {session_id!r}")
         return path
 
-    def _generate_task_id(self, session_id: str) -> str:
+    def _generate_task_id(self, session_id: str, collection: Optional[TaskCollection] = None) -> str:
         """
         Generate unique task ID for session.
 
         Args:
             session_id: Session identifier
+            collection: The collection the task goes into. Looked up in the
+                cache otherwise -- and an eviction since the caller's load
+                dropped the counter with it: it started again at 0, and the
+                new task took the id of an existing one.
 
         Returns:
             Task ID (e.g., "task_042")
@@ -465,9 +475,10 @@ class TodoServer(SchemaBasedHookToolServer):
         # Counter init + increment under the cache lock so the read-modify-write
         # cannot race a concurrent eviction/load mutating the same dicts.
         with self._cache_lock:
+            if collection is None:
+                collection = self._sessions.get(session_id)
             # Initialize counter from existing tasks if not set
-            if session_id not in self._task_counters and session_id in self._sessions:
-                collection = self._sessions[session_id]
+            if session_id not in self._task_counters and collection is not None:
                 if collection.tasks:
                     # Find highest task number
                     max_num = 0
@@ -1099,7 +1110,7 @@ class TodoServer(SchemaBasedHookToolServer):
                     "message": msg,
                 }
 
-            task_id = task.task_id = self._generate_task_id(session_id)
+            task_id = task.task_id = self._generate_task_id(session_id, collection)
 
             # Update reverse dependency (blocks) on parent tasks
             for dep_id in task.depends_on:
@@ -1117,7 +1128,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Save
             if self._auto_save:
-                await self._save_session_async(session_id)
+                await self._save_session_async(session_id, collection)
 
             # Short status message
             if status:
@@ -1372,7 +1383,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Save
             if self._auto_save:
-                await self._save_session_async(session_id)
+                await self._save_session_async(session_id, collection)
 
             # Calculate is_blocked for response
             is_blocked = self._is_blocked(task, collection)
@@ -1760,7 +1771,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
             # Save
             if self._auto_save:
-                await self._save_session_async(session_id)
+                await self._save_session_async(session_id, collection)
 
             # Short status message
             if status:

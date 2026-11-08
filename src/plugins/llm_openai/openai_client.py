@@ -459,7 +459,6 @@ class OpenAIAsyncClient(LLMClient):
                             resp = await cancellation.await_call(llm_task, cancellation_token)
                         else:
                             resp = await client_any.chat.completions.create(**opts)
-                        break
                     except Exception as e:
                         retry = self._retry_wait(e, attempt)
                         if retry is not None and attempt < max_attempts:
@@ -474,11 +473,47 @@ class OpenAIAsyncClient(LLMClient):
                         if final is None or final is e:
                             raise
                         raise final from e
+                    # A 200 without choices carries no answer at all -- not an
+                    # empty one the model gave. It used to become content "",
+                    # which the loop finally took as the final answer.
+                    if getattr(resp, "choices", None):
+                        break
+                    # A gateway's error in the body (OpenRouter's shape) is an
+                    # answer: the upstream error, as the httpx route reports it.
+                    body_error = (getattr(resp, "model_extra", None) or {}).get("error")
+                    if body_error:
+                        text = (body_error.get("message") if isinstance(body_error, dict) else None) \
+                            or str(body_error)
+                        code = body_error.get("code", "unknown") if isinstance(body_error, dict) else "unknown"
+                        # A rate limit or a server error in the envelope passes, as on the httpx route:
+                        # retried first. A refusal (content filter, bad request) is final at once.
+                        transient = str(code) == "429" or str(code).startswith("5") or "rate_limit" in str(code)
+                        if transient and attempt < max_attempts:
+                            wait = max(self._retry_min_backoff, min(
+                                self._retry_backoff_cap, self._retry_base_backoff * (2 ** (attempt - 1))))
+                            logger.warning("OpenAI body error %s, retrying in %.1f sec (attempt %d/%d)",
+                                           code, wait, attempt, max_attempts)
+                            await self._notify_retry("openai", self.model, self._base_url, False,
+                                                     f"body error {code}", attempt - 1, max_attempts)
+                            await self._cancellable_sleep(wait, cancellation_token)
+                            continue
+                        await report_end(error=text)
+                        return {"assistant": {"role": "assistant", "content": "",
+                                              "error": {"message": text, "type": f"upstream_error_{code}"}}}
+                    if attempt < max_attempts:
+                        wait = max(self._retry_min_backoff, min(
+                            self._retry_backoff_cap, self._retry_base_backoff * (2 ** (attempt - 1))))
+                        logger.warning("OpenAI 200 without choices, retrying in %.1f sec (attempt %d/%d)",
+                                       wait, attempt, max_attempts)
+                        await self._notify_retry("openai", self.model, self._base_url, False,
+                                                 "200 without choices", attempt - 1, max_attempts)
+                        await self._cancellable_sleep(wait, cancellation_token)
+                        continue
+                    error_msg = f"{self.model} answered 200 without choices (attempt {attempt})"
+                    await report_end(error=error_msg)
+                    raise LLMServerError(error_msg, provider="openai", model=self.model)
 
-                choice = resp.choices[0] if resp.choices else None
-                if not choice:
-                    await report_end()
-                    return {"assistant": {"role": "assistant", "content": ""}}
+                choice = resp.choices[0]
                 message = choice.message
                 out = {"role": "assistant", "content": getattr(message, "content", None)}
                 tool_calls = getattr(message, "tool_calls", None) or []

@@ -670,8 +670,10 @@ class OpenAIResponsesClient(LLMClient):
                     "output": out,
                 })
                 # Multimodal tool content (images from comfyui etc.): inject as
-                # a user message item AFTER the tool output — same placement as
-                # the Chat Completions clients use.
+                # a user message item right AFTER its tool output. Between two
+                # parallel outputs too, unlike Chat Completions (which refuses
+                # that): measured 2026-11-08, OpenAI's Responses API and
+                # OpenRouter's (GPT, Gemini) take it and the model sees the image.
                 if _get(msg, "multimodal_content"):
                     injection = self._create_multimodal_injection(msg)
                     if injection:
@@ -1736,6 +1738,26 @@ class OpenAIResponsesClient(LLMClient):
                         await self._cancellable_sleep(backoff, cancellation_token)
                         attempt += 1
                         continue
+
+                    # A 200 without output items (`{}`, `"output": []`) carries no
+                    # answer at all; it used to become content "", which the loop
+                    # finally took as the final answer. Not an incomplete one: a
+                    # budget spent before any output is the loop's to report.
+                    if (not body_err and not response_data.get("output")
+                            and response_data.get("status") != "incomplete"):
+                        if attempt < self.max_retries:
+                            backoff = self.retry_backoff * (2 ** attempt)
+                            logger.warning(f"Responses 200 without output, retry {attempt + 1}/"
+                                           f"{self.max_retries} in {backoff:.0f}s: {self.model}")
+                            await self._notify_retry(self._PROVIDER, self.model, url, stream,
+                                                     "200 without output", attempt, self.max_retries + 1)
+                            await self._cancellable_sleep(backoff, cancellation_token)
+                            attempt += 1
+                            continue
+                        await report_error(url, duration_ms, "200 without output", stream)
+                        raise LLMServerError(
+                            f"{self.model} answered 200 without output {attempt + 1} times",
+                            provider=self._PROVIDER, model=self.model)
 
                     routing = openrouter_routing_info(response_data)
                     if routing:

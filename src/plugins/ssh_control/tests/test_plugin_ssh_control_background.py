@@ -29,14 +29,16 @@ class Reader:
 class Process:
     """A remote process that ends when its event is set, or at once without one."""
 
-    def __init__(self, stdout=(), stderr=(), exit_status=0, hold=None):
+    def __init__(self, stdout=(), stderr=(), exit_status=0, hold=None, exit_signal=None):
         self.stdout = Reader(stdout)
         self.stderr = Reader(stderr)
         # None until the channel closes, which is what asyncssh does -- EOF on
         # the streams says nothing about the exit status. A fake that fills it
         # in at construction hides every caller that forgets to wait.
         self.exit_status = None
+        self.exit_signal = None
         self._final_status = exit_status
+        self._final_signal = exit_signal
         self._hold = hold
         self.signals = []
 
@@ -44,6 +46,7 @@ class Process:
         if self._hold is not None:
             await self._hold.wait()
         self.exit_status = self._final_status
+        self.exit_signal = self._final_signal
 
     def terminate(self):
         self.signals.append("SIGTERM")
@@ -71,7 +74,7 @@ class Connection:
         self.started = []
 
     async def run(self, command, check=False):
-        return SimpleNamespace(stdout="", stderr="", exit_status=0)
+        return SimpleNamespace(stdout="", stderr="", exit_status=0, exit_signal=None)
 
     async def create_process(self, command):
         if self._gate is not None:
@@ -588,5 +591,20 @@ async def test_without_a_wake_nothing_is_written_to_disk(monkeypatch, woken,
             lambda: server.processes.processes[started["process_id"]]["finished_at"])
         assert woken.calls == []
         assert list(isolated_plugin_cache.rglob("*.json")) == []
+    finally:
+        await server.close()
+
+
+@pytest.mark.parametrize("status, signal, reason", [
+    (-1, ("KILL", False, "", ""), "signal KILL"),   # what asyncssh reports for a signal
+    (None, None, "without an exit status"),          # the channel closed under it
+])
+async def test_a_command_without_an_exit_of_its_own_says_why(monkeypatch, status, signal, reason):
+    server = build(monkeypatch, lambda cmd: Process(exit_status=status, exit_signal=signal))
+    try:
+        started = await server.execute(_call())
+        entry = server.processes.processes[started["process_id"]]
+        assert await _until(lambda: entry["finished_at"])
+        assert entry["exit_code"] == -1 and reason in entry["error"]
     finally:
         await server.close()

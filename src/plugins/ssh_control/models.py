@@ -32,6 +32,9 @@ class CommandResult(BaseModel):
     stderr: str
     exit_code: int
     duration: float
+    #: Why the command ended without an exit status (killed by a signal, the
+    #: channel closed); exit_code is then -1. None: it exited normally.
+    ended: str | None = None
 
 
 class FileTransferResult(BaseModel):

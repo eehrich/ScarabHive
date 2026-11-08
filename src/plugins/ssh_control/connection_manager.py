@@ -368,17 +368,26 @@ class SSHConnectionManager:
             
             pool.total_commands += 1
             
+            # No exit status of its own: killed by a signal (asyncssh then reports
+            # -1 and the signal) or the channel closed under it (None, which
+            # "or 0" used to turn into a success). Neither is a success.
+            ended = None
+            if result.exit_signal:
+                ended = f"Command killed by signal {result.exit_signal[0]}"
+            elif result.exit_status is None:
+                ended = "Command ended without an exit status (connection closed)"
             command_result = CommandResult(
                 machine=machine_name,
                 command=command,
                 stdout=result.stdout,
                 stderr=result.stderr,
-                exit_code=result.exit_status or 0,
-                duration=duration
+                exit_code=result.exit_status if ended is None else -1,
+                duration=duration,
+                ended=ended,
             )
             
             self._remember(machine_name, command, start_time, stdout=result.stdout, stderr=result.stderr,
-                           exit_code=command_result.exit_code)
+                           exit_code=command_result.exit_code, error=ended)
 
             # Audit log
             if self.audit_log_enabled:

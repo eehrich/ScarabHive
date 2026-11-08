@@ -121,3 +121,56 @@ def test_a_chat_line_leaves_another_models_call_signatures_home(tmp_path):
         sent = json.loads(path.read_text(encoding="utf-8"))["body"]["messages"][1]
         assert ("extra_content" in sent["tool_calls"][0]) is kept, sent
         assert "reasoning_model" not in sent
+
+
+PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                    "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
+
+
+def test_a_chat_line_keeps_a_tool_results_images(tmp_path):
+    """normalize_messages keeps API fields only: the image of a tool result never reached the request."""
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(PNG)
+    cfg = LLMModelConfig(provider="batch", model="gpt-x", api_key="k", capabilities={"image_input": True})
+    client = BATCH_BACKENDS["openai_httpx"](cfg)
+    calls = [{"id": f"c{i}", "type": "function", "function": {"name": "f", "arguments": "{}"}} for i in (1, 2)]
+    image = {"type": "image", "path": str(shot), "mime_type": "image/png"}
+    job = BatchJob(requests=[BatchRequest(custom_id="r1", model="gpt-x", messages=[
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": None, "tool_calls": calls},
+        {"role": "tool", "tool_call_id": "c1", "name": "f", "content": "ok", "multimodal_content": [image]},
+        {"role": "tool", "tool_call_id": "c2", "name": "f", "content": "ok"}])])
+    path = tmp_path / "in.jsonl"
+    client._create_input_file(job, path)
+    sent = json.loads(path.read_text(encoding="utf-8"))["body"]["messages"]
+    assert [m["role"] for m in sent] == ["user", "assistant", "tool", "tool", "user"], \
+        "the image follows the whole run of tool results"
+    assert all("multimodal_content" not in m for m in sent)
+    parts = sent[-1]["content"]
+    assert any(p.get("type") == "image_url" and p["image_url"]["url"].startswith("data:image/png;base64,")
+               for p in parts), parts
+
+
+def test_each_request_takes_its_own_models_entry(tmp_path):
+    """One backend serves every model with its batch_provider: the first entry spoke for all of them."""
+    from agent_system.llm.batch.initialization import _build_batch_client
+
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(PNG)
+    seeing = LLMModelConfig(provider="batch", model="gpt-sees", api_key="k", capabilities={"image_input": True})
+    blind = LLMModelConfig(provider="batch", model="gpt-blind", api_key="k", capabilities={"image_input": False})
+    client = _build_batch_client(BATCH_BACKENDS["openai_httpx"], [blind, seeing])
+
+    def last_message(model):
+        job = BatchJob(requests=[BatchRequest(custom_id="r1", model=model, messages=[
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "f", "content": "ok",
+             "multimodal_content": [{"type": "image", "path": str(shot), "mime_type": "image/png"}]}])])
+        path = tmp_path / f"{model}.jsonl"
+        client._create_input_file(job, path)
+        return json.dumps(json.loads(path.read_text(encoding="utf-8"))["body"]["messages"][-1])
+
+    assert "image_url" in last_message("gpt-sees")
+    assert "image_url" not in last_message("gpt-blind")

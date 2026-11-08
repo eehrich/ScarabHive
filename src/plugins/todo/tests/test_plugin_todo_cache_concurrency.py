@@ -109,3 +109,57 @@ class TestConcurrentCacheStress:
             sid = f"sess_{i}"
             coll = await server._load_session_async(sid)
             assert coll.session_id == sid
+
+
+class TestEvictionBetweenLoadAndSave:
+    """A tool releases the session lock after its load and takes it again to
+    save; another session's load can evict the collection in between."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["create", "update", "delete"])
+    async def test_the_change_survives_an_eviction_before_the_save(self, server: TodoServer, operation):
+        context = {"session_id": "evicted", "user_id": "u"}
+        created = await server.call("todo", {"operation": "create", "title": "first", "context": context})
+        task_id = created["task"]["task_id"] if "task" in created else created["task_id"]
+
+        real_save = server._save_session_async
+
+        async def evict_then_save(session_id, collection=None):
+            server._sessions.pop(session_id, None)  # another session's load evicted it
+            await real_save(session_id, collection)
+
+        server._save_session_async = evict_then_save
+        params = {"create": {"title": "second"},
+                  "update": {"task_id": task_id, "priority": "critical"},
+                  "delete": {"task_id": task_id}}[operation]
+        await server.call("todo", {"operation": operation, "context": context, **params})
+        server._save_session_async = real_save
+
+        server._sessions.clear()  # what a fresh process reads
+        tasks = {t.title: t.priority.value for t in server._load_session("evicted").tasks.values()}
+        expected = {"create": {"first": "medium", "second": "medium"},
+                    "update": {"first": "critical"}, "delete": {}}[operation]
+        assert tasks == expected
+
+    @pytest.mark.asyncio
+    async def test_an_eviction_before_the_id_does_not_reuse_an_existing_one(self, server: TodoServer):
+        """The counter went with the cache: it started again at 0, and the new
+        task took task_001 -- which the save then wrote over the old one."""
+        context = {"session_id": "evicted", "user_id": "u"}
+        await server.call("todo", {"operation": "create", "title": "first", "context": context})
+
+        real_load = server._load_session_async
+
+        async def load_then_evict(session_id):
+            collection = await real_load(session_id)
+            server._sessions.pop(session_id, None)  # another session's load evicted it
+            server._task_counters.pop(session_id, None)
+            return collection
+
+        server._load_session_async = load_then_evict
+        await server.call("todo", {"operation": "create", "title": "second", "context": context})
+        server._load_session_async = real_load
+
+        server._sessions.clear()
+        titles = sorted(t.title for t in server._load_session("evicted").tasks.values())
+        assert titles == ["first", "second"]

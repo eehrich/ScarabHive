@@ -225,7 +225,7 @@ def responses_transport(monkeypatch):
 class TestTheHookSeesTheRouting:
     @pytest.mark.asyncio
     async def test_responses_route_reports_the_backend(self, responses_transport):
-        responses_transport({"output": [], "openrouter_metadata": META})
+        responses_transport({"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}], "openrouter_metadata": META})
         seen: list[dict] = []
         client = _responses()
 
@@ -238,7 +238,7 @@ class TestTheHookSeesTheRouting:
 
     @pytest.mark.asyncio
     async def test_a_response_without_metadata_reports_none(self, responses_transport):
-        responses_transport({"output": []})
+        responses_transport({"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]})
         seen: list[dict] = []
         client = _responses()
 

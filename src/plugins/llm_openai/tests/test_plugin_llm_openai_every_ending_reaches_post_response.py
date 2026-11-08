@@ -446,3 +446,45 @@ async def test_a_retry_before_any_delta_sends_no_restart():
         client = make_client(upstream.url, attempts=2)
         events = [event async for event in client.chat_tools_streaming(MESSAGES, [])]
     assert _types(events) == ["content_delta", "final"]
+
+
+@pytest.mark.parametrize("body", ["{}", json.dumps({"id": "x", "object": "chat.completion", "created": 0,
+                                                    "model": "m", "choices": []})])
+async def test_a_200_without_choices_is_no_answer(body):
+    """It used to become content "", which the loop finally took as the final answer."""
+    async with Upstream(status(200, body)) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        hooks = Hooks(client)
+        with pytest.raises(LLMServerError, match="without choices"):
+            await client.chat_tools(MESSAGES, [])
+    assert upstream.hits == 2
+    [end] = [info for info in hooks.post if info.get("finish_reason") != "retry"]
+    assert "without choices" in end["error"]
+
+
+async def test_a_200_without_choices_then_an_answer_is_the_answer():
+    async with Upstream(status(200, "{}"), status(200, answer())) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        result = await client.chat_tools(MESSAGES, [])
+    assert result["assistant"]["content"] == "da"
+
+
+async def test_a_body_error_without_choices_is_the_upstream_error():
+    """A gateway's error in a 200 body: not retried as "no answer", and its text is kept."""
+    body = json.dumps({"error": {"code": 400, "message": "content filter"}})
+    async with Upstream(status(200, body)) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        hooks = Hooks(client)
+        result = await client.chat_tools(MESSAGES, [])
+    assert upstream.hits == 1
+    assert result["assistant"]["error"] == {"message": "content filter", "type": "upstream_error_400"}
+    assert [info.get("error") for info in hooks.post] == ["content filter"]
+
+
+@pytest.mark.parametrize("code", [429, 503, "rate_limit_exceeded"])
+async def test_a_transient_body_error_is_retried_first(code):
+    busy = json.dumps({"error": {"code": code, "message": "busy"}})
+    async with Upstream(status(200, busy), status(200, answer())) as upstream:
+        client = make_client(upstream.url, attempts=2)
+        result = await client.chat_tools(MESSAGES, [])
+    assert upstream.hits == 2 and result["assistant"]["content"] == "da"

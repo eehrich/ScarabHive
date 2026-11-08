@@ -1356,7 +1356,7 @@ def test_the_hooks_learn_that_an_answer_was_cut():
 
 
 def test_the_usage_keeps_the_cache_writes():
-    info = _reported({"status": "completed", "output": [],
+    info = _reported({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}],
                       "usage": {"input_tokens": 100, "output_tokens": 5,
                                 "input_tokens_details": {"cached_tokens": 40, "cache_write_tokens": 60},
                                 "output_tokens_details": {"reasoning_tokens": 3}}})

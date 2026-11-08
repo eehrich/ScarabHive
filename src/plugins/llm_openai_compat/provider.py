@@ -193,9 +193,11 @@ def make_batch_backend(cfg: "LLMModelConfig", endpoint: Optional[str] = None):
     # /v1/batches. Sending an OpenAI key to one of them is exactly what the
     # key-follows-endpoint rule exists to prevent, so the batch client keeps
     # its own default (api.openai.com).
+    # The model entry goes along on both endpoints: it says whether the model
+    # takes images, and without it a tool result's image became a text note.
     if endpoint:
         return OpenAIBatchClient(api_key=api_key, endpoint=endpoint, model_config=cfg)
-    return OpenAIBatchClient(api_key=api_key)
+    return OpenAIBatchClient(api_key=api_key, model_config=cfg)
 
 
 PROVIDERS = {

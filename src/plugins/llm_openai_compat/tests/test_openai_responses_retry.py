@@ -522,3 +522,26 @@ class TestAReleasedPinHealsOnlyWhatItsBackendSigned:
         assert t.calls == 4
         assert self._items(t.payloads[3]) == []
         assert not any(m.reasoning_details for m in msgs)
+
+class TestA200WithoutOutput:
+    """`{}` or `"output": []` used to become content "", which the loop finally
+    took as the final answer."""
+
+    @pytest.mark.parametrize("body", [{}, {"status": "completed", "output": []}])
+    async def test_it_is_retried_and_then_typed(self, transport, body):
+        t = transport([httpx.Response(200, json=body)] * 5)
+        with pytest.raises(LLMServerError, match="without output"):
+            await _client(max_retries=1).chat_tools(MESSAGES, [])
+        assert t.calls == 2
+
+    async def test_a_retry_that_answers_is_the_answer(self, transport):
+        t = transport([httpx.Response(200, json={"output": []}), httpx.Response(200, json=OK_BODY)])
+        result = await _client().chat_tools(MESSAGES, [])
+        assert t.calls == 2 and result["assistant"]["content"] == "done"
+
+    async def test_an_incomplete_one_is_left_to_the_loop(self, transport):
+        """A budget spent before any output: the loop says so, a retry would spend it again."""
+        t = transport([httpx.Response(200, json={"status": "incomplete", "output": [],
+                                                 "incomplete_details": {"reason": "max_output_tokens"}})])
+        await _client().chat_tools(MESSAGES, [])
+        assert t.calls == 1

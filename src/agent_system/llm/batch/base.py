@@ -29,6 +29,11 @@ class BatchProviderClient(ABC):
     #: under the old key, found nothing, and left paid jobs running.
     provider_name: str = ""
 
+    #: The entries of the models this backend serves, by API model id: set at
+    #: registration (initialization._build_batch_client). Empty when the client
+    #: was built by hand.
+    model_configs: Dict[str, Any] = {}
+
     def _tracker_key(self) -> Optional[str]:
         """Key to look the tracked jobs up under, or None if unregistered."""
         return self.provider_name or None
