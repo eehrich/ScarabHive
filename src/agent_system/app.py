@@ -456,8 +456,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 setup_profiling_logger()
             await start_memory_profiling()
             logger.info("Memory profiling started")
-        
-        yield
+
+        # The shutdown event is set as the stop signal arrives, not only in the shutdown below: uvicorn runs that
+        # after it waited for the open connections, and a browser's run-events stream ends only on this event.
+        # Here, last: uvicorn listens only once the startup is done, so no stream is open before.
+        from .services.lifecycle import announce_stop
+        undo_announce_stop = announce_stop(app_state.shutdown_event)
+        try:
+            yield
+        finally:
+            undo_announce_stop()  # the signal handlers as they were, also when the app ends by an error
         # Shutdown
         logger.info("═" * 80)
         logger.info("║  AgentSystem API Server SHUTTING DOWN")

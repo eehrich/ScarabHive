@@ -25,6 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from agent_system import app_state
 from agent_system.api.run_start import sse_response
 from agent_system.plugins.agent_tasks import cancel_run, user_of
 from agent_system.run_events import HELD, run_event_bus, run_event_store
@@ -35,6 +36,28 @@ router = APIRouter(prefix="/api/agent-runs", tags=["agent-runs"])
 KEEPALIVE_S = 15.0
 #: Events replayed to a client that reconnects, at most; it reads the rest per run (``/events``).
 REPLAY_MAX = 1000
+
+
+_STOPPING = object()
+
+
+async def _next_or_stop(queue: asyncio.Queue) -> Any:
+    """The next event; None after KEEPALIVE_S without one; _STOPPING once the server stops.
+
+    This stream never ends by itself, and every open tab holds one: a server that stops waited for it until
+    uvicorn's graceful timeout ran out and cancelled it (app_state.shutdown_event, set as the stop signal comes).
+    """
+    stopping = app_state.shutdown_event  # one set already ends the wait at once, once the queue is empty
+    getter = asyncio.ensure_future(queue.get())
+    waits = {getter} if stopping is None else {getter, asyncio.ensure_future(stopping.wait())}
+    try:
+        done, _ = await asyncio.wait(waits, timeout=KEEPALIVE_S, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiting in waits:
+            waiting.cancel()  # a getter that has an event is done: cancelling it takes nothing from the queue
+    if getter in done:
+        return getter.result()
+    return _STOPPING if done else None
 
 
 def _line(event: dict[str, Any]) -> str:
@@ -77,9 +100,10 @@ async def agent_runs_stream(request: Request, after: str = Query(default="", max
             for event in missed:
                 yield _line(event)
             while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_S)
-                except asyncio.TimeoutError:
+                event = await _next_or_stop(queue)
+                if event is _STOPPING:  # the browser reconnects by itself (retry), to the server that comes next
+                    return
+                if event is None:
                     yield ": keepalive\n\n"
                     continue
                 if event.get("who") != who:

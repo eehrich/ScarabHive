@@ -24,6 +24,7 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 from agent_system import own_console
 from agent_system.own_console import RESTART_EXIT_CODE
@@ -114,3 +115,45 @@ def _leave(outright: bool) -> None:
     if outright:
         os._exit(code)  # from a thread, with the main one stuck: sys.exit would only end this thread
     raise SystemExit(code)
+
+
+#: The signals a server stops on, as uvicorn handles them (SIGBREAK: Ctrl+Break on Windows).
+STOP_SIGNALS = tuple(sig for sig in (getattr(signal, name, None) for name in ("SIGINT", "SIGTERM", "SIGBREAK"))
+                     if sig is not None)
+
+
+def announce_stop(event: asyncio.Event) -> Callable[[], None]:
+    """Set ``event`` the moment a stop signal arrives, before uvicorn waits for the open connections; returns the undo.
+
+    uvicorn runs the app's shutdown only after that wait (Server.shutdown, up to timeout_graceful_shutdown), so an
+    event set there reached a stream that holds its connection open -- every tab's run-events stream -- too late:
+    each stop waited the timeout out and cancelled it ("Cancel 1 running task(s), timeout graceful shutdown
+    exceeded"). Whatever handled the signal before -- uvicorn's, however the server was started -- still does;
+    this one only goes first. Off the main thread (a TestClient's lifespan) Python allows no handler: then nothing
+    changes, and the event comes with the shutdown as before.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+    loop = asyncio.get_running_loop()
+    installed: dict[int, tuple[Callable, Callable]] = {}
+    for sig in STOP_SIGNALS:
+        handler = signal.getsignal(sig)
+        if not callable(handler):  # SIG_DFL, SIG_IGN, or set outside Python: no server's
+            continue
+
+        def first_announce(signum, frame, handler=handler):
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:  # the loop is closed already: nothing left to tell
+                pass
+            return handler(signum, frame)
+
+        signal.signal(sig, first_announce)
+        installed[sig] = (first_announce, handler)
+
+    def undo() -> None:
+        for sig, (ours, handler) in installed.items():
+            if signal.getsignal(sig) is ours:  # one set since (uvicorn restoring its own) stays
+                signal.signal(sig, handler)
+
+    return undo
