@@ -196,7 +196,7 @@ llm_system:
 
     claude-fable:
       extends: claude-opus-thinking
-      model: claude-fable-5-1
+      model: claude-fable-5-2
       thinking_budget: null
       include_thoughts: false
 
@@ -555,7 +555,7 @@ llm_system:
 
     claude-fable:
       model_ref: claude-fable
-      description: "Claude Fable (newest) - Anthropic's most capable model; next-generation intelligence for long-running agents ($10/$50 per MTok)"
+      description: "Claude Fable (newest) - Anthropic's most capable model; next-generation intelligence for long-running agents ($8/$40 per MTok)"
       max_steps: 500
 
     claude-haiku:
