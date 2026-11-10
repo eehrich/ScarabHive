@@ -334,7 +334,8 @@ class TestUnguardedSpawns:
         family = _Family(tmp_path, {"mode": "auto"}, {})
         registry = family.parent.registry
         coder = _Plain("coder", "coding_cli", ["run_task", "get_run"])
-        machines = _Plain("stategraph", "stategraph", ["run_machine", "control_run", "get_run", "send_event"])
+        machines = _Plain("stategraph", "stategraph", ["run_machine", "run_workflow", "control_run", "get_run",
+                                                       "send_event"])
         registry.register("coder", coder)
         registry.register("stategraph", machines)
         hooks = family.parent._hook_manager
@@ -351,6 +352,7 @@ class TestUnguardedSpawns:
         assert "Claude Code" in await decide("coder_run_task", "coder", task="t")
         assert await decide("coder_get_run", "coder", run_id="r") is None
         assert "state machine 'm1'" in await decide("stategraph_run_machine", "stategraph", machine_id="m1")
+        assert "dynamic workflow" in await decide("stategraph_run_workflow", "stategraph", yaml="stategraph: 1")
         assert "state machine" in await decide("stategraph_send_event", "stategraph", run_id="r1", name="go")
         assert await decide("stategraph_get_run", "stategraph", run_id="r1") is None
         for action in ("continue", "step", "run_to", "resume", "fork", "terminate"):
@@ -633,6 +635,36 @@ class TestGrants:
         assert refused == [422, 422]
         assert "  │ a = 1" in asked[0]["arguments"], "the script's code was not shown"
         assert scripts.calls == ["ts_run_script"] * 2
+
+    async def test_a_dynamic_workflow_is_never_allowed_for_the_session(self, approval, watched):
+        """A workflow is a machine written in the call, like a script: allowed for the session, every later one
+        -- with every agent within reach -- would run unread."""
+        from plugins.tool_approval.broker import AnswerRejected
+
+        plugin = await approval()
+        probe = _Probe()
+        agent = _agent(probe, {"mode": "ask"})
+        machines = _Plain("stategraph", "stategraph", ["run_workflow", "get_run"])
+        agent.registry.register("stategraph", machines)
+        agent.agent_config.tools.allowed = ["probe/*", "stategraph/*"]
+        agent.llm = _Model([_call("w1", "stategraph_run_workflow", yaml="stategraph: 1\nid: one")],
+                           [_call("w2", "stategraph_run_workflow", yaml="stategraph: 1\nid: two")])
+        refused: List[int] = []
+        asked: List[Dict[str, Any]] = []
+
+        async for event in agent.run_events("go", request_id=watched("grantw"), session_id="sess-w"):
+            question = _question_of(event)
+            if question is not None and question["id"] not in {q["id"] for q in asked}:
+                asked.append(question)
+                try:
+                    plugin.broker.answer(question["id"], "allow_session")
+                except AnswerRejected as exc:
+                    refused.append(exc.status)
+                    plugin.broker.answer(question["id"], "allow_once")
+
+        assert [q["decisions"] for q in asked] == [["allow_once", "deny"]] * 2, "a later workflow ran unasked"
+        assert refused == [422, 422]
+        assert machines.calls == ["stategraph_run_workflow"] * 2
 
     async def test_a_grant_in_a_sub_agents_session_does_not_reach_a_stricter_chain(self, approval, watched, tmp_path):
         """Granted while its parent did not ask, a sub-agent's grant must not let

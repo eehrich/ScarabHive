@@ -278,8 +278,10 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
             return self._unattended(context, "block", name, spawn)
         warning = (f"{spawn.target} runs WITHOUT tool approvals: the rules of this run do not apply "
                    "to its calls.")
+        decisions = (tuple(d for d in DECISIONS if d not in SESSION_DECISIONS) if spawn.per_call
+                     else DECISIONS)
         return await self._ask(context, settings, policy, name, server, arguments, tool_key,
-                               warning=warning, unattended="block")
+                               warning=warning, unattended="block", decisions=decisions)
 
     @staticmethod
     def _unattended(context: HookContext, unattended: str, name: str,

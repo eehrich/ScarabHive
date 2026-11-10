@@ -58,6 +58,9 @@ class Spawn:
 
     target: str      # what the person and the model read: "agent 'x'", "Claude Code (coding_cli)"
     guarded: bool    # the work passes this approval hook (and inherits the run's rules)
+    # its work is written in the call (a dynamic workflow): allowed call by call, as a script -- for a session,
+    # every later one would run unread
+    per_call: bool = False
 
 
 def _registry_instance(agent: Any, server: str) -> Any:
@@ -208,6 +211,8 @@ async def spawn_of(context: Any, server: str, name: str, arguments: Mapping[str,
         return None
     if kind == "coding_cli" and tool == "run_task":
         return Spawn(target="Claude Code (coding_cli)", guarded=False)
+    if kind == "stategraph" and tool == "run_workflow":  # a machine written on the spot, running agents of its own
+        return Spawn(target="a dynamic workflow (stategraph)", guarded=False, per_call=True)
     if kind == "stategraph" and (tool in ("run_machine", "send_event") or (
             tool == "control_run" and arguments.get("action") in _STATEGRAPH_RUNS_ON)):
         machine = arguments.get("machine_id") or arguments.get("run_id") or "?"

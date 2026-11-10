@@ -35,7 +35,7 @@ UNTRACKED: Dict[str, FrozenSet[str]] = {
     "comfyui": frozenset({"workflow"}),
     "sqlite_query": frozenset({"execute_sql"}),
     # A machine's tool: activities are called by the framework and pass no hook.
-    "stategraph": frozenset({"run_machine", "send_event", "control_run"}),
+    "stategraph": frozenset({"run_machine", "run_workflow", "send_event", "control_run"}),
 }
 
 
