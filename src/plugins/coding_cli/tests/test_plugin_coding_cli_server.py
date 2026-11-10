@@ -873,6 +873,19 @@ async def test_a_run_the_subscription_stops_midway_says_so_as_a_field(repo):
     assert again["limit"] == result["limit"], "get_run answers as run_task did"
 
 
+async def test_a_run_that_did_not_reach_its_api_says_why_as_a_field(repo):
+    """Measured (2026-11-10, DNS gone): an is_error result with api_error connection_failed. The answer carries it,
+    the profile chain tells a network outage from a failed run by it; a run that failed without one carries none."""
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task="UNREACHABLE ENOTFOUND")
+    assert result["state"] == "failed" and result["api_error"] == "connection_failed", result
+    assert "(ENOTFOUND)" in result["result"]["content"], result
+    again, _ = await call(server, "get_run", run_id=result["run_id"])
+    assert again["api_error"] == "connection_failed", "get_run answers as run_task did"
+    other, _ = await call(server, "run_task", task="ERROR")
+    assert other["state"] == "failed" and "api_error" not in other, other
+
+
 def test_a_failed_run_is_told_apart_by_its_measured_fields():
     """The fields of the runs the subscription stopped (data/coding_cli/runs, 2026-10-09), against a run that failed
     for another reason and one that went on while a window filled."""

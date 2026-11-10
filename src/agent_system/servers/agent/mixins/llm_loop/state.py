@@ -172,6 +172,10 @@ class StepState:
     #: Whether a call of this round of the chain reached a provider (any answer or HTTP status, or a
     #: failure after the request went out); only a round that reached none waits for the network.
     round_reached: bool = False
+    #: Whether a call of this round failed before any request could reach a provider (connect, DNS):
+    #: the evidence of an outage. A failure that says nothing either way (LLMServerError.reach_unknown)
+    #: sets neither, so the round waits for the network when it has this and not round_reached.
+    round_unreachable: bool = False
     #: The run's base (active_llm, base_profile, display_profile_info) as the round began: after an
     #: outage the run asks it again, not the chain's last member the round moved the base to.
     round_base: Optional[tuple] = None

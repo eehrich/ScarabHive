@@ -13,7 +13,7 @@ from agent_system import app_state
 from agent_system.config.models import AgentSystemConfig, LLMModelConfig, ToolServerConfig
 from agent_system.core.cancellation import CancellationToken
 from agent_system.core.request_context import current_run_session, current_run_user
-from agent_system.llm.models import LLMQuotaExhaustedError, LLMServerError
+from agent_system.llm.models import LLMConnectionError, LLMQuotaExhaustedError, LLMServerError
 from agent_system.tools.base import ToolServer, ToolServerRegistry
 from agent_system.tools.status import current_request_id
 from plugins.llm_coding_cli import client as client_module
@@ -375,9 +375,32 @@ class TestFallback:
             await client().chat_tools(MESSAGES, [])
         assert raised.value.retry_after is None
 
+    @pytest.mark.parametrize("code,outage", [
+        ("ENOTFOUND", True), ("EAI_AGAIN", True), ("ENETUNREACH", True),
+        ("ECONNREFUSED", False),        # the host answered: a proxy, a port -- no outage, as for an HTTP client
+        ("ESOMETHINGNEW", False)])
+    async def test_a_run_that_did_not_reach_its_api_is_a_connection_error(self, instance, code, outage):
+        """Measured (2026-11-10): Claude Code ends such a run with api_error connection_failed and the code at the
+        end of its result. The chain's outage rule (fallback._never_reached) reads it as it reads an HTTP client's."""
+        from agent_system.servers.agent.mixins.llm_loop.fallback import _never_reached
+
+        instance({"status": "success", "run_id": "r1", "state": "failed", "api_error": "connection_failed",
+                  "result": {"untrusted": True,
+                             "content": f"API Error: Can't reach the API server — check your internet or DNS ({code})"}})
+        with pytest.raises(LLMConnectionError) as raised:
+            await client().chat_tools(MESSAGES, [])
+        assert _never_reached(raised.value) is outage
+
     @pytest.mark.parametrize("answer,words", [
         ({"status": "error", "error": "not started: 2 run(s) still going"}, "still going"),
         ({"status": "success", "run_id": "r1", "state": "failed", "note": "git broke"}, "git broke"),
+        # Worked, then failed (its turns used up): tokens counted, the model was reached
+        ({"status": "success", "run_id": "r1", "state": "failed", "note": "error_max_turns",
+          "usage": {"input_tokens": 1200, "output_tokens": 300}}, "error_max_turns"),
+        # Measured (2026-11-10, an address that never answers): no api_error, after 412 s -- a timeout that may as
+        # well be a provider that got the request
+        ({"status": "success", "run_id": "r1", "state": "failed", "note": "Request timed out",
+          "result": {"untrusted": True, "content": "Request timed out"}}, "Request timed out"),
         (done(result_cut=True), "longer than the instance hands on"),
         (done("  "), "without an answer"),
         ("not a dict", "no answer from coding_cli"),
@@ -385,9 +408,12 @@ class TestFallback:
     async def test_a_run_that_brings_no_answer_moves_the_chain_on(self, instance, caplog, answer, words):
         instance(answer)
         with caplog.at_level(logging.WARNING, logger="plugins.llm_coding_cli.client"), \
-                pytest.raises(LLMServerError, match=words):
+                pytest.raises(LLMServerError, match=words) as raised:
             await client().chat_tools(MESSAGES, [])
         assert any("next link of the chain answers" in r.getMessage() for r in caplog.records), "a silent fallback"
+        # Only an answer, cut or empty, shows the CLI reached its model; a failure says nothing of the network
+        answered = words in ("longer than the instance hands on", "without an answer", "error_max_turns")
+        assert raised.value.reach_unknown is not answered
 
     @pytest.mark.parametrize("provider,turns,why,second,runs", [
         ("antigravity", 0, "authentication failed or timed out", done("late"), 2),  # renewed meanwhile: it answers

@@ -159,11 +159,16 @@ the subscription's limit (coding_cli's limit field) | LLMQuotaExhaustedError | b
 not started for another reason (runs still going, git, the gateway) | LLMServerError | moves on, no block
 an agy run that failed on its login before its first turn | LLMServerError, if it fails again | starts once more after 15 s first; failed again, moves on, and for ten minutes no run of that user on that instance starts twice (a run that answers ends that)
 an agy run that ended without an answer on a refused step (a command, say: agy then ends its whole conversation) | LLMServerError, if it ends so again | resumed once, told that such steps are refused and to go on with its other tools (measured for a command: it answers then); a second such end moves on. The call's usage holds both runs
+a Claude Code run that did not reach its API (api_error connection_failed; measured: DNS gone, ENOTFOUND after about 3 min) | LLMConnectionError, caused by the error its code names | moves on; when no link of the step's chain reached a provider and one found no route, the step waits for the network (network_outage_seconds) -- a refused connection (ECONNREFUSED) is no outage
 a run that failed, was stopped or was cancelled | LLMServerError | moves on, no block
 an answer cut by max_result_chars, or none | LLMServerError | moves on, no block
 the instance missing, or another cli than the provider's | LLMServerError | moves on, no block
 no agent run around the call | LLMServerError | moves on, no block
 @{body}
+
+A failed run without tokens says nothing of the network (agy with the network gone fails at once on an
+unknown model): it does not count as a provider that got the request, so a link before or after it decides
+whether the step waits for the network. A run that counted tokens, an answer cut or empty, did reach its model.
 
 Each of them logs one line naming the provider, the instance and why; a
 mismatched cli logs it as an error. Antigravity reports no subscription

@@ -129,7 +129,7 @@ Without `--agent`, the CLIs and the web UI start `default_agent` from
 | `llm_params` | -- | Request parameters per profile: flat for every profile of the chains, or keyed by profile name (`"*"` for all); the exact key wins. |
 | `inherit_parent_llm` | `false` | As a sub-agent, run on the model the calling run was switched to (see below). |
 | `fallback_recovery_seconds` | `3600` | Longest block the agent places on a failing LLM. |
-| `network_outage_seconds` | `1800` | How long a run waits for the network when no LLM of the chain could be reached at all (the connect timed out or found no route, a name that does not resolve; a refused connection ends the run at once), counted from the start of the outage; meanwhile it asks its own model again every 10 s to 2 min. `0`: the run ends at once. |
+| `network_outage_seconds` | `1800` | How long a run waits for the network when no LLM of the chain could be reached at all (the connect timed out or found no route, a name that does not resolve; a refused connection ends the run at once; a coding CLI link that failed without saying why counts neither way), counted from the start of the outage; meanwhile it asks its own model again every 10 s to 2 min. `0`: the run ends at once. |
 | `max_steps` | `20` | Upper bound of tool-calling steps per run. |
 | `system_template` | `config/prompts/system_prompt.md` | Prompt file: `.md`, `.txt` or `.markdown`. |
 | `system_prompt` | -- | Prompt text inline; it beats `system_template` (see [System prompt](#system-prompt)). |

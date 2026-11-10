@@ -195,6 +195,38 @@ async def test_a_round_that_reached_a_provider_is_no_outage(system_config_with_p
     assert (primary.call_count, fallback.call_count) == (1, 1)
 
 
+def _cannot_tell(model):
+    """A coding CLI's failed run that says nothing of the network: measured, agy with the network gone
+    ends at once on an unknown model."""
+    return LLMServerError("antigravity agy: run r1 failed: model is not recognized", model=model, reach_unknown=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_error, fallback_error", [
+    (_cannot_tell, _unreachable),   # the CLI first, the link after it found no route
+    (_unreachable, _cannot_tell),   # the CLI last: the chain ends on its error, the outage is still the one before
+], ids=["cli_then_unreachable", "unreachable_then_cli"])
+async def test_a_link_that_cannot_tell_leaves_the_outage_to_the_others(system_config_with_profiles, primary_error,
+                                                                         fallback_error):
+    primary = _Flaky("primary", fail=(1, 2), exc=primary_error("m-primary"))
+    fallback = _Flaky("fallback", fail=(1, 2), exc=fallback_error("m-fallback"))
+    events = await _run(_agent(system_config_with_profiles, primary, fallback))
+
+    assert "FINAL-primary" in _final(events), "the step did not wait for the network"
+    assert fallback.call_count == 2 and primary.answers == 2, (primary.call_count, fallback.call_count)
+
+
+@pytest.mark.asyncio
+async def test_links_that_cannot_tell_are_no_outage(system_config_with_profiles):
+    """Without a link that found no route nothing shows the network is gone: the run ends as before."""
+    primary = _Flaky("primary", always=True, exc=_cannot_tell("m-primary"))
+    fallback = _Flaky("fallback", always=True, exc=_cannot_tell("m-fallback"))
+    events = await _run(_agent(system_config_with_profiles, primary, fallback))
+
+    assert _errors(events)
+    assert (primary.call_count, fallback.call_count) == (1, 1)
+
+
 @pytest.mark.asyncio
 async def test_an_answer_gives_a_later_outage_the_whole_budget(system_config_with_profiles):
     """Each outage is waited out on its own: the budget counts from the start of the current one."""

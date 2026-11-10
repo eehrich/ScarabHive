@@ -1688,6 +1688,10 @@ class CodingCliServer(SchemaBasedToolServer):
                 record["state"] = "failed"
                 # The subscription stopped it: said as a field (limit), as a refusal before the start is
                 limit = cli.usage_limit(result, found["rate_limit"])
+                if result and result.get("is_error") and result.get("api_error"):
+                    # Claude Code's word for why (connection_failed: the API was not reached) -- the profile
+                    # chain tells a network outage from a failed run by it (llm_coding_cli)
+                    record["api_error"] = str(result["api_error"])
                 if limit:
                     record["limit"] = limit
                     notes.append(f"stopped by the subscription: {cli.limit_text(limit)}")
@@ -1754,6 +1758,8 @@ class CodingCliServer(SchemaBasedToolServer):
             answer["note"] = record["note"]
         if record.get("limit"):
             answer["limit"] = record["limit"]
+        if record.get("api_error"):
+            answer["api_error"] = record["api_error"]
         if record.get("details"):
             answer["details"] = _untrusted(record["details"])
         answer["next"] = (f"resume={run_id} continues this conversation; the run worked on no files" if record.get("room")

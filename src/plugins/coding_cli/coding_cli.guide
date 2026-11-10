@@ -464,6 +464,7 @@ output | untrusted, only with a @{tt}json_schema@{utt}: the object Claude Code r
 hidden | files kept out of the worktree for their secrets; at most 50 and a "... N more"
 note | the plugin's own words: why it was stopped, "not committed, the changes are in the worktree", "Claude Code ended without a result, its stderr is in details", "stopped by the subscription: ...", ...
 limit | only when the subscription stopped the run: @{tt}window@{utt}, @{tt}api_error@{utt}, @{tt}resets_at@{utt}, @{tt}resets@{utt}
+api_error | only on a failed run whose result names one (Claude Code): @{tt}connection_failed@{utt} when the API was not reached, its code at the end of the result (@{tt}(ENOTFOUND)@{utt}), @{tt}usage_limit_reached@{utt} beside @{tt}limit@{utt}
 details | untrusted: git's error output, the last 600 characters of Claude Code's stderr
 next | how to resume, and the @{tt}git diff@{utt} that shows the branch
 @{body}

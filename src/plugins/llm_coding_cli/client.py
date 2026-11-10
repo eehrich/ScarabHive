@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hashlib
 import logging
+import re
+import socket
 import time
 from collections import OrderedDict
 from typing import Any
 
-from agent_system.llm.models import LLMClient, LLMQuotaExhaustedError, LLMServerError
+from agent_system.llm.models import LLMClient, LLMConnectionError, LLMQuotaExhaustedError, LLMServerError
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +147,30 @@ def _refused_resume(answer: Any) -> bool:
 def _content(value: Any) -> Any:
     """coding_cli hands the CLI's words over as {"untrusted": true, "content": ...}: here they are the answer."""
     return value.get("content") if isinstance(value, dict) and value.get("untrusted") else value
+
+
+#: Claude Code's code at the end of the result of a run that did not reach its API (api_error connection_failed),
+#: measured on 2.1.x, 10.11.2026: "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
+#: with DNS gone, "... Connection refused ... (ECONNREFUSED)" at a refusing proxy, each after about 3 min of retries.
+_NODE_ERROR_CODE = re.compile(r"\((E[A-Z_]+)\)\s*$")
+#: Node's name for a lookup that failed: a socket.gaierror to Python.
+_DNS_CODES = frozenset({"ENOTFOUND", "EAI_AGAIN"})
+
+
+def _transport_cause(answer: dict) -> OSError | None:
+    """The transport error a run that did not reach its API ended on, as Python names it, or None.
+
+    The code decides, as it does for an HTTP client: a failed lookup is a gaierror, the others an OSError with their
+    errno (ECONNREFUSED is then a ConnectionRefusedError, which fallback._never_reached counts as no outage: the
+    host answered). A code Python does not know is an OSError without one -- reached, as far as the chain can tell."""
+    if answer.get("api_error") != "connection_failed":
+        return None
+    match = _NODE_ERROR_CODE.search(str(_content(answer.get("result")) or ""))
+    code = match.group(1) if match else ""
+    if code in _DNS_CODES:
+        return socket.gaierror(code)
+    number = getattr(errno, code, None) if code else None
+    return OSError(number, code) if number is not None else OSError(code or "connection_failed")
 
 
 class CodingCliClient(LLMClient):
@@ -367,16 +394,34 @@ class CodingCliClient(LLMClient):
                 logger.warning("%s %s: the subscription's limit -- %s", self.provider, self.instance, why)
                 raise LLMQuotaExhaustedError(f"{self.provider} {self.instance}: {why}", self.provider, self.instance,
                                              retry_after=wait)
-            raise self._fail(f"run {answer.get('run_id') or '-'} {answer.get('state') or 'not started'}: {why}")
+            cause = _transport_cause(answer)
+            if cause is not None:
+                # As an HTTP client says it: the chain waits for the network when no link of it was reached
+                # (fallback._never_reached reads the cause), instead of walking on to its end
+                logger.warning("%s %s: the CLI did not reach its API -- %s", self.provider, self.instance, cause)
+                raise LLMConnectionError(f"{self.provider} {self.instance}: {why}", self.provider,
+                                         self.instance) from cause
+            # Tokens counted are the provider's: a run that worked and then failed (its turns used up, its time)
+            # reached its model, whatever else it says. agy counts a resumed conversation's tokens whole, but with the
+            # network gone it fails before it loads one: 0 tokens on a resume too (measured 11.11.2026)
+            spent = _usage(answer)
+            raise self._fail(f"run {answer.get('run_id') or '-'} {answer.get('state') or 'not started'}: {why}",
+                             reached=spent["prompt_tokens"] + spent["completion_tokens"] > 0)
         if answer.get("result_cut"):
             raise self._fail(f"run {answer.get('run_id')}: the answer is longer than the instance hands on "
-                             "(coding_cli max_result_chars)")
+                             "(coding_cli max_result_chars)", reached=True)
         text = _content(answer.get("result"))
         if not isinstance(text, str) or not text.strip():
-            raise self._fail(f"run {answer.get('run_id')} ended without an answer")
+            raise self._fail(f"run {answer.get('run_id')} ended without an answer", reached=True)
         return text
 
-    def _fail(self, why: str, level: int = logging.WARNING) -> LLMServerError:
-        """An error the profile chain moves on at (no block: the next call may find the CLI free again)."""
+    def _fail(self, why: str, level: int = logging.WARNING, *, reached: bool = False) -> LLMServerError:
+        """An error the profile chain moves on at (no block: the next call may find the CLI free again).
+
+        ``reached``: the CLI's model answered (an answer cut or empty, tokens counted). Otherwise the run failed before or without
+        saying why -- agy with the network gone, say, finds its model unknown -- and the chain does not count it as a
+        provider that got the request (LLMServerError.reach_unknown): a link before or after it decides whether the
+        step waits for the network."""
         logger.log(level, "%s %s: %s -- the next link of the chain answers", self.provider, self.instance, why)
-        return LLMServerError(f"{self.provider} {self.instance}: {why}", self.provider, self.instance)
+        return LLMServerError(f"{self.provider} {self.instance}: {why}", self.provider, self.instance,
+                              reach_unknown=not reached)

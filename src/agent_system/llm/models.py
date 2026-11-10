@@ -29,12 +29,18 @@ class LLMQuotaExhaustedError(LLMRateLimitError):
 
 class LLMServerError(Exception):
     """Raised when the LLM server answers 5xx, or fails without one (status_code 0: an answer that cannot be read, say), after
-    all retries are exhausted - triggers fallback."""
-    def __init__(self, message: str, provider: str = "", model: str = "", status_code: int = 0):
+    all retries are exhausted - triggers fallback.
+
+    ``reach_unknown``: the client cannot tell whether any provider got the request -- a coding CLI
+    whose run failed without saying why (agy with the network gone reports an unknown model). Such a
+    failure is no evidence either way when the step asks whether its chain met a network outage."""
+    def __init__(self, message: str, provider: str = "", model: str = "", status_code: int = 0,
+                 reach_unknown: bool = False):
         super().__init__(message)
         self.provider = provider
         self.model = model
         self.status_code = status_code
+        self.reach_unknown = reach_unknown
 
 
 class LLMConnectionError(Exception):

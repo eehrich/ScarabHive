@@ -111,6 +111,14 @@ def main():
               "duration_ms": 904000, "result": "You've hit your session limit · resets 1:10am (Europe/Berlin)",
               "session_id": session, "total_cost_usd": 3.51, "permission_denials": [], "usage": {}})
         return
+    unreachable = next((line.split()[1] for line in task.splitlines() if line.startswith("UNREACHABLE ")), None)
+    if unreachable:
+        # As measured (10.11.2026, DNS gone): about 3 min of retries, then this result and exit 1
+        emit({"type": "result", "subtype": "success", "is_error": True, "api_error": "connection_failed",
+              "terminal_reason": "api_error", "num_turns": 1, "duration_ms": 173749,
+              "result": f"API Error: Can't reach the API server — check your internet or DNS ({unreachable})",
+              "session_id": session, "total_cost_usd": 0, "permission_denials": [], "usage": {}})
+        sys.exit(1)
     result = {"type": "result", "subtype": "error_during_execution" if error else "success", "is_error": error,
               "num_turns": turns, "duration_ms": 5002, "result": "failed" if error else f"did: {task.splitlines()[0]}",
               "session_id": session, "total_cost_usd": 0.07, "permission_denials": [

@@ -228,7 +228,8 @@ class FallbackMixin:
                 raise
 
             except LLMServerError as e:
-                st.round_reached = True
+                if not e.reach_unknown:
+                    st.round_reached = True
                 if await self._fall_back_on_server_error(run, st, e):
                     continue  # Retry with fallback (request-scoped)
                 raise
@@ -610,6 +611,8 @@ class FallbackMixin:
             # call never reached.
             self._switch_to_fallback(run, st, fallback_profile, fallback_llm, swap_base=True)
             return True
+        if self._round_met_an_outage(st) and await self._wait_out_outage(run, st, e):
+            return True     # a coding CLI that cannot say why was last, a link before it found no route
         logger.error(f"[{self.name}] No fallback profiles available, server error unrecoverable")
         return False
 
@@ -658,6 +661,8 @@ class FallbackMixin:
             return False
         if status_code is not None or not _never_reached(e):
             st.round_reached = True     # an answer of some kind, or a provider that got the request
+        else:
+            st.round_unreachable = True
         kind = (f"HTTP {status_code}" if status_code
                 else "Connection/transport error")
         if endpoint_level:
@@ -681,15 +686,20 @@ class FallbackMixin:
             # (~connect timeout x retries per step).
             self._switch_to_fallback(run, st, fallback_profile, fallback_llm, swap_base=True)
             return True
-        if not st.round_reached and await self._wait_out_outage(run, st, e):
+        if self._round_met_an_outage(st) and await self._wait_out_outage(run, st, e):
             return True
         logger.error(f"[{self.name}] No fallback profiles available, connection error unrecoverable")
         return False
 
+    @staticmethod
+    def _round_met_an_outage(st: StepState) -> bool:
+        """No call of the round reached a provider, and one found no way to it."""
+        return st.round_unreachable and not st.round_reached
+
     def _start_round(self: Agent, run: LoopState, st: StepState) -> None:
         """A round of the chain begins (a step, or the next try after an outage wait): nothing was
         reached yet, and the base it starts from is kept to come back to."""
-        st.round_reached = False
+        st.round_reached = st.round_unreachable = False
         st.round_base = (run.active_llm, run.base_profile, run.display_profile_info)
         st.round_started = _now()
 
