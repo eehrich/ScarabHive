@@ -29,6 +29,10 @@ ACTIVE_STATUSES = ("running", "paused", "waiting")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS workflow_results (
+    run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parked_at TEXT NOT NULL, delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS workflow_results_waiting ON workflow_results(session_id) WHERE delivered_at IS NULL;
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     machine_id TEXT NOT NULL,
@@ -172,10 +176,10 @@ def _frames_from_journal(conn: sqlite3.Connection) -> None:
 
 
 _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control",
-                 "control_answer")
+                 "control_answer", "workflow")
 #: Columns a runs.db from before them lacks: added when it is opened.
 _ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT", "control_answer": "TEXT",
-                  "caller_run": "TEXT", "caller_request": "TEXT"}
+                  "caller_run": "TEXT", "caller_request": "TEXT", "workflow": "TEXT"}
 #: What a run list shows of each run (list_runs): small columns only -- the covering indexes below hold them, so a
 #: list never reads a run's definition or view (they precede these columns in the row: SQLite walks their pages).
 _LISTED = ("id, machine_id, status, created_at, updated_at, finished_at, final_state, error, user_id, parent_run,"
@@ -299,9 +303,12 @@ class RunStore:
                    session_id: Optional[str] = None, parent_run: Optional[str] = None,
                    fork_step: Optional[int] = None, run_key: Optional[str] = None, owner: Optional[str] = None,
                    lease_until: Optional[str] = None, journal_format: int = 1, status: str = "running",
-                   nesting: Any = None, runner: Optional[str] = None) -> None:
+                   nesting: Any = None, runner: Optional[str] = None, workflow: Any = None) -> None:
         """A fork's row comes with its lifecycle row ``forked`` in one transaction: the row that tells a fork whose
-        prefix copy broke off (no ``fork_resources`` trace row after it) from a whole one (RES-6)."""
+        prefix copy broke off (no ``fork_resources`` trace row after it) from a whole one (RES-6).
+
+        ``workflow``: a dynamic workflow's terms (service.start_workflow) -- the agent that wrote it, whom to wake at
+        the end; None for every other run."""
         now = utc_now()
         with self._lock:
             db = self._db()
@@ -310,10 +317,10 @@ class RunStore:
                 db.execute(
                     "INSERT INTO runs (id, machine_id, status, created_at, updated_at, params, mocks, definition,"
                     " debug, user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format,"
-                    " nesting, runner) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " nesting, runner, workflow) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (run_id, machine_id, status, now, now, _dumps(params), _dumps(mocks), _dumps(definition),
                      _dumps(debug), user_id, session_id, parent_run, fork_step, run_key, owner, lease_until,
-                     journal_format, _dumps(nesting), runner))
+                     journal_format, _dumps(nesting), runner, _dumps(workflow)))
                 if parent_run:
                     self._put_lifecycle(db, run_id, "forked", {"from": parent_run, "at_step": fork_step,
                                                                "user": user_id, "owner": owner})
@@ -322,6 +329,53 @@ class RunStore:
                 if db.in_transaction:
                     db.execute("ROLLBACK")
                 raise
+
+    # ---------------------------------------------------------------- dynamic workflows' results (workflows.py)
+    def park_result(self, run_id: str, session_id: str, ended_at: Optional[str] = None) -> None:
+        """A workflow run's result now waits for the caller's session. A read or delivery of this same end -- one at
+        or after ``ended_at``, the run's finished_at: a get_run between the end and this park -- keeps it delivered;
+        one of an earlier end does not (the run was resumed and ended again, and its caller waits for that end)."""
+        with self._lock:
+            self._db().execute("INSERT INTO workflow_results (run_id, session_id, parked_at) VALUES (?, ?, ?)"
+                               " ON CONFLICT(run_id) DO UPDATE SET delivered_at = NULL, parked_at = excluded.parked_at,"
+                               " session_id = excluded.session_id WHERE workflow_results.delivered_at < ?",
+                               (run_id, session_id, utc_now(), ended_at))
+
+    #: A parked result of a run that runs again (resumed after it ended) waits for that run's next end.
+    _ENDED = (" AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = workflow_results.run_id"
+              f" AND runs.status NOT IN ({', '.join(repr(s) for s in TERMINAL_STATUSES)}))")
+
+    def waiting_results(self, session_id: str) -> list[str]:
+        with self._lock:
+            return [row["run_id"] for row in self._db().execute(
+                "SELECT run_id FROM workflow_results WHERE session_id = ? AND delivered_at IS NULL" + self._ENDED
+                + " ORDER BY parked_at", (session_id,))]
+
+    def deliver_result(self, run_id: str) -> bool:
+        """Mark it delivered; True for the one call that did (a second, in this process or another, gets False)."""
+        with self._lock:
+            return self._db().execute("UPDATE workflow_results SET delivered_at = ? WHERE run_id = ?"
+                                      " AND delivered_at IS NULL", (utc_now(), run_id)).rowcount == 1
+
+    def read_result(self, run_id: str, session_id: str) -> None:
+        """Its caller read it: delivered, also when it is not parked yet -- the park that follows changes nothing."""
+        now = utc_now()
+        with self._lock:
+            self._db().execute("INSERT INTO workflow_results (run_id, session_id, parked_at, delivered_at)"
+                               " VALUES (?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET"
+                               " delivered_at = COALESCE(delivered_at, excluded.delivered_at)",
+                               (run_id, session_id, now, now))
+
+    def result_waiting(self, run_id: str) -> bool:
+        with self._lock:
+            return self._db().execute("SELECT 1 FROM workflow_results WHERE run_id = ? AND delivered_at IS NULL"
+                                      + self._ENDED, (run_id,)).fetchone() is not None
+
+    def workflow_of(self, run_id: str) -> Optional[dict[str, Any]]:
+        """A run's workflow column alone (not its definition and view)."""
+        with self._lock:
+            row = self._db().execute("SELECT workflow FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return _loads(row["workflow"]) if row is not None and row["workflow"] else None
 
     def half_made_fork(self, run_id: str) -> bool:
         """A fork whose making broke off after its row (RES-6): its ``forked`` row, but no ``fork_resources`` row,

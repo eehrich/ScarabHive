@@ -113,16 +113,19 @@ class StateGraphService:
         self._checks: dict[str, tuple[Any, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------ helpers
-    def config_check(self, runner: Optional[str] = None) -> Optional[Callable[..., Optional[str]]]:
+    def config_check(self, runner: Optional[str] = None,
+                     caller: Optional[str] = None) -> Optional[Callable[..., Optional[str]]]:
         """SG007 against the configuration. The validator's tool questions name the run's root file and get its
-        runner (runners.py); ``runner`` answers the others -- a run's backend passes its own."""
+        runner (runners.py); ``runner`` answers the others -- a run's backend passes its own. ``caller``: the agent
+        that wrote a dynamic workflow, whose reach bounds it (make_config_check)."""
         config = getattr(self.server, "system_config", None)
         if config is None or getattr(config, "plugins", None) is None:
             return None
         return make_config_check(config, runner=runner or self.server.runner_agent, own_instance=self.server.name,
                                  default_runner=self.server.runner_agent,
                                  is_agent=getattr(self.server, "is_agent", None),
-                                 semaphores=lambda: self.runs.semaphores)  # as the runs read them (a reload)
+                                 semaphores=lambda: self.runs.semaphores,  # as the runs read them (a reload)
+                                 caller=caller)
 
     def _validate(self, tree: MachineTree) -> MachineTree:
         checked = validate_tree(tree, self.config_check())
@@ -535,11 +538,127 @@ class StateGraphService:
             inject = merged_inject_params(usable_inject(self.server.inject_params, f"instance {self.server.name}"),
                                           usable_inject(runner_inject_params(self.server.system_config, name),
                                                         f"runner {name}"))
+            workflow = row.get("workflow") or None  # a dynamic workflow's terms; every other run has none
             return ScarabHiveBackend(runner=runner, system_config=self.server.system_config,
                                      session_id=f"sg_{run_id}", user_id=row.get("user_id"),
                                      token=self.server.cancel_token(run_id), nesting=row.get("nesting"),
-                                     inject_params=inject, config_check=self.config_check(name))
+                                     inject_params=inject,
+                                     config_check=self.config_check(name, caller=(workflow or {}).get("caller")),
+                                     workflow=workflow,
+                                     ended=(lambda status: self._workflow_ended(run_id, status)) if workflow else None)
         return make
+
+    # ------------------------------------------------------------ dynamic workflows (workflows.py)
+    async def start_workflow(self, yaml: Any, *, params: Optional[dict[str, Any]] = None,
+                             max_cost: Optional[float] = None, wake: bool = True, user_id: Optional[str] = None,
+                             caller: Optional[str] = None, caller_session: Optional[str] = None,
+                             caller_request: Optional[str] = None) -> dict[str, Any]:
+        """Start ``yaml`` -- a machine the calling agent wrote for its task -- without saving it: it lives in its
+        run's snapshot. It runs with the instance's runner, under the limits written into its text
+        (workflows.with_terms), and may reach no further than ``caller`` (make_config_check). With ``wake`` the
+        caller's session is woken when it ends, and its result handed into the caller's next call."""
+        from .model.loader import parse_yaml
+        from .model.spec import check_name
+        from .workflows import inline_problems, settings_of, with_terms
+
+        try:
+            settings = settings_of(getattr(self.server, "server_config", None))
+        except ValueError as exc:
+            raise ServiceError(422, str(exc)) from None
+        if not caller:
+            raise ServiceError(422, "a workflow is started by an agent: its reach bounds the workflow, and no agent "
+                                    "made this call")
+        if not isinstance(yaml, str) or not yaml.strip():
+            raise ServiceError(422, "yaml: the machine's text is required")
+        if params is not None and not isinstance(params, dict):
+            raise ServiceError(422, f"params must be an object, not {type(params).__name__}")
+        try:
+            data = parse_yaml(yaml)
+        except Exception as exc:
+            raise ServiceError(422, f"the YAML does not parse: {exc}") from None
+        problems = inline_problems(data)
+        if problems:
+            raise ServiceError(422, "; ".join(problems))
+        machine_id = str(data.get("id") or "")
+        try:
+            check_name(machine_id, "machine id")
+        except ValueError as exc:
+            raise ServiceError(422, str(exc)) from None
+        if self.store.find(machine_id) is not None:
+            # its row's machine_id would name that machine: its replay checks, a fork onto the current definition
+            # and its runner would all be the saved machine's
+            raise ServiceError(409, f"id {machine_id!r} names a saved machine; give the workflow an id of its own")
+        try:
+            text, cap, concurrency = with_terms(yaml, settings, max_cost)
+        except ValueError as exc:
+            raise ServiceError(422, str(exc)) from None
+
+        def checked() -> tuple[MachineTree, MachineTree]:
+            tree = validate_tree(self.store.load_files({f"{machine_id}.yaml": text}, machine_id=machine_id),
+                                 self.config_check(caller=caller))
+            return tree, load_snapshot(tree.snapshot())
+
+        try:
+            tree, runnable = await asyncio.to_thread(checked)  # seconds for a large machine: off the loop (API-2)
+        except PermissionError as exc:  # no writable machine root to load it beside
+            raise ServiceError(403, str(exc)) from None
+        errors = [p for p in tree.problems if p.level == "error"]
+        if errors:
+            raise ServiceError(422, f"{len(errors)} error(s): " + "; ".join(
+                f"{p.code} {p.path} {p.message}" for p in errors[:5]))
+        nesting = await self._nesting(user_id, caller_session)
+        armed = await self._wake_armed(user_id, caller_session) if wake else "not asked for"
+        workflow = {"caller": caller, "session": caller_session, "request": caller_request,
+                    "wake": bool(wake) and not armed, "max_concurrent_agents": settings.max_concurrent_agents}
+        try:
+            run_id = await self.runs.start(runnable, params=params or {}, backend_factory=self.backend_factory(),
+                                           user_id=user_id, nesting=nesting, runner=self.server.runner_agent,
+                                           workflow=workflow)
+        except (ValueError, CompileError) as exc:
+            raise ServiceError(422, str(exc)) from None
+        self._note(run_id, "started", who=user_id, why="start_workflow", machine=machine_id, caller=caller)
+        return {"run_id": run_id, "machine_id": machine_id, "max_cost": cap, "concurrency": concurrency,
+                "wake": "armed" if workflow["wake"] else f"not armed: {armed}"}
+
+    async def _wake_armed(self, user_id: Optional[str], session_id: Optional[str]) -> str:
+        """"" when the caller's session can be woken at the end; else why not -- the caller then polls. What
+        wake_blocked checks, and what it leaves out: a sub-agent's own session and a throwaway one are never woken
+        (as the SAM's _never_woken)."""
+        from agent_system.core.session_ids import is_ephemeral_session
+        from agent_system.core.session_presence import wake_blocked
+
+        if not session_id:
+            return "this call belongs to no session, so there is nobody to wake"
+        blocked = wake_blocked(self.server.system_config, session_id, user_id or "")
+        if blocked:
+            return blocked
+        if is_ephemeral_session(session_id):
+            return "this call runs on a throwaway session that nobody continues"
+        runner = self.server.resolve_runner()
+        sessions = getattr(getattr(runner, "_session_service", None), "session_manager", None)
+        try:
+            data = await sessions.load_session(user_id or "anonymous", session_id) if sessions is not None else {}
+        except Exception:
+            data = {}
+        if (data or {}).get("parent_session"):
+            return "this is a sub-agent's own session, and those are never woken"
+        return ""
+
+    async def _workflow_ended(self, run_id: str, status: str) -> None:
+        """A dynamic workflow ended: its result waits for its caller (the delivery hook hands it over), and the
+        caller's session is woken -- unless it was cancelled: whoever stops a run does not wait for it."""
+        from agent_system.core.session_presence import wake_session
+
+        row = self.run_store.get_run(run_id) or {}
+        workflow = row.get("workflow") or {}
+        session = workflow.get("session")
+        if status == "cancelled" or not session or not workflow.get("wake"):
+            return
+        results = self.server.workflow_results
+        results.add(session, run_id, row.get("finished_at"))
+        asyncio.ensure_future(wake_session(
+            self.server.system_config, session, row.get("user_id") or "", what=f"workflow run {run_id}",
+            still_needed=lambda: results.waiting(run_id), started_by=workflow.get("request") or None))
 
     async def start_run(self, machine_id: str, params: Optional[dict[str, Any]] = None,
                         mocks: Optional[dict[str, Any]] = None, mock_only: bool = False, breakpoints: Any = (),

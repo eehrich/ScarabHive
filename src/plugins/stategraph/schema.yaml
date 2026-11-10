@@ -11,6 +11,25 @@ hooks:
     timeout: 5.0
     description: "Count the LLM calls a state machine's call activity makes into that activity's cost"
     category: "monitoring"
+  # A dynamic workflow that ended hands its result into its caller's next LLM call (the wake only rings), and
+  # it counts as delivered once a call was made with it (confirm_workflow_results). Off by default -- every hook
+  # costs each LLM call a copy of the history: an agent that writes workflows switches both on (hooks.overrides:
+  # {stategraph.deliver_workflow_results: {enabled: true}, stategraph.confirm_workflow_results: {enabled: true}}).
+  - name: deliver_workflow_results
+    type: pre_llm_call
+    enabled: false
+    timeout: 5.0
+    description: "Append the result of a dynamic workflow that ended to its caller's history, once"
+    category: "context"
+    order:
+      after: ["begin"]
+      before: ["end"]   # before the recorders that run last see the call
+  - name: confirm_workflow_results
+    type: post_llm_call
+    enabled: false
+    timeout: 5.0
+    description: "Mark a workflow result delivered once a call was made with it in the caller's history"
+    category: "context"
 
 tools:
   - type: function
@@ -23,6 +42,7 @@ tools:
           agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. review_*; default: every agent"}
           tools: {type: string, description: "fnmatch pattern on the flat tool name that narrows the tool list, e.g. *json*; default: every tool the runner may call"}
           machine_id: {type: string, description: "the machine whose runner's tools to list (its folder decides); default: a new machine's"}
+          for_workflow: {type: boolean, default: false, description: "only what a dynamic workflow of yours may use: the agents you could start yourself, the tools you may call"}
         additionalProperties: false
 
   - type: function
@@ -101,6 +121,20 @@ tools:
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
           wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits for an event (a timer it waits out); background: return at once"}
           max_wait: {type: number, minimum: 0, maximum: 3600, description: "seconds to wait with wait=finish before returning status running"}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_run_workflow"
+      description: "Start a dynamic workflow: a machine you wrote for this task (skill stategraph-workflows), run in the background without being saved. It may name only agents you could start yourself and tools you may call; it runs under a cost cap and is woken back to you when it ends -- its result comes with your next turn. Validation errors come back before anything runs."
+      parameters:
+        type: object
+        properties:
+          yaml: {type: string, description: "the machine, one self-contained text (submachines under machines:, no imports, no python:); its id must not name a saved machine"}
+          params: {type: object, description: "the machine's params (run input)"}
+          max_cost: {type: number, description: "USD cap for this run; the smaller of this and the machine's own limits.max_cost applies, else the installation's default; above its ceiling the run is refused"}
+          wake_when_done: {type: boolean, default: true, description: "you may end your turn: your session is woken when the run ends (the answer says whether that works here); false: read it yourself with get_run"}
+        required: [yaml]
         additionalProperties: false
 
   - type: function

@@ -47,8 +47,14 @@ async def hooked(server):  # noqa: F811
                                         registry=registry)
     assert names, "the hook was not registered from schema.yaml"
     yield server
+    await unregister(registry, names)
+
+
+async def unregister(registry, names):
+    """Every hook the schema registered, whatever its type: one left behind runs in every later test."""
     for name in names:
-        await registry.unregister_hook(HookType.POST_LLM_RESPONSE, name)
+        for hook_type in HookType:
+            await registry.unregister_hook(hook_type, name)
 
 
 async def test_the_llm_calls_of_a_call_activity_are_its_cost(hooked, tmp_path):
@@ -138,8 +144,7 @@ async def test_a_second_stategraph_instance_does_not_count_a_call_again(hooked, 
         row = await hooked.service.run_to_end("asks", {})
         assert hooked.service.get_run(row["id"])["spend"]["cost"] == 0.875
     finally:
-        for name in names:
-            await registry.unregister_hook(HookType.POST_LLM_RESPONSE, name)
+        await unregister(registry, names)
         await other.stop_plugin()
 
 

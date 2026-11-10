@@ -1295,8 +1295,10 @@ class RunManager:
                     copy_rows: Optional[list[dict[str, Any]]] = None,
                     fork_resources: Optional[dict[str, Any]] = None,
                     nesting: Optional[dict[str, Any]] = None, strict_points: bool = True,
-                    runner: Optional[str] = None, live: Optional[dict[str, Any]] = None) -> str:
+                    runner: Optional[str] = None, live: Optional[dict[str, Any]] = None,
+                    workflow: Optional[dict[str, Any]] = None) -> str:
         """``live``: the caller's objects for call functions (``sg.live``), not journaled.
+        ``workflow``: a dynamic workflow's terms (journal.create_run), kept with the run for its backend.
         ``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
         ``runner``: the runner agent the run is hosted by (runners.py), kept with it for every resume.
@@ -1332,7 +1334,7 @@ class RunManager:
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
                               fork_step=fork_step, run_key=run_key, owner=self.owner, lease_until=_utc(LEASE_SECONDS),
-                              journal_format=journal_format, nesting=nesting, runner=runner)
+                              journal_format=journal_format, nesting=nesting, runner=runner, workflow=workflow)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
@@ -1512,7 +1514,11 @@ class RunManager:
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
             token_factory=token_factory, user_id=user_id or row.get("user_id"), run_id=fork_id, parent_run=run_id,
             fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step},
-            runner=runner if runner is not None else row.get("runner"))
+            runner=runner if runner is not None else row.get("runner"),
+            # a dynamic workflow's fork keeps its author's bound and the process's places -- but wakes nobody: its
+            # author waits for the source, and a fork's session is the forking user's
+            workflow={**row["workflow"], "wake": False, "session": None, "request": None} if row.get("workflow")
+            else None)
 
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,

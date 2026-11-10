@@ -9,9 +9,14 @@ machines for you.
 - **Tools** `stategraph_catalog`, `stategraph_list_machines`, `stategraph_get_machine`, `stategraph_validate_machine`,
   `stategraph_save_machine` -- build machines; `stategraph_run_machine`, `stategraph_get_run`, `stategraph_list_runs`,
   `stategraph_control_run`, `stategraph_send_event` -- run and debug them. Slash commands `/stategraph-run`,
-  `/stategraph-runs`, `/stategraph-stop`.
-- **Hook** `count_call_spend` (post_llm_response, on by default) -- counts the LLM calls made under a `call` activity
-  into its cost; it changes nothing in any call.
+  `/stategraph-runs`, `/stategraph-stop`. `stategraph_run_workflow` -- start a dynamic workflow: a machine an agent
+  wrote for its task, unsaved, bounded by what that agent may reach, under the instance's cost caps (skill
+  `stategraph-workflows`; off until the instance has a `workflows:` block).
+- **Hooks** `count_call_spend` (post_llm_response, on by default) -- counts the LLM calls made under a `call`
+  activity into its cost; it changes nothing in any call. `deliver_workflow_results` (pre_llm_call, off by default) --
+  appends the result of a dynamic workflow that ended to its caller's history, once; `confirm_workflow_results`
+  (post_llm_call, off by default) -- marks it delivered once a call was made with it. An agent that writes workflows
+  switches both on in its `hooks.overrides`.
 - **Panel** State Graph (admins) -- machine list, graph editor with inspector, YAML, runs with result, history and
   debugger.
 - **Agents** `stategraph_author` (writes, validates, saves and test-runs machines) and `stategraph_runner` (the

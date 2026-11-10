@@ -1,0 +1,95 @@
+# Can a planner write a dynamic workflow from the short skill alone?
+#
+# The planner gets the skill stategraph-workflows, the catalog and the validator -- nothing else -- and a
+# coding or game-dev task to plan as a stategraph machine. It does not run the machine: it answers with the
+# YAML. The check (checks.py) scores the answer by criterion: parses, validates, sets limits.max_cost, stays in
+# the workflow subset, names only the task's agents, and has the shape the task asks for (fan-out, a second
+# fan-out to check, a pipeline, collected failures, a bounded loop).
+#
+# What it decides: whether the short skill is enough, or a shorthand / a longer skill is needed. Whether the
+# plan fits the task beyond its shape is read by hand from the answers. A second arm on a subscription model
+# needs a coding_cli instance with a git workdir of its own; add one in the installation's config to compare.
+#
+# Run it with:  agent-eval run src/plugins/stategraph/evals/workflow_authoring/suite.yaml
+name: workflow-authoring
+agent: workflow_planner_eval
+description: "Dynamic workflows: does a planner write valid, fitting stategraph machines from the short skill?"
+repeats: 2
+timeout_s: 900
+parallel: 4
+budget_usd: 2
+data: fresh
+config:
+  plugins:
+    servers:
+      # the runs' user may validate machines (stategraph's tools are admin work)
+      stategraph:
+        allowed_users: [cli_user]
+      workflow_planner_eval:
+        type: basic_agent
+        enabled: true
+        description: "Eval only: plans a task as a stategraph workflow and answers with its YAML"
+        agent_config:
+          llm_profile: [or-deepseek-flash]
+          llm_profile_advanced: []
+          max_steps: 20
+          system_prompt: >-
+            You plan tasks as dynamic workflows: stategraph machines that the engine runs for you. Follow the
+            skill stategraph-workflows. Check the agents with stategraph_catalog, validate your machine with
+            stategraph_validate_machine until it has no error, and answer with the final machine in one
+            ```yaml block and nothing else. Do not run it.
+          skills: {always: ["stategraph-workflows"], on_demand: []}
+          tools:
+            allowed:
+              - "stategraph/stategraph_catalog"
+              - "stategraph/stategraph_validate_machine"
+        metadata:
+          visibility: private
+arms:
+  flash: {}
+tasks:
+  - id: diff-review
+    kind: learn
+    input: >-
+      Plan a workflow that reviews a code diff. The diff comes in as the param `diff` (a string), the review
+      directions as the param `lenses` (a list of strings, e.g. correctness, security, error handling). Each
+      direction is reviewed on its own, and every finding is checked by three skeptics who try to refute it;
+      a finding counts when at least two do not refute it. The output is the confirmed findings with file,
+      line and claim. Use only the agents coder_explorer and coder_reviewer.
+    check: {python: "plugins.stategraph.evals.workflow_authoring.checks:score"}
+  - id: module-fixes
+    kind: learn
+    input: >-
+      Plan a workflow that fixes failing tests in several modules of a repository. The modules come in as
+      the param `modules` (a list of paths). For each module, independently of the others: an explorer finds
+      why its tests fail, the coder fixes it, the tester runs that module's tests, and a reviewer checks the
+      fix. A module that fails must not stop the others. The output lists per module whether it was fixed,
+      and the modules that failed. Use only the agents coder, coder_explorer, coder_tester and
+      coder_reviewer.
+    check: {python: "plugins.stategraph.evals.workflow_authoring.checks:score"}
+  - id: cleanup-audit
+    kind: learn
+    input: >-
+      Plan a workflow that audits a Python package for dead code. The package path comes in as the param
+      `package`. An explorer searches in rounds; each round is told what was found before and looks for
+      more, until a round finds nothing new, at most five rounds. Then every candidate is checked by a
+      reviewer in parallel. The output is the confirmed dead code. Use only the agents coder_explorer and
+      coder_reviewer.
+    check: {python: "plugins.stategraph.evals.workflow_authoring.checks:score"}
+  - id: menu-variants
+    kind: learn
+    input: >-
+      Plan a workflow for a Godot game: build three variants of the main menu scene, each from a different
+      angle (the param `angles`, a list of strings), have each variant checked headless by the tester, then
+      have three judges score the variants that passed and pick the best. The output names the winner and
+      the scores. Use only the agents gamedev, gamedev_tester and godot_agent.
+    check: {python: "plugins.stategraph.evals.workflow_authoring.checks:score"}
+  - id: asset-pipeline
+    kind: learn
+    input: >-
+      Plan a workflow for game assets. The assets come in as the param `assets` (a list of names with a short
+      description each). For every asset, independently: model it in Blender and export it as glTF, import it
+      into the Godot project, and let the tester check that the scene with it loads. One asset that fails
+      must not stop the others. The output lists the assets that made it and the ones that failed, with the
+      reason. Use only the agents blender_agent, godot_agent and gamedev_tester.
+    check: {python: "plugins.stategraph.evals.workflow_authoring.checks:score"}

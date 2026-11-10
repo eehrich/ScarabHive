@@ -39,6 +39,15 @@ plugins:
       #     "my_store_*": {api_key: "${MY_STORE_KEY}"}
       inject_params: {}
       default_max_wait: 600                # seconds run_machine waits with wait: finish
+      # Dynamic workflows (tool run_workflow, skill stategraph-workflows): machines an agent writes for
+      # its task and starts unsaved. Off without this block -- the caps are the operator's to choose,
+      # there are no built-in ones. Set it in config (e.g. config/plugins.yaml, a stategraph entry):
+      #   workflows:
+      #     default_max_cost: 2.0        # USD per run when the call names none
+      #     max_cost_ceiling: 20.0       # USD; a call or machine asking for more is refused
+      #     default_concurrency: 4       # agent activities of one run at once, when it sets none
+      #     max_concurrency: 6           # the most a workflow may set itself (optional; else the default)
+      #     max_concurrent_agents: 8     # agent activities of every workflow run of a process at once
 
     # The default runner: host of the runs of every machine whose folder no
     # runner claims (runs_machines_in), and the boundary for their tool

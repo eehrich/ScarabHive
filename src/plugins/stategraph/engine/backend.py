@@ -162,7 +162,13 @@ def inject(tool: str, args: dict[str, Any], inject_params: dict[str, dict[str, A
 class ScarabHiveBackend:
     def __init__(self, *, runner: Any, system_config: Any, session_id: str, user_id: Optional[str],
                  token: Any = None, inject_params: Optional[dict[str, dict[str, Any]]] = None,
-                 config_check: Optional[Any] = None, nesting: Optional[dict[str, Any]] = None):
+                 config_check: Optional[Any] = None, nesting: Optional[dict[str, Any]] = None,
+                 workflow: Optional[dict[str, Any]] = None,
+                 ended: Optional[Callable[[str], Any]] = None):
+        """``workflow``: a dynamic workflow's terms (its row's column): its agents take one of the process's
+        ``max_concurrent_agents`` places (agent_place, which the engine waits for before an activity starts).
+        ``ended(status)``: called once the run ended, after its session got the answer -- the service wakes the
+        workflow's caller there."""
         self.runner = runner
         self.system_config = system_config
         self.session_id = session_id
@@ -172,6 +178,8 @@ class ScarabHiveBackend:
         self.inject_params = dict(inject_params or {})
         self.config_check = config_check  # the validator's SG007 check, applied again at run time
         self._busy: set[str] = set()  # instances with a run in flight: one conversation, one run at a time
+        self.workflow = dict(workflow or {})
+        self.ended = ended
 
     # ------------------------------------------------------------ agents
     def _agent(self, name: str) -> Any:
@@ -235,6 +243,13 @@ class ScarabHiveBackend:
         except Exception as exc:  # a value the model's schema refuses
             raise ActivityError("config", f"{agent.name}: no LLM for profile {profile!r} with {params or {}}: "
                                           f"{exc}") from exc
+
+    def agent_place(self) -> Optional[asyncio.Semaphore]:
+        """The process-wide places a dynamic workflow's agent activity waits for (workflows.agent_places); None for
+        every other run. The engine takes it before the activity counts as started: the wait is no attempt's time."""
+        from plugins.stategraph.workflows import agent_places
+
+        return agent_places(self.workflow.get("max_concurrent_agents"))
 
     async def _run_agent(self, act: "ActivityRun", agent: Any, service: Any, *, instance_id: str, message: str,
                          advanced: bool, variables: dict[str, Any], new: bool,
@@ -455,6 +470,13 @@ class ScarabHiveBackend:
             shown = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, indent=2)
             lines.append(f"\nOutput:\n\n```json\n{shown}\n```" if not isinstance(output, str) else f"\n{shown}")
         await self._append("\n".join(lines), "end")
+        if self.ended is not None:
+            try:
+                result = self.ended(status)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # the run has ended and is recorded: telling its caller must not change that
+                logger.warning("stategraph: the end of run %s was not handed on", self.session_id, exc_info=True)
 
     async def _show_call(self, act: "ActivityRun", agent: str, instance_id: str, task: str, request_id: str,
                          new: bool) -> None:
@@ -715,8 +737,12 @@ def _unprotect(act: "ActivityRun", request_id: str) -> None:
 
 def make_config_check(system_config: Any, *, runner: str, own_instance: str,
                       is_agent: Optional[Callable[[str], Optional[bool]]] = None, default_runner: Optional[str] = None,
-                      semaphores: Optional[Callable[[], dict[str, Any]]] = None):
+                      semaphores: Optional[Callable[[], dict[str, Any]]] = None, caller: Optional[str] = None):
     """SG007: can the configuration run what a machine names? Same matchers as the runtime.
+
+    ``caller``: the agent that wrote a dynamic workflow (service.start_workflow). Its machine may then name only the
+    agents that agent could start through a SAM of its own, and call only the tools it may call itself -- a
+    workflow never reaches further than its author. Without it (every other machine) nothing changes.
 
     ``runner`` is the runner of a machine whose folder no runner claims (runners.py): a tool question that carries
     the run's root file (``extra["root"]``, as the validator asks it) is checked against the root's runner, one
@@ -809,6 +835,35 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             return f"{tool!r} is not in {name}'s tool allowlist"
         return None
 
+    def caller_cannot_start(name: str) -> Optional[str]:
+        """Why the workflow's author could not start agent ``name`` itself (None: it could, or no author)."""
+        if caller is None:
+            return None
+        from agent_system.auth.agent_access import agent_allowed
+
+        author = server(caller)
+        if author is None:
+            return f"the workflow's author {caller!r} is not configured or not enabled"
+        for sam in sams:
+            config = server(sam)
+            if (config is not None and may_call(author, f"{sam}_manage_sub_agent", sam)
+                    and agent_allowed(name, list(getattr(config, "allowed_agents", None) or ["*"]),
+                                      list(getattr(config, "blocked_agents", None) or []))):
+                return None
+        return (f"agent {name!r}: {caller} could not start it through a sub-agent manager of its own, so its "
+                "workflow may not either")
+
+    def caller_cannot_call(tool: str, prefix: str) -> Optional[str]:
+        """Why the workflow's author may not call ``tool`` itself (None: it may, or no author)."""
+        if caller is None:
+            return None
+        author = server(caller)
+        if author is None:
+            return f"the workflow's author {caller!r} is not configured or not enabled"
+        if may_call(author, tool, prefix):
+            return None
+        return f"tool {tool!r} is not in {caller}'s own tool allowlist, so its workflow may not call it"
+
     def check(what: str, name: str, extra: dict[str, Any]) -> Optional[str]:
         if what == "vars_from":
             return None if server(name) is not None else f"agent {name!r} is not configured or not enabled"
@@ -818,7 +873,7 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
                 return f"agent {name!r} is not configured or not enabled"
             if is_agent is not None and is_agent(name) is False:
                 return f"{name!r} is not an agent"
-            return reaching().get(name)
+            return reaching().get(name) or caller_cannot_start(name)
         if what == "tool":
             owner, prefix = resolve_longest_prefix(lambda p: p if p in servers else None, name)
             if owner is None:
@@ -833,7 +888,7 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
                 return f"tool {name!r}: {claimed_twice}"
             refused = runner_refuses(name, prefix, host)
             if refused is None:
-                return None
+                return caller_cannot_call(name, prefix)
             return refused if server(host) is None else f"tool {refused} (the runner is the boundary)"
         if what == "offer":  # an agent: block's name: free -- or this machine's own offer, declared at the start
             held = servers.get(name)  # the offer is the machine's, whichever instance (sharing its folder) made it

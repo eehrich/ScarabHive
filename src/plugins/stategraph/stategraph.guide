@@ -30,6 +30,7 @@ For agents and developers
   @{"  Tools: running machines  " link tools_runs}
   @{"  Tools: debugging a run  " link tools_debug}
   @{"  The authoring agent  " link author}
+  @{"  Dynamic workflows  " link workflows}
   @{"  Schedules  " link schedules}
   @{"  Callback URLs  " link callbacks}
   @{"  Running a machine from Python  " link python}
@@ -1002,6 +1003,90 @@ SAM when that SAM lists @{tt}stategraph_author@{utt} in
 @{tt}allowed_agents@{utt}. Its saves go through the same checks as
 anyone's: with auth on, the user it works for must be an admin or in
 @{tt}allowed_users@{utt}.
+@endnode
+
+@node workflows "Dynamic workflows"
+@{h1}Dynamic workflows
+
+A dynamic workflow is a machine an agent writes for the task in front of
+it and starts at once, without saving it: @{tt}stategraph_run_workflow@{utt}.
+It fans the work out to other agents and checks it; the engine drives
+every step, and the agent reads only the output. The skill
+@{tt}stategraph-workflows@{utt} teaches the subset of the format it needs
+and the patterns (pipeline, fan-out, adversarial verify, loop until
+nothing new).
+
+@{h2}Switching it on
+
+Off until the instance has a @{tt}workflows:@{utt} block -- the caps are
+the operator's to choose, there are no built-in ones:
+
+@{code}
+stategraph:
+  type: stategraph
+  workflows:
+    default_max_cost: 2.0       # USD per run when the call names none
+    max_cost_ceiling: 20.0      # USD; a call or machine asking for more is refused
+    default_concurrency: 4      # agent activities of one run at once, when it sets none
+    max_concurrency: 6          # the most a workflow may set itself (optional; else the default)
+    max_concurrent_agents: 8    # of every workflow run of a process at once (optional)
+@{body}
+
+An agent that should write workflows allows
+@{tt}stategraph/stategraph_run_workflow@{utt} (and the catalog and the
+validator), loads the skill, and switches the two delivery hooks on --
+they are off by default, because every hook costs each LLM call a copy of
+the history:
+
+@{code}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      stategraph.deliver_workflow_results: {enabled: true}
+      stategraph.confirm_workflow_results: {enabled: true}
+@{body}
+
+Without it the agent is still woken, and the tool's answer tells it to
+read the result with @{tt}stategraph_get_run@{utt}. Like every tool that runs machines it is
+admin work: the user it works for must be an admin or in
+@{tt}allowed_users@{utt}.
+
+@{h2}What bounds a workflow
+
+@{bullet}@{b}Its author's reach.@{ub} It may name only agents its author
+could start through a sub-agent manager of its own, and call only tools
+its author may call -- checked when it is validated and again before every
+activity. @{tt}stategraph_catalog(for_workflow=true)@{utt} lists exactly
+those.
+@{bullet}@{b}One self-contained text.@{ub} No @{tt}imports@{utt}, no
+@{tt}python:@{utt}; submachines go under @{tt}machines:@{utt}. Its id may
+not name a saved machine. It runs with the instance's runner.
+@{bullet}@{b}Its caps, written in.@{ub} The smaller of the call's
+@{tt}max_cost@{utt} and the machine's own, else the default -- refused
+above the ceiling -- and a @{tt}concurrency@{utt}, are written into its
+text before it runs: they are in the run's snapshot, the panel shows them,
+a replay reads them. The cap is checked before an activity starts -- and
+again once it holds its turn -- so a run goes past it by at most what its
+agents running at once still spend.
+
+@{h2}Its end
+
+With @{tt}wake_when_done@{utt} (the default) the caller may end its turn:
+its session is woken when the run succeeds or fails (not when it is
+cancelled), and the hook @{tt}deliver_workflow_results@{utt} appends the
+outcome -- status, cost, output -- to its next LLM call, once: it counts
+as delivered when a call was made with it in the history (the hook
+@{tt}confirm_workflow_results@{utt} after the call, or the next call), and
+a turn lost before that comes again. A run resumed after it ended wakes
+its caller again at its next end. The tool's
+answer says whether the wake works there (a sub-agent's own session, a
+throwaway one, waking switched off: then it polls with
+@{tt}stategraph_get_run@{utt}). A @{tt}get_run@{utt} of the ended run
+counts as reading it.
+
+Runs of saved machines -- every other run -- meet none of this: no
+author bound, no caps written in, no wake, no hand-over.
 @endnode
 
 @node schedules "Schedules"

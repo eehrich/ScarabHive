@@ -23,9 +23,10 @@ from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import kinds as _kinds  # noqa: F401  -- registers the built-in activity kinds
-from .engine.journal import RunStore, resumable_failure
+from .engine.journal import TERMINAL_STATUSES, RunStore, resumable_failure
 from .engine.runner import RunManager, row_event_due as _event_due
 from .hooks import StateGraphHooks
+from .workflows import WaitingResults
 from .schedules import Scheduler, _drives, parse_schedules, resume_lease
 from .service import ServiceError, StateGraphService
 from .model.spec import NAME_PATTERN
@@ -45,6 +46,9 @@ ROW_CHARS = 2000
 OUTPUT_CHARS = 20000
 ANSWER_CHARS = 200000  # a whole tool answer: many short texts add up too
 FILE_CHARS = 30000  # get_machine: a file of the tree larger than this is left out unless asked for by name
+#: The hook that hands a workflow's result to its caller (schema.yaml).
+#: The two hooks that hand a dynamic workflow's result to its caller: append it, and mark it delivered.
+DELIVERY_HOOKS = ("deliver_workflow_results", "confirm_workflow_results")
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run", "list_runs"})
 #: The parameters control_run takes (schema.yaml); the framework's own start with "_".
 CONTROL_PARAMS = frozenset({"run_id", "action", "steps", "mocks", "state", "machine", "at_step", "definition",
@@ -137,7 +141,10 @@ class StateGraphServer(SchemaBasedToolServer):
         self.run_manager.callback_base = f"{base}/plugins/{name}/callback"
         self._set_semaphores(server_config)  # the acquire kind's semaphores (FEAT-2)
         self.service = StateGraphService(self)
-        self.hooks_plugin = StateGraphHooks(name)  # the cost of the LLM calls inside call activities
+        # dynamic workflows (workflows.py): the ended runs whose caller has not read them yet
+        self.workflow_results = WaitingResults(self.run_store)
+        # the cost of the LLM calls inside call activities; and a workflow's result into its caller's next call
+        self.hooks_plugin = StateGraphHooks(name, self)
         # a run's wait put to the person who watches the request that waits for it (wait_questions.py)
         self.wait_questions = WaitBroker(
             lambda run_id, name, data, frame, user_id: self.service.send_event(run_id, name, data, frame,
@@ -354,6 +361,13 @@ class StateGraphServer(SchemaBasedToolServer):
             machine = str(params.get("machine_id") or "") or None
             found = self._catalog(str(params.get("agents") or "*"), machine)
             found["tools"] = await self._runner_tools(str(params.get("tools") or "*"), machine)
+            caller = params.get("_agent_name") or getattr(params.get("_agent"), "name", None)
+            if params.get("for_workflow") and caller:
+                # a workflow reaches no further than its author: the agents it could start, the tools it may call
+                check = self.service.config_check(caller=caller)
+                if check is not None:
+                    found["agents"] = [a for a in found["agents"] if check("agent", a["name"], {}) is None]
+                    found["tools"] = [t for t in found["tools"] if check("tool", t["name"], {}) is None]
             return found
         return await self._run_tool(params, "catalog", body,
                                     lambda r: f"catalog: {len(r['kinds'])} kinds, {len(r['agents'])} agents, "
@@ -522,6 +536,50 @@ class StateGraphServer(SchemaBasedToolServer):
         return await self._run_tool(params, "run_machine", body,
                                     lambda r: f"run {r['run_id']}: {r.get('run_status')} in {r.get('state') or '-'}")
 
+    def _read_by_caller(self, run_id: str, session_id: str) -> None:
+        if (self.run_store.workflow_of(run_id) or {}).get("session") == session_id:
+            self.workflow_results.read(run_id, session_id)
+
+    def delivers_results(self, agent: Any) -> bool:
+        """Whether ``agent`` runs both delivery hooks: switched on in its hooks.overrides (they are off by default)."""
+        hooks = getattr(getattr(agent, "agent_config", None), "hooks", None)
+        if hooks is None or getattr(hooks, "enabled", True) is False:
+            return False
+        overrides = getattr(hooks, "overrides", None) or {}
+
+        def on(hook: str) -> bool:
+            found = next((overrides[key] for key in (f"stategraph.{hook}", f"{self.name}.{hook}") if key in overrides),
+                         None)
+            return isinstance(found, dict) and found.get("enabled") is True
+        return all(on(hook) for hook in DELIVERY_HOOKS)
+
+    async def run_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        async def body() -> dict[str, Any]:
+            agent = params.get("_agent")
+            max_cost = params.get("max_cost")
+            started = await self.service.start_workflow(
+                params.get("yaml"), params=_object(params, "params"),
+                max_cost=float(max_cost) if isinstance(max_cost, (int, float)) and not isinstance(max_cost, bool)
+                else max_cost,
+                wake=params.get("wake_when_done") is not False, user_id=params.get("_user_id"),
+                caller=params.get("_agent_name") or getattr(agent, "name", None),
+                caller_session=params.get("_session_id"), caller_request=params.get("_request_id"))
+            woken = started["wake"] == "armed"
+            read = f"get_run(run_id={started['run_id']!r})"
+            if woken and self.delivers_results(agent):
+                started["next"] = ("You may end your turn: you are woken when it ends, and its result comes with "
+                                   "your next turn.")
+            elif woken:
+                started["next"] = (f"You may end your turn: you are woken when it ends -- then read the result with "
+                                   f"{read}; it does not come by itself here.")
+            else:
+                started["next"] = (f"You will NOT be woken ({started['wake'].removeprefix('not armed: ')}): read it "
+                                   f"with {read[:-1]}, wait='finish').")
+            return started
+        return await self._run_tool(params, "run_workflow", body,
+                                    lambda r: f"workflow {r['machine_id']} started: run {r['run_id']}, "
+                                              f"max {r['max_cost']:g} USD, wake {r['wake'][:40]}")
+
     async def _wait(self, run_id: str, max_wait: float, token: Any, *, terminate: bool = True) -> dict[str, Any]:
         """Wait for a run to leave running. A cancelled caller stops waiting; one that started the run (terminate)
         takes the run with it -- a reader (get_run) does not: it may not control a run it only sees."""
@@ -562,6 +620,10 @@ class StateGraphServer(SchemaBasedToolServer):
             if wait == "finish" and (row["status"] == "running" or _timed(row) or _event_due(row)):  # polled elsewhere
                 await self._wait(row["id"], max_wait, params.get("_cancellation_token"), terminate=False)
                 row = await asyncio.to_thread(read)
+            if row.get("status") in TERMINAL_STATUSES and params.get("_session_id"):
+                # its caller read it: the delivery hook need not hand it over again -- anybody else's read leaves
+                # it waiting for the caller
+                await asyncio.to_thread(self._read_by_caller, row["id"], params["_session_id"])
             if not self._holds_tokens(params.get("_user_id"), row.get("user_id")):
                 # on the whole values, before any text is cut: a token cut in two would leave its first part
                 row = _hidden(row, self._callback_tokens(row["id"]))

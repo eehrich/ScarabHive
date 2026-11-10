@@ -398,12 +398,35 @@ class ActivityRun:
             # limits.concurrency: a leaf waits for its turn before it counts as started -- one that waited when the
             # run stopped was not in flight. sg.tool() of a call that holds a turn takes none: it would wait for it
             gate = self.run.gate if leaf and not self.literal and not mocked and not kind.waits else None
+            # the backend's own place for an agent (a dynamic workflow's process-wide bound); None for every other run
+            offer = getattr(self.run.backend, "agent_place", None)
+            runs_agent = kind.key == "agent" or (kind.key == "decide" and bool(getattr(spec, "by", None)))
+            place = offer() if offer is not None and runs_agent and leaf and not mocked else None
             if gate is not None:
                 await gate.acquire()
+            if place is not None:
+                try:
+                    await place.acquire()
+                except BaseException:
+                    if gate is not None:
+                        gate.release()
+                    raise
+            if budgeted:
+                # limits.max_cost again, now it holds its turn: the items of a wide map all passed the check above at
+                # a cost of 0, then waited here while the first ones spent
+                failure = self._over_budget()
+                if failure is not None:
+                    if place is not None:
+                        place.release()
+                    if gate is not None:
+                        gate.release()
+                    break
             if not mocked:  # a mock's answer is at hand: nothing is in flight that a crash could cut
                 try:
                     self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._carried()})
                 except BaseException:  # the row did not land (a locked database): the turn is given back all the same
+                    if place is not None:
+                        place.release()
                     if gate is not None:
                         gate.release()
                     raise
@@ -442,6 +465,8 @@ class ActivityRun:
                 if counted:
                     self.run.busy -= 1
                     self.run.refresh_status()
+                if place is not None:
+                    place.release()
                 if gate is not None:
                     gate.release()
             if self.run.divergence is not None:  # a replay below it diverged and something caught that (a call's
