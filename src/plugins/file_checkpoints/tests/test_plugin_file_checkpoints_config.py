@@ -68,7 +68,7 @@ def test_nothing_is_deleted_by_age_as_shipped(plugin):
     assert built.retention_days == 0
 
 
-async def test_the_hooks_record_for_the_coder_harness_and_nobody_else(config, plugin):
+async def test_the_hooks_record_for_the_coder_harness_and_the_feature_demo_only(config, plugin):
     instance, built = plugin
     registry = HookRegistry()
     names = await register_plugin_hooks("file_checkpoints", built, built.get_schema_data(), registry,
@@ -93,6 +93,8 @@ async def test_the_hooks_record_for_the_coder_harness_and_nobody_else(config, pl
             half.append(agent_name)
     assert half == [], f"one hook without the other records nothing: {half}"
     # gamedev and its tester are the coder harness too (type: coder / coder_tester); the
-    # read-only explorer and reviewer record nothing, but are not named as spawns that don't.
+    # read-only explorer and reviewer record nothing, but are not named as spawns that don't. The feature
+    # tour shows checkpoints and rewind.
     assert sorted(set(recording) - _further_roots_agents()) == [
-        "coder", "coder_explorer", "coder_reviewer", "coder_tester", "gamedev", "gamedev_tester"]
+        "coder", "coder_explorer", "coder_reviewer", "coder_tester", "feature_demo_agent", "gamedev",
+        "gamedev_tester"]

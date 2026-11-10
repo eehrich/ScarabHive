@@ -46,7 +46,7 @@ def test_the_instance_config_is_one_the_hook_can_read(instance):
     assert settings.mode in ("ask", "auto", "off")
 
 
-async def test_no_agent_runs_the_hook_as_shipped(config, instance):
+async def test_only_the_feature_demo_runs_the_hook(config, instance):
     plugin = PLUGIN_FACTORY("tool_approval", None, instance)
     registry = HookRegistry()
     names = await register_plugin_hooks("tool_approval", plugin, plugin.get_schema_data(), registry,
@@ -64,4 +64,5 @@ async def test_no_agent_runs_the_hook_as_shipped(config, instance):
         override = (hooks.overrides or {}).get(HOOK, {})
         if hooks.enabled and override.get("enabled", metadata["enabled"]):
             switched_on.append(agent_name)
-    assert switched_on == []
+    # the feature tour shows approvals, so it switches the hook on; nobody else does
+    assert switched_on == ["feature_demo_agent"]
