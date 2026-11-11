@@ -287,11 +287,16 @@ environment. agy expands no placeholder, so its token stands in the
 workspace's @{tt}.agents/mcp_config.json@{utt}, written after the check that
 refuses such a file and removed before the run's commit; an allow rule
 @{tt}mcp(gateway/*)@{utt} in its settings lets it call the tools headless.
-agy shows a server's tools to its model only through its own
-@{tt}call_mcp_tool@{utt}, under no name of their own, so an agy run with a
-grant gets a fixed note in front of its task: the workdir's tools, how to
-reach them, that its own file tools are refused outside its working
-directory, and that it has no shell. Without it a run that was to edit a
+agy loads a server's tools lazily by default: its model sees their names,
+not their parameters, and guessed them. The file therefore registers the
+grant's tools eager, by the names the gateway lists for the run's bindings
+(patterns leave them lazy), and the model calls each as
+@{tt}mcp_gateway_<tool>@{utt} with its parameters declared. Where the
+gateway names none, the tools stay lazy, reached through agy's
+@{tt}call_mcp_tool@{utt}. An agy run with a grant gets a fixed note in
+front of its task: the workdir's tools, how to reach them, that its own
+file tools are refused outside its working directory, and that it has no
+shell. Without it a run that was to edit a
 file outside took its own tools, was refused and ended without an answer.
 An agy run without a grant gets the shell sentence alone: a headless run's
 command is refused, and a run that tried one ended without an answer.

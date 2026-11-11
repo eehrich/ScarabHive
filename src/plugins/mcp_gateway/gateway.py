@@ -49,22 +49,32 @@ class Gateway:
         of every tool the grant may call: the runner's own list (allowlist, blocklist, every tool interface),
         narrowed to the grant's patterns. A tool its bindings cannot hold -- one without a bound parameter, or held
         to two values -- is left out (components/tool_bindings.py)."""
+        return await self._visible(grant.tools, grant.pinned, runner)
+
+    async def tool_names(self, tools: tuple[str, ...], pinned: dict[str, dict[str, Any]]) -> list[str]:
+        """The names a grant of these patterns and bindings will list, before it is issued: a CLI that registers
+        them up front by name (agy's eager tools) is told the same ones tools/list gives it. None without a runner."""
+        runner = self.runner()
+        return sorted(await self._visible(tuple(tools), pinned or {}, runner)) if runner is not None else []
+
+    async def _visible(self, tools: tuple[str, ...], pinned: dict[str, dict[str, Any]],
+                       runner: Any) -> dict[str, tuple[str, dict[str, Any], dict[str, Any]]]:
         from agent_system.servers.agent.components.tool_bindings import hold, values_for
 
         found: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = {}
         for entry in await runner.build_llm_tool_schemas():
             function = (entry.get("function") or {}) if isinstance(entry, dict) else {}
             name = function.get("name")
-            if not isinstance(name, str) or not any(fnmatch.fnmatchcase(name, p) for p in grant.tools):
+            if not isinstance(name, str) or not any(fnmatch.fnmatchcase(name, p) for p in tools):
                 continue
             server, server_name = runner._resolve_flat_tool_name(name)
             if server is None:
                 continue  # an external MCP tool: programmatic dispatch cannot run it
             parameters = function.get("parameters") or {"type": "object", "properties": {}}
-            if hold(grant.pinned, name, server_name, {}, set(parameters.get("properties") or {}))[1]:
+            if hold(pinned, name, server_name, {}, set(parameters.get("properties") or {}))[1]:
                 continue
             found[name] = (str(function.get("description") or ""), parameters,
-                           values_for(grant.pinned, name, server_name)[0])
+                           values_for(pinned, name, server_name)[0])
         return found
 
     async def list_tools(self, grant: Grant) -> types.ListToolsResult:

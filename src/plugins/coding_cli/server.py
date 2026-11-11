@@ -38,7 +38,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from agent_system.utils.proctree import run_bounded
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
@@ -1012,12 +1012,22 @@ class CodingCliServer(SchemaBasedToolServer):
         if problem:
             return await self._fail(status, f"resume: {problem}, which run {prior['run_id']} did not -- start a new "
                                             "run" if prior else problem)
+        eager: list[str] = []
+        if self.agy and gateway and mode != "plan":
+            # The grant's tools by name, for agy to register up front (cli.agy_gateway): the names its tools/list
+            # will give, under this run's bindings. None found leaves them lazy, as before.
+            from plugins.mcp_gateway import grants
+            try:
+                eager = await grants.tool_names(gateway["instance"], gateway["tools"], pin)
+            except Exception:  # noqa: BLE001 - the run goes on with lazy tools; the gateway says itself what is wrong
+                logger.warning("coding_cli %s: the gateway's tool names were not found, its tools stay lazy",
+                               self.name, exc_info=True)
         if self.agy:
             from agent_system.llm.token_utils import estimate_content_tokens
 
             # As agy reads it: the note before the task included (_start).
-            tokens = estimate_content_tokens(cli.agy_note(gateway["tools"] if gateway and mode != "plan" else None)
-                                             + task)
+            tokens = estimate_content_tokens(cli.agy_note(gateway["tools"] if gateway and mode != "plan" else None,
+                                                          eager) + task)
             if tokens > self.max_task_tokens:
                 return await self._fail(status, f"task: about {tokens} tokens, agy takes at most "
                                                 f"{self.max_task_tokens} whole (it cuts the middle out of a longer "
@@ -1075,7 +1085,7 @@ class CodingCliServer(SchemaBasedToolServer):
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
                 self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
                 utilization, pin or None, str(params.get("_request_id") or run_id), gateway_url,
-                _session_vars(params.get("_agent"), session_id) if gateway_url else None))
+                _session_vars(params.get("_agent"), session_id) if gateway_url else None, eager))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -1304,7 +1314,7 @@ class CodingCliServer(SchemaBasedToolServer):
                  user_id: str, session_id: str, schema: Optional[dict] = None,
                  asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
                  pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
-                 session_vars: Optional[dict] = None) -> dict:
+                 session_vars: Optional[dict] = None, eager: Sequence[str] = ()) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = self.workdirs[workdir]
@@ -1328,7 +1338,8 @@ class CodingCliServer(SchemaBasedToolServer):
             if not prior and not room:
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
-                               asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url, session_vars)
+                               asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url, session_vars,
+                               eager)
         except BaseException:
             issued = run_id in _GRANTS
             _revoke(run_id)
@@ -1347,7 +1358,7 @@ class CodingCliServer(SchemaBasedToolServer):
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
                asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
                pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
-               session_vars: Optional[dict] = None) -> dict:
+               session_vars: Optional[dict] = None, eager: Sequence[str] = ()) -> dict:
         resume = prior["claude_session"] if prior else ""
         # Where the run started, not what the workdir says now: a resume goes on in the room, file tools or not.
         room = _in_room(self.workdirs[workdir], prior)
@@ -1409,7 +1420,7 @@ class CodingCliServer(SchemaBasedToolServer):
         rules = worktree / "CLAUDE.md"
         if self.agy:
             if token:
-                cli.agy_gateway(worktree, url, token)
+                cli.agy_gateway(worktree, url, token, eager)
             cmd = cli.build_agy_command(self.command, mode=mode, model=self.model, effort=self.effort,
                                         resume=resume, json_schema=schema)
         else:
@@ -1435,8 +1446,10 @@ class CodingCliServer(SchemaBasedToolServer):
                   "max_result_chars": self.max_result_chars,
                   "owner": self._me}
         if self.agy:
-            # Before the task, the same for every run in the workdir: the cached prefix stays one.
-            note = cli.agy_note(gateway["tools"] if token else None)
+            # Before the task, the same for every run in the workdir with the same tools: the cached prefix stays
+            # one. A pin that leaves a tool out (eager names the grant's tools under the run's bindings) changes it,
+            # as it changes the tool declarations ahead of it.
+            note = cli.agy_note(gateway["tools"] if token else None, eager if token else ())
             self._file(run_id, "task").write_text(cli.agy_input(note + task), encoding="utf-8")
         elif room:
             self._file(run_id, "task").write_text(cli.claude_input(self._task_blocks(workdir, task, prior is None)),

@@ -256,10 +256,16 @@ def agy_unsafe(worktree: Path) -> list[str]:
                   for item in root.iterdir() if item.name.lower() in AGY_UNSAFE)
 
 
-def agy_gateway(worktree: Path, url: str, token: Optional[str]) -> None:
+def agy_gateway(worktree: Path, url: str, token: Optional[str], eager: Sequence[str] = ()) -> None:
     """Writes (token) or removes (None) the MCP file through which an agy run reaches its gateway grant. The token
     stands in it as it is: agy expands no ${VAR} in a header (measured 1.4.8). Written after agy_unsafe looked,
-    removed before the run's commit."""
+    removed before the run's commit.
+
+    *eager*: the grant's tool names, registered up front. agy loads MCP tools lazily by default: the model gets their
+    names and is to read each schema from a file first, which it does not -- it guessed the parameters and learned
+    them from the refusals, about one call in ten on a server. Eager, they are declarations with their parameters
+    (measured 1.4.x, 2026-11-11). Only exact names: a pattern (``file_ops_*``) leaves the tools lazy, a name the server
+    does not list is passed over without a word."""
     path = worktree / AGY_ROOTS[0] / "mcp_config.json"
     if token is None:
         path.unlink(missing_ok=True)
@@ -267,24 +273,31 @@ def agy_gateway(worktree: Path, url: str, token: Optional[str]) -> None:
             path.parent.rmdir()         # only when nothing else is in it
         return
     path.parent.mkdir(exist_ok=True)
-    path.write_text(json.dumps({"mcpServers": {GATEWAY_SERVER: {
-        "serverUrl": url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
+    server: dict[str, Any] = {"serverUrl": url, "headers": {"Authorization": f"Bearer {token}"}}
+    if eager:
+        server["tools"] = {name: {"eager": True} for name in eager}
+    path.write_text(json.dumps({"mcpServers": {GATEWAY_SERVER: server}}), encoding="utf-8")
 
 
-def agy_note(tools: Optional[Iterable[str]] = None) -> str:
+def agy_note(tools: Optional[Iterable[str]] = None, eager: Sequence[str] = ()) -> str:
     """What every agy run reads before its task. A headless run has no shell: a command it runs (to list a folder,
     `git status`) is refused and the run ends without an answer -- measured with and without a gateway (1 of 30
     runs with one; 3 of 8 of a tool-less answering agent without, 2026-10-29).
 
-    *tools*: those of the run's gateway grant. agy offers MCP tools only through its call_mcp_tool, under no name
-    of their own; a task that names them is read as naming agy's own file tools, and those a headless run is refused
-    for a file outside its workspace. A task on a file outside the workspace that named no tool: with the note every
-    run took the gateway, without it every run its own tools (measured 1.4.9, 2026-10-29). Inside the working
-    directory its own tools stay the ones to use."""
+    *tools*: those of the run's gateway grant. A task that names them is read as naming agy's own file tools, and
+    those a headless run is refused for a file outside its workspace. A task on a file outside the workspace that
+    named no tool: with the note every run took the gateway, without it every run its own tools (measured 1.4.9,
+    2026-10-29). Inside the working directory its own tools stay the ones to use.
+
+    *eager*: the grant's tool names as agy_gateway registered them up front: the model calls each as
+    mcp_<server>_<name>, its parameters declared (measured 2026-11-11). Without them agy offers the tools lazily,
+    only through its call_mcp_tool."""
     if not tools:
         return "You have no shell: a command is refused. Work from the task and your file tools.\n\n"
-    return (f"Besides your own tools you have the MCP tools of the server `{GATEWAY_SERVER}`: {', '.join(tools)}. "
-            f"You reach them only through call_mcp_tool (server `{GATEWAY_SERVER}`). For files outside your working "
+    reach = (f"Call each directly as {', '.join(f'mcp_{GATEWAY_SERVER}_{name}' for name in eager)}."
+             if eager else f"You reach them only through call_mcp_tool (server `{GATEWAY_SERVER}`).")
+    return (f"Besides your own tools you have the MCP tools of the server `{GATEWAY_SERVER}`: "
+            f"{', '.join(eager or tools)}. {reach} For files outside your working "
             "directory use them: your own file tools (read_file, write_file, edit_file, ...) are refused there. "
             "You have no shell: a command is refused, so look at folders and files with these tools too.\n\n")
 

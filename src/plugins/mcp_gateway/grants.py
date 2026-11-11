@@ -28,6 +28,7 @@ _serving: set[str] = set()
 _addresses: dict[str, str] = {}
 #: Enabled instances that no app serves: the awaitable each starts its own listener with, on the first ask.
 _listeners: dict[str, Callable[[], Awaitable[None]]] = {}
+_namers: dict[str, Callable[[tuple, dict], Awaitable[list[str]]]] = {}
 _grants: dict[str, "Grant"] = {}
 _lock = threading.Lock()
 _MISSING = object()
@@ -207,6 +208,27 @@ def offer(gateway: str, listen: Optional[Callable[[], Awaitable[None]]],
             _listeners[gateway] = listen
         elif _listeners.get(gateway) == withdrawn:
             _listeners.pop(gateway, None)
+
+
+def names_by(gateway: str, lister: Optional[Callable[[tuple, dict], Awaitable[list[str]]]],
+             withdrawn: Optional[Callable[[tuple, dict], Awaitable[list[str]]]] = None) -> None:
+    """``lister`` tells the tool names a grant of ``gateway`` will list (Gateway.tool_names); None withdraws
+    ``withdrawn``, and only that one -- as ``offer``."""
+    with _lock:
+        if lister is not None:
+            _namers[gateway] = lister
+        elif _namers.get(gateway) == withdrawn:
+            _namers.pop(gateway, None)
+
+
+async def tool_names(gateway: str, tools: list[str], pinned: Optional[dict[str, Any]] = None) -> list[str]:
+    """The tool names a grant of ``tools`` (patterns) under ``pinned`` will list on ``gateway``; LookupError when no
+    gateway of that name is built in this process."""
+    with _lock:
+        lister = _namers.get(gateway)
+    if lister is None:
+        raise LookupError(f"mcp gateway {gateway!r} is not built in this process (plugin not enabled?)")
+    return await lister(tuple(tools), dict(pinned or {}))
 
 
 async def address(gateway: str = "mcp_gateway") -> str:

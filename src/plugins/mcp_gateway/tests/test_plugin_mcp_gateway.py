@@ -215,6 +215,26 @@ class TestListing:
         assert (await call(app, token, "store_echo", {"project_id": 4}))[0] is False
         assert [(p["project_id"], p["text"]) for _, p in store.received] == [(4, "fixed")]
 
+    @pytest.mark.parametrize("tools, pinned, expected", [
+        (["store_*"], None, ["store_any", "store_batch", "store_echo", "store_global"]),   # store_secret: runner's
+        (["store_*"], {"store_*": {"project_id": 12}}, ["store_batch", "store_echo"]),    # no project_id to hold
+        (["store_echo", "store_global"], None, ["store_echo", "store_global"]),
+    ])
+    async def test_the_names_before_a_grant_are_those_its_listing_gives(self, gateway, tools, pinned, expected):
+        """A CLI registers the tools up front by name (agy's eager tools): they must be the ones tools/list then
+        gives the run, bindings and runner applied."""
+        app, _ = gateway
+        named = await grants.tool_names("mcp_gateway", tools, pinned)
+        async with session_of(app, issue(tools=tools, pinned=pinned)) as session:
+            listed = [tool.name for tool in (await session.list_tools()).tools]
+        assert named == listed == expected
+
+    async def test_a_stopped_gateway_names_no_tools(self, gateway):
+        app, _ = gateway
+        await app.state.plugin.stop_plugin()
+        with pytest.raises(LookupError):
+            await grants.tool_names("mcp_gateway", ["store_*"])
+
     async def test_a_tool_held_to_two_values_is_gone(self, gateway):
         app, _ = gateway
         token = issue(pinned={"store_*": {"project_id": 1}, "store/store_echo": {"project_id": 2}})

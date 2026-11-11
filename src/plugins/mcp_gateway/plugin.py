@@ -54,6 +54,7 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         self._listening = asyncio.Lock()
         self._stopped = False
         grants.offer(name, self._listen)
+        grants.names_by(name, self.gateway.tool_names)
 
     def router_mounted(self) -> None:
         """The app serves this instance's route (PluginWebRegistry.apply_to_app): grants may be issued."""
@@ -196,6 +197,7 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
     async def start_plugin(self) -> None:
         self._stopped = False
         grants.offer(self.name, self._listen)
+        grants.names_by(self.name, self.gateway.tool_names)
         if self._mounted:
             grants.serve(self.name, True, self.api_address)
 
@@ -204,6 +206,7 @@ class McpGatewayPlugin(SchemaBasedPluginWebInterface):
         (the SDK runs one only once)."""
         self._stopped = True
         grants.offer(self.name, None, self._listen)
+        grants.names_by(self.name, None, self.gateway.tool_names)
         # A listener still starting finishes first: served after this stop, its address would outlive it.
         async with self._listening:
             grants.serve(self.name, False)

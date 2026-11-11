@@ -192,6 +192,62 @@ async def test_an_agy_run_finds_its_grant_in_the_workspace_and_commits_none(repo
     assert "a resume keeps run" in refused["error"]
 
 
+@pytest.fixture
+def named(gateway):
+    """The gateway's names for a grant (Gateway.tool_names), as a plugin in this process gives them."""
+    asked = []
+
+    async def names(tools, pinned):
+        asked.append((tools, pinned))
+        return ["probe_edit", "probe_read"]
+
+    grants.names_by("mcp_gateway", names)
+    yield asked
+    grants.names_by("mcp_gateway", None, names)
+
+
+async def test_an_agy_run_gets_its_grants_tools_up_front_by_name(repo, log, named):
+    """agy loads MCP tools lazily: the model saw names without parameters and guessed them. Registered eager, by
+    the names the grant lists under the run's bindings, they come with their parameters."""
+    server = agy_with_gateway(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one", pin=PIN)
+    entry = json.loads(log()["mcp_config"])["mcpServers"][cli.GATEWAY_SERVER]
+    assert entry["tools"] == {"probe_edit": {"eager": True}, "probe_read": {"eager": True}}
+    assert named == [(tuple(GATEWAY["tools"]), PIN)]
+    note = cli.agy_note(GATEWAY["tools"], ["probe_edit", "probe_read"])
+    assert log()["task"] == note + "WRITE b.txt one"
+    assert "mcp_gateway_probe_edit, mcp_gateway_probe_read" in note and "call_mcp_tool" not in note
+    assert first["state"] == "done"
+    assert not (Path(server._load(first["run_id"])["worktree"]) / ".agents").exists()
+    # A resume registers them again, under the bindings it inherits.
+    await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    assert json.loads(log()["mcp_config"])["mcpServers"][cli.GATEWAY_SERVER]["tools"] == entry["tools"]
+    assert named[-1] == (tuple(GATEWAY["tools"]), PIN)
+
+
+async def test_the_bound_counts_the_note_with_the_tools_by_name(repo, log, named):
+    """The size check reads the note agy will read: with the names, not the patterns."""
+    from agent_system.llm.token_utils import estimate_content_tokens
+    from test_plugin_coding_cli_agy import _sized
+
+    server = make_agy(repo, max_task_chars=1_000_000, max_task_tokens=2_000,
+                      workdirs={"repo": {**with_gateway(repo, read_only=True)["repo"], "web": True}})
+    lazy, eager = cli.agy_note(GATEWAY["tools"]), cli.agy_note(GATEWAY["tools"], ["probe_edit", "probe_read"])
+    assert len(eager) > len(lazy), "fixture: the note with names is not the longer one"
+    task = _sized(lazy, 2_000)          # fits behind the note of patterns only
+    refused, _ = await call(server, "run_task", task=task, pin=PIN)
+    assert refused["error"].startswith(f"task: about {estimate_content_tokens(eager + task)} tokens"), refused
+
+
+async def test_an_agy_run_whose_gateway_names_nothing_keeps_the_lazy_tools(repo, log, gateway):
+    """No names (the gateway's runner missing, the lookup failed): the run goes on as before, told to reach the
+    tools through call_mcp_tool."""
+    first, _ = await call(agy_with_gateway(repo), "run_task", task="WRITE b.txt one", pin=PIN)
+    assert first["state"] == "done", first
+    assert "tools" not in json.loads(log()["mcp_config"])["mcpServers"][cli.GATEWAY_SERVER]
+    assert "call_mcp_tool" in log()["task"]
+
+
 async def test_a_refused_resume_leaves_the_workspace_file_it_did_not_write(repo, log, gateway):
     server = agy_with_gateway(repo)
     first, _ = await call(server, "run_task", task="WRITE b.txt one", pin=PIN)
@@ -231,7 +287,7 @@ async def test_an_agy_resume_failing_after_its_grant_leaves_no_file(repo, log, g
 async def test_an_agy_file_that_stays_is_not_committed(repo, log, gateway, monkeypatch):
     server = agy_with_gateway(repo)
     write = cli.agy_gateway
-    monkeypatch.setattr(cli, "agy_gateway", lambda w, u, t: write(w, u, t) if t else None)   # removal fails
+    monkeypatch.setattr(cli, "agy_gateway", lambda w, u, t, *eager: write(w, u, t, *eager) if t else None)  # removal fails
     result, _ = await call(server, "run_task", task="WRITE b.txt one", pin=PIN)
     assert not result.get("commit") and "could not be removed" in json.dumps(result)
     assert git(repo, "rev-parse", result["branch"]) == git(repo, "rev-parse", "HEAD")
