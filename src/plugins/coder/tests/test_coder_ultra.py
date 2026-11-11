@@ -1,8 +1,8 @@
-"""Guards for coder_lead: the coder that hands a change to a dynamic workflow.
+"""Guards for coder_ultra: the coder in ultra mode, which hands its tasks to dynamic workflows.
 
 * it may write and start workflows, and their results come by themselves -- both delivery hooks, or the
   first hands a result in that is never marked delivered
-* the machines its skill ships validate with coder_lead as their author: a workflow may name only what its
+* the machines its skill ships validate with coder_ultra as their author: a workflow may name only what its
   author could reach, and a machine that names more is refused when the model runs it
 * coder and gamedev stay usable in machines: saved machines name `coder` as their builder, and an agent that
   may start workflows may appear in none
@@ -40,19 +40,19 @@ def _machine_check(config, caller=None):
                              default_runner="stategraph_runner", caller=caller)
 
 
-def test_the_lead_may_write_and_start_workflows_and_gets_their_results(config):
+def test_ultra_may_write_and_start_workflows_and_gets_their_results(config):
     from plugins.stategraph.server import StateGraphServer
 
-    lead = _agent_config(config, "coder_lead")
+    ultra = _agent_config(config, "coder_ultra")
     for tool in ("stategraph_catalog", "stategraph_validate_machine", "stategraph_run_workflow",
                  "stategraph_get_run"):
-        assert tool_matches_patterns(tool, "stategraph", lead.tools.allowed), tool
-    assert "coder-workflows" in lead.skills.on_demand and "stategraph-workflows" in lead.skills.on_demand
-    delivers = StateGraphServer.delivers_results(SimpleNamespace(name="stategraph"), SimpleNamespace(agent_config=lead))
-    assert delivers is True, "coder_lead does not switch on both delivery hooks"
+        assert tool_matches_patterns(tool, "stategraph", ultra.tools.allowed), tool
+    assert "coder-workflows" in ultra.skills.on_demand and "stategraph-workflows" in ultra.skills.on_demand
+    delivers = StateGraphServer.delivers_results(SimpleNamespace(name="stategraph"), SimpleNamespace(agent_config=ultra))
+    assert delivers is True, "coder_ultra does not switch on both delivery hooks"
 
 
-def test_the_shipped_workflows_validate_with_the_lead_as_their_author(config):
+def test_the_shipped_workflows_validate_with_ultra_as_their_author(config):
     from plugins.stategraph.model.loader import parse_yaml
     from plugins.stategraph.model.validate import validate_tree
     from plugins.stategraph.store import MachineStore
@@ -60,7 +60,7 @@ def test_the_shipped_workflows_validate_with_the_lead_as_their_author(config):
 
     paths = sorted(MACHINES.glob("*.yaml"))
     assert len(paths) >= 2, f"fixture: the skill ships no machines in {MACHINES}"
-    check = _machine_check(config, caller="coder_lead")
+    check = _machine_check(config, caller="coder_ultra")
     named = set()
     for path in paths:
         text = path.read_text(encoding="utf-8")
@@ -89,13 +89,13 @@ def test_the_coder_and_gamedev_stay_usable_in_machines(config):
     check = _machine_check(config)
     assert check("agent", "coder", {}) is None
     assert check("agent", "gamedev", {}) is None
-    assert check("agent", "coder_lead", {}), "coder_lead may start workflows, so no machine may name it"
+    assert check("agent", "coder_ultra", {}), "coder_ultra may start workflows, so no machine may name it"
 
 
 def _rendered_prompt(config, tools):
     from agent_system.servers.agent.prompt_strategies import PromptContext, PromptRenderer
 
-    ctx = PromptContext(agent_name="coder_lead", agent_config=_agent_config(config, "coder_lead"),
+    ctx = PromptContext(agent_name="coder_ultra", agent_config=_agent_config(config, "coder_ultra"),
                         system_config=config, available_tools=tools, max_steps=300,
                         current_step=0, agent_instance=object())
     rendered, _ = PromptRenderer().render(ctx)

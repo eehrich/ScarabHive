@@ -1,6 +1,6 @@
 # Does a workflow make the coder better, and what does it cost?
 #
-# The same agent, coder_lead, twice: `workflow` as shipped -- it may hand a change to a workflow (build until
+# The same agent, coder_ultra, twice: `workflow` as shipped -- it may hand a change to a workflow (build until
 # green, review with refutation; skill coder-workflows) -- and `solo` without the workflow tools, so the
 # prompt's workflow section is not rendered either: the coder as it is. Two tasks in a small ledger package:
 #   currencies  a feature across three modules, with cases the task states and tests/ does not show -- the
@@ -12,8 +12,8 @@
 #
 # Run it with:  agent-eval run src/plugins/coder/evals/workflow_ab/suite.yaml
 name: coder-workflow-ab
-agent: coder_lead
-description: "coder_lead with and without dynamic workflows: test share incl. hidden cases, and cost"
+agent: coder_ultra
+description: "coder_ultra with and without dynamic workflows: test share incl. hidden cases, and cost"
 repeats: 1
 timeout_s: 3600
 parallel: 2
@@ -37,7 +37,7 @@ config:
         allowed_directories: [".", "src/plugins/coder/skills/"]
       coder_fs_ro:
         allowed_directories: [".", "src/plugins/coder/skills/"]
-      # Every agent of both arms on one cheap model: the lead (it inherits the coder's chain), the builder and
+      # Every agent of both arms on one cheap model: coder_ultra (it inherits the coder's chain), the builder and
       # the three it starts. What is compared is the workflow, not the model.
       coder:
         agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
@@ -52,7 +52,7 @@ arms:
   solo:
     agent_config:
       tools:
-        allowed: ["!stategraph/*", "!coder_lead_sam/*"]
+        allowed: ["!stategraph/*", "!coder_ultra_sam/*"]
       skills:
         on_demand: ["!coder-workflows", "!stategraph-workflows"]
 tasks:
