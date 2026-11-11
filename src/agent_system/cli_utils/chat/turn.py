@@ -290,16 +290,15 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         # be caught explicitly or it escapes the REPL and kills the chat, the
         # opposite of the "again to force" we just promised.
         try:
-            loop.run_until_complete(
-                asyncio.wait_for(ctx.agent.cancel_request(request_id), timeout=5)
-            )
+            _run_waiter(loop, asyncio.wait_for(ctx.agent.cancel_request(request_id), timeout=5),
+                        finish=True)
         except KeyboardInterrupt:
             logger.debug("second Ctrl-C during graceful cancel")
         except Exception:
             logger.debug("cancel_request failed", exc_info=True)
     try:
         # wait_for cancels the task itself if the grace period runs out.
-        result = loop.run_until_complete(asyncio.wait_for(turn, _CANCEL_GRACE_S))
+        result = _run_waiter(loop, asyncio.wait_for(turn, _CANCEL_GRACE_S))
         # Race: the turn may have COMPLETED between Ctrl-C and here -- the
         # agent was already finishing, its token gone, so no "cancelled"
         # came. A finished answer is shown, not discarded; the Ctrl-C still
@@ -320,6 +319,40 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     # The turn's own result is gone with it; its usage lives on in the state, and a refusal before the run.
     return {"summary": None, "cancelled": True, "errors": [],
             "usage": state.get("usage") or {}, **({"refused": state["refused"]} if state.get("refused") else {})}
+
+
+def _run_waiter(loop: asyncio.AbstractEventLoop, coro: Any, *, finish: bool = False) -> Any:
+    """run_until_complete for a wait_for wrapper that a Ctrl-C must not leave behind.
+
+    A second Ctrl-C that lands in the TURN's frames (a slow import inside a
+    hook) ends the loop run with the wrapper still pending: it woke inside the
+    next run_until_complete, re-raised the turn's KeyboardInterrupt there, and
+    asyncio reported "Task exception was never retrieved" when the chat ended.
+    The task is created here so it can be drained; asyncio reads the exception
+    of a task it raised in its own step only when it created that task itself,
+    so that is done here too.
+
+    ``finish``: a Ctrl-C lets the waiter run to its own timeout instead of
+    cancelling it. For the graceful cancel: cancelled before its first step,
+    the cancel never reached the agent, and the turn ran on -- calling the
+    LLM -- until the grace ran out.
+    """
+    waiter = loop.create_task(coro)
+    try:
+        return loop.run_until_complete(waiter)
+    except BaseException:
+        for _ in range(3 if finish else 0):
+            if waiter.done():
+                break
+            try:
+                loop.run_until_complete(asyncio.gather(waiter, return_exceptions=True))
+            except KeyboardInterrupt:
+                logger.debug("another Ctrl-C while the cancel was being delivered")
+        if not waiter.done():
+            interruptible._drain(loop, waiter, "the cancel wait")
+        elif not waiter.cancelled():
+            waiter.exception()  # retrieved: it is the one being raised
+        raise
 
 
 def _render_answer(renderer: ChatRenderer, summary: str) -> None:

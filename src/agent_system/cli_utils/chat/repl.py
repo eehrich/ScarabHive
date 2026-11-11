@@ -581,6 +581,14 @@ def run_chat_loop(
                     queued = []
                 if result.get("cancelled"):
                     print("Turn cancelled.", file=sys.stderr)
+                    # What the calls before the Ctrl-C cost, as after any turn. The call it
+                    # cut off reports nothing -- said, so an empty line is not read as "free".
+                    if ctx.show_status:
+                        print(renderer._colored(
+                            token_usage._format_usage(usage, time.monotonic() - started, renderer.sym)
+                            if usage.get("prompt_tokens") or usage.get("completion_tokens")
+                            else "(no LLM call finished before the cancel; the one cut off reports no usage)",
+                            "90"))
                     # "The next turn saves anyway" held until somebody stopped
                     # a turn and then LEFT: there was no next turn, the chat
                     # had never recorded a save, and the farewell -- which

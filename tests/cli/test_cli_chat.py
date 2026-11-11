@@ -1097,7 +1097,7 @@ class _RecordingEditor:
 
 def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
                     editor=None, resume=None, skills=(), plugin_commands=(),
-                    was_new_session=False, **run_kwargs):
+                    was_new_session=False, show_status=False, **run_kwargs):
     """Run the real run_chat_loop over *lines* against fakes, return the editor.
 
     Module level so that anything touching the REPL's own dispatch can use it,
@@ -1155,7 +1155,7 @@ def drive_chat_repl(monkeypatch, lines, initial_task=None, turn_probe=None,
         chat.run_chat_loop(
             agent=agent, entry_name="a", session_service=None,
             session_user="u", session_id="s1", was_new_session=was_new_session,
-            llm_profile="p", show_status=False, loop=loop,
+            llm_profile="p", show_status=show_status, loop=loop,
             initial_task=initial_task, **run_kwargs)
     finally:
         loop.close()
@@ -3475,6 +3475,86 @@ class TestWhatACtrlCStops:
             assert turn.done(), "the cancelled turn is still pending on the loop"
         finally:
             loop.close()
+
+    @pytest.mark.parametrize("already_over", [False, True], ids=["during-the-grace", "before-it"])
+    def test_a_ctrl_c_inside_the_turn_leaves_no_waiter_behind(self, already_over):
+        """The Ctrl-C landed in the turn's own frames (a slow import in a hook).
+        During the grace wait the wait_for wrapper stayed pending, re-raised it
+        inside the type-ahead teardown and asyncio logged "Task exception was
+        never retrieved" when the chat ended. Before it -- the first Ctrl-C --
+        the wrapper raises it in its own step: asyncio read that one itself
+        while it created the wrapper; now the chat creates it and has to."""
+        import agent_system.cli_utils.chat as chat
+
+        tasks = []
+        loop = asyncio.new_event_loop()
+
+        def _recorded(loop_, coro, **kwargs):
+            tasks.append(asyncio.Task(coro, loop=loop_, **kwargs))
+            return tasks[-1]
+
+        loop.set_task_factory(_recorded)
+        try:
+            async def interrupted_inside():
+                await asyncio.sleep(0)
+                raise KeyboardInterrupt
+
+            turn = loop.create_task(interrupted_inside())
+            if already_over:
+                with pytest.raises(KeyboardInterrupt):
+                    loop.run_until_complete(turn)   # as _execute_turn sees it
+            chat._cancel_turn(loop, _inject_ctx(None), turn, {}, ChatRenderer(ansi=False))
+
+            assert turn.done(), "fixture: the turn did not end"
+            assert not asyncio.all_tasks(loop), "a waiter is still pending on the loop"
+        finally:
+            loop.close()
+        assert len(tasks) >= 2, "fixture: no waiter was created"
+        # what asyncio reports as "Task exception was never retrieved" once the task is collected
+        assert not [t for t in tasks if t._log_traceback], "a task ends with an exception nobody read"
+
+    def test_a_second_ctrl_c_still_delivers_the_graceful_cancel(self, monkeypatch):
+        """The second Ctrl-C came before the cancel's first step: cancelled
+        there, it never reached the agent, and the turn ran on -- calling the
+        LLM -- until the grace ran out."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat.turn, "_CANCEL_GRACE_S", 0.01)
+        delivered = []
+
+        class _Agent:
+            async def cancel_request(self, request_id):
+                delivered.append(request_id)
+                return True
+
+        loop = asyncio.new_event_loop()
+        try:
+            turn = loop.create_task(asyncio.sleep(10))
+            loop.call_soon(_raise_interrupt)   # runs before the cancel's first step
+            chat._cancel_turn(loop, _inject_ctx(_Agent()), turn, {"request_id": "r1"},
+                              ChatRenderer(ansi=False))
+        finally:
+            loop.close()
+
+        assert delivered == ["r1"]
+
+    def test_a_cancelled_turn_shows_what_it_cost(self, monkeypatch, capsys):
+        def probe(loop, ctx, task, renderer, editor=None):
+            return {"cancelled": True,
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 30}}
+
+        drive_chat_repl(monkeypatch, [], initial_task="teuer", turn_probe=probe,
+                        show_status=True)
+
+        lines = capsys.readouterr().out.splitlines()
+        assert [line for line in lines if "1.2k" in line and "Session total" not in line], \
+            "the cancelled turn printed no footer of its own"
+
+    def test_a_cancel_before_any_call_finished_says_so(self, monkeypatch, capsys):
+        drive_chat_repl(monkeypatch, [], initial_task="gleich weg",
+                        turn_probe=lambda *a, **k: {"cancelled": True}, show_status=True)
+
+        assert "no LLM call finished" in capsys.readouterr().out
 
     def test_a_hard_cancel_keeps_what_the_turn_spent(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
