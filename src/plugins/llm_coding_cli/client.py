@@ -18,7 +18,7 @@ import re
 import socket
 import time
 from collections import OrderedDict
-from typing import Any
+from typing import Any, Sequence
 
 from agent_system.llm.models import LLMClient, LLMConnectionError, LLMQuotaExhaustedError, LLMServerError
 
@@ -263,7 +263,7 @@ class CodingCliClient(LLMClient):
                 # coding_cli raised instead of answering (a file it could not write, a tool name it does not
                 # know): an error the chain moves on at, not the end of the agent run. A cancel is no Exception.
                 raise self._fail(f"coding_cli call failed: {type(exc).__name__}: {exc}") from exc
-            text = self._answer_text(answer)
+            text = self._answer_text(answer, earlier=spent)
         except BaseException as exc:
             error = exc
             raise
@@ -382,7 +382,9 @@ class CodingCliClient(LLMClient):
         result = answer.get("result")
         return "authentication" in str((result.get("content") if isinstance(result, dict) else result) or "")
 
-    def _answer_text(self, answer: Any) -> str:
+    def _answer_text(self, answer: Any, earlier: Sequence[dict] = ()) -> str:
+        """The run's answer, or the error the chain moves on at. ``earlier``: the usage of runs of this call it went
+        on from (a refused step resumed) -- their tokens show the provider was reached just as the run's own do."""
         if not isinstance(answer, dict):
             raise self._fail(f"no answer from coding_cli: {str(answer)[:200]}")
         limit = answer.get("limit")
@@ -394,19 +396,21 @@ class CodingCliClient(LLMClient):
                 logger.warning("%s %s: the subscription's limit -- %s", self.provider, self.instance, why)
                 raise LLMQuotaExhaustedError(f"{self.provider} {self.instance}: {why}", self.provider, self.instance,
                                              retry_after=wait)
-            cause = _transport_cause(answer)
+            # Tokens counted are the provider's: a run that worked and then failed (its turns used up, its time, the
+            # network gone midway) reached its model, whatever else it says -- asked again after a wait for the
+            # network, its work and its tools' effects would run twice. First, before the cause it names. agy counts
+            # a resumed conversation's tokens whole, but with the network gone it fails before it loads one: 0 tokens
+            # on a resume too (measured 11.11.2026)
+            tokens = sum(u["prompt_tokens"] + u["completion_tokens"] for u in (*earlier, _usage(answer)))
+            cause = _transport_cause(answer) if not tokens else None
             if cause is not None:
                 # As an HTTP client says it: the chain waits for the network when no link of it was reached
                 # (fallback._never_reached reads the cause), instead of walking on to its end
                 logger.warning("%s %s: the CLI did not reach its API -- %s", self.provider, self.instance, cause)
                 raise LLMConnectionError(f"{self.provider} {self.instance}: {why}", self.provider,
                                          self.instance) from cause
-            # Tokens counted are the provider's: a run that worked and then failed (its turns used up, its time)
-            # reached its model, whatever else it says. agy counts a resumed conversation's tokens whole, but with the
-            # network gone it fails before it loads one: 0 tokens on a resume too (measured 11.11.2026)
-            spent = _usage(answer)
             raise self._fail(f"run {answer.get('run_id') or '-'} {answer.get('state') or 'not started'}: {why}",
-                             reached=spent["prompt_tokens"] + spent["completion_tokens"] > 0)
+                             reached=tokens > 0)
         if answer.get("result_cut"):
             raise self._fail(f"run {answer.get('run_id')}: the answer is longer than the instance hands on "
                              "(coding_cli max_result_chars)", reached=True)

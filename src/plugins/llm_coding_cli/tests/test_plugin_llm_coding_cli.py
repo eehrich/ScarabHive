@@ -391,14 +391,36 @@ class TestFallback:
             await client().chat_tools(MESSAGES, [])
         assert _never_reached(raised.value) is outage
 
+    async def test_a_run_that_lost_its_api_midway_was_reached(self, instance):
+        """connection_failed after tokens were counted: the run did work (tools included) -- the chain must not wait
+        and ask it again as if nothing had reached the provider."""
+        instance({"status": "success", "run_id": "r1", "state": "failed", "api_error": "connection_failed",
+                  "usage": {"input_tokens": 5000, "output_tokens": 700},
+                  "result": {"untrusted": True,
+                             "content": "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"}})
+        with pytest.raises(LLMServerError) as raised:
+            await client().chat_tools(MESSAGES, [])
+        assert not isinstance(raised.value, LLMConnectionError)
+        assert raised.value.reach_unknown is False
+
+    async def test_the_run_a_resume_went_on_from_counts_as_reached(self, instance):
+        """The refused run worked (its tokens counted); its resume then fails without any: the call reached its
+        model all the same."""
+        first = {**silent(), "usage": {"input_tokens": 3000, "output_tokens": 400}}
+        instance(first, {"status": "success", "run_id": "r2", "state": "failed", "note": "model not recognized"},
+                 cli="antigravity")
+        with pytest.raises(LLMServerError) as raised:
+            await client("antigravity").chat_tools(MESSAGES, [])
+        assert raised.value.reach_unknown is False
+
     @pytest.mark.parametrize("answer,words", [
         ({"status": "error", "error": "not started: 2 run(s) still going"}, "still going"),
         ({"status": "success", "run_id": "r1", "state": "failed", "note": "git broke"}, "git broke"),
         # Worked, then failed (its turns used up): tokens counted, the model was reached
         ({"status": "success", "run_id": "r1", "state": "failed", "note": "error_max_turns",
           "usage": {"input_tokens": 1200, "output_tokens": 300}}, "error_max_turns"),
-        # Measured (2026-11-10, an address that never answers): no api_error, after 412 s -- a timeout that may as
-        # well be a provider that got the request
+        # Measured (2026-11-10, an address that never answers): no api_error, after 412 s. Says nothing either way:
+        # a connect that never came (the network gone, DNS cached) reads the same as a provider that got the request
         ({"status": "success", "run_id": "r1", "state": "failed", "note": "Request timed out",
           "result": {"untrusted": True, "content": "Request timed out"}}, "Request timed out"),
         (done(result_cut=True), "longer than the instance hands on"),
