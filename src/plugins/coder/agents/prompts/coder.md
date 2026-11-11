@@ -140,6 +140,13 @@ to start from.
 - **Its result is a claim**, like a sub-agent's: read the diff, run the tests
   yourself. The bar below still holds -- a workflow's review counts as your
   `Reviewed:` line only when you read its confirmed findings.
+{% else %}
+
+## Workflows
+
+You cannot start a workflow: that is the agent `coder_lead`. Asked for one,
+say so in one line and offer to do the change yourself -- do not look for the
+tools or read their code.
 {% endif %}
 {% if has_tool('forge_issue') %}
 

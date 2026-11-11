@@ -103,8 +103,10 @@ def _rendered_prompt(config, tools):
 
 
 def test_the_workflow_section_is_there_exactly_when_the_tool_is(config):
+    """Without the tool the coder is told who has it: asked for a workflow, it searched the checkout for the
+    tools instead."""
     with_tool = _rendered_prompt(config, ["stategraph", "stategraph_run_workflow", "stategraph_get_run"])
     without = _rendered_prompt(config, ["coder_fs", "coder_fs_read_file"])
 
-    assert "## Workflows" in with_tool and "coder-workflows" in with_tool
-    assert "## Workflows" not in without and "coder-workflows" not in without
+    assert "coder-workflows" in with_tool and "You cannot start a workflow" not in with_tool
+    assert "coder-workflows" not in without and "You cannot start a workflow" in without

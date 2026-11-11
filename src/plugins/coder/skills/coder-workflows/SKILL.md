@@ -7,6 +7,9 @@ metadata:
 
 # Workflows for a change
 
+Running one needs the tool `stategraph_run_workflow` (the agent `coder_lead` has it). Without it you cannot
+start a workflow: say so and name `coder_lead`, rather than looking for the tool in the code.
+
 Two machines to start from, in this skill's `machines/`. Read one with
 `skills_read(name="coder-workflows", path="machines/build_until_green.yaml")`, copy it, give it an id of
 its own, change only what the task needs. The format and its rules are in the skill `stategraph-workflows`.
