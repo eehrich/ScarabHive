@@ -258,11 +258,19 @@ llm_system:
     # InferenceNet 0.08 / 0.008 / 0.5, GMICloud 0.18 / 0.004 / 0.72,
     # AtlasCloud 0.195 / 0.004 / 0.78. No fallbacks: otherwise OpenRouter
     # may route to any other (pricier) fp8 provider once these four fail.
+    # Flex is off for now (11.11.2026): DeepInfra's flex endpoint (same fp8
+    # weights, 0.0784 / 0.0024 / 0.2352) is barely cheaper at the moment and
+    # slower. To switch it on: service_tier: flex (a flex endpoint answers flex
+    # requests only; the deepseek base sets null) and deepinfra/fp8/flex first
+    # in the order. The other flex endpoints (Particle AI, Ionstream) declare no
+    # quantization and drop out on the fp8 filter.
     openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
+      #service_tier: flex
       provider_routing:
         order:
+        #- deepinfra/fp8/flex # ist aktuell nicht billiger
         - deepinfra/fp8
         - inference-net/fp8
         - gmicloud/fp8
