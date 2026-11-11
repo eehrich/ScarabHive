@@ -399,8 +399,8 @@ class CodingCliClient(LLMClient):
             # Tokens counted are the provider's: a run that worked and then failed (its turns used up, its time, the
             # network gone midway) reached its model, whatever else it says -- asked again after a wait for the
             # network, its work and its tools' effects would run twice. First, before the cause it names. agy counts
-            # a resumed conversation's tokens whole, but with the network gone it fails before it loads one: 0 tokens
-            # on a resume too (measured 11.11.2026)
+            # a resumed conversation's tokens whole -- coding_cli hands on the run's own share -- and with the
+            # network gone it fails before it loads one: 0 tokens on a resume too (measured 11.11.2026)
             tokens = sum(u["prompt_tokens"] + u["completion_tokens"] for u in (*earlier, _usage(answer)))
             cause = _transport_cause(answer) if not tokens else None
             if cause is not None:

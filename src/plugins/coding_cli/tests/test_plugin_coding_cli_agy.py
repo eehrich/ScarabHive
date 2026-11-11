@@ -129,6 +129,87 @@ async def test_resume_continues_the_agy_conversation(repo, log):
     assert {"A\tb.txt", "A\tc.txt"} <= set(second["changes"]["content"])
 
 
+ONE_RUN = {"input_tokens": 6865, "output_tokens": 63, "thinking_tokens": 0, "cache_read_tokens": 4096,
+           "total_tokens": 6928}
+
+
+async def test_a_resumed_agy_run_counts_only_itself(repo, log):
+    """agy reports a resumed conversation whole: every reader of a run's usage (the LLM client, the usage store, the
+    debugger) summed the earlier runs once more. Three runs in a row: the third subtracts the second's whole
+    conversation, not the second's own share."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    third, _ = await call(server, "run_task", task="WRITE d.txt three", resume=second["run_id"])
+
+    assert first["usage"] == ONE_RUN
+    record = server._load(third["run_id"])
+    assert record["conversation"]["usage"]["input_tokens"] == 3 * 6865, "fixture: the fake did not report it whole"
+    assert second["usage"] == third["usage"] == ONE_RUN
+    assert (second["turns"], third["turns"], record["conversation"]["turns"]) == (1, 1, 3)
+    assert 0 < third["duration_s"] < record["conversation"]["duration_s"]
+
+
+async def test_a_run_that_resumes_an_earlier_one_than_the_last_counts_only_itself(repo, log):
+    """The conversation is agy's, by its id: resuming its first run after a second one went on from it reports all
+    three -- subtracting the first run's total counted the second again."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    third, _ = await call(server, "run_task", task="WRITE d.txt three", resume=first["run_id"])
+    assert third["state"] == "done", third
+    assert third["usage"] == ONE_RUN
+
+
+async def test_a_run_that_reached_no_model_keeps_the_conversations_total(repo, log):
+    """With the network gone a resume reports 0 tokens: the run after it subtracted those zeros and counted the
+    whole conversation again."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    offline, _ = await call(server, "run_task", task="WRITE c.txt two\nOFFLINE", resume=first["run_id"])
+    assert offline["usage"]["input_tokens"] == 0, "fixture: the offline run counted tokens"
+    third, _ = await call(server, "run_task", task="WRITE d.txt three", resume=offline["run_id"])
+    assert third["usage"] == ONE_RUN
+
+
+def _as_before_the_fix(server, *run_ids, counts=True):
+    """Records as written before the conversation totals: no conversation, no file; with ``counts`` False a run
+    that brought none (killed, cut)."""
+    import shutil
+
+    shutil.rmtree(server._root() / "conversations", ignore_errors=True)
+    for run_id in run_ids:
+        old = server._load(run_id)
+        whole = old.pop("conversation")
+        for key in ("usage", "turns", "duration_s"):
+            if counts:
+                old[key] = whole[key]
+            else:
+                old.pop(key, None)
+        server._save(old)
+
+
+async def test_a_prior_run_from_before_counts_by_its_own_usage(repo, log):
+    """A record written before this kept the CLI's counts as its usage, and no conversation: those ARE the whole."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    _as_before_the_fix(server, first["run_id"])
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    assert second["usage"] == ONE_RUN
+
+
+async def test_a_conversation_from_before_looks_past_a_run_without_counts(repo, log):
+    """Before the file, the runs it resumed one after the other: one without counts in between (killed) must not
+    end the walk -- the first run's counts would be counted again. Its own tokens nobody counted go to the next."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    _as_before_the_fix(server, first["run_id"])
+    _as_before_the_fix(server, second["run_id"], counts=False)
+    third, _ = await call(server, "run_task", task="WRITE d.txt three", resume=second["run_id"])
+    assert third["usage"]["input_tokens"] == 2 * 6865
+
+
 async def test_claude_codes_full_window_does_not_hold_an_agy_run(repo, data_root):  # noqa: F811
     """quota.json is Claude Code's: an Antigravity instance on the same data root must not read it."""
     data_root.mkdir(parents=True)

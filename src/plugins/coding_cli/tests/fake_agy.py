@@ -6,6 +6,7 @@ The task is the content of the one stdin message; it is a script, one command pe
   DENY                  a shell command refused headless (denied_actions)
   ERROR                 end with an error result
   OUTPUT <json>         with --json-schema, the result's structured_output (else {"done": true})
+  OFFLINE               no model reached: 0 tokens, 0 turns, nothing added to the conversation
 With FAKE_CLAUDE_LOG set, argv, the environment's names, the task and the workspace's MCP file go there as JSON.
 """
 import json
@@ -42,6 +43,7 @@ def main():
         "permission_mode": "request-review"}})
     step(conversation, 0, "DONE", step_type="user_input")
     index, denied, error = 1, [], False
+    offline = "OFFLINE" in task.splitlines()
     for line in task.splitlines():
         word, _, rest = line.partition(" ")
         if word == "WRITE":
@@ -66,11 +68,24 @@ def main():
     step(conversation, index, "ACTIVE", step_type="agent_response", text_delta="did: ")
     step(conversation, index, "DONE", step_type="agent_response", text_delta=task.splitlines()[0],
          duration_seconds=1.2, usage={"input_tokens": 6865, "output_tokens": 63})
+    # As measured (1.4.x): the run's sum over its model calls, the cache reads beside input_tokens -- and a resumed
+    # conversation reported whole: the counts, turns and duration of its earlier runs in (measured 11.11.2026).
+    run = {"duration_seconds": 7.47, "num_turns": 1, "usage": {
+        "input_tokens": 6865, "output_tokens": 63, "thinking_tokens": 0, "cache_read_tokens": 4096,
+        "total_tokens": 6928}}
+    kept = Path(os.environ.get("HOME") or os.environ.get("USERPROFILE") or ".") / ".fake_agy" / f"{conversation}.json"
+    if offline:
+        run = {"duration_seconds": 0, "num_turns": 0, "usage": {k: 0 for k in run["usage"]}}
+    elif kept.is_file():
+        before = json.loads(kept.read_text(encoding="utf-8"))
+        run = {"duration_seconds": run["duration_seconds"] + before["duration_seconds"],
+               "num_turns": run["num_turns"] + before["num_turns"],
+               "usage": {k: v + before["usage"][k] for k, v in run["usage"].items()}}
+    if not offline:
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_text(json.dumps(run), encoding="utf-8")
     result = {"conversation_id": conversation, "status": "ERROR" if error else "SUCCESS",
-              "response": "" if error else f"did: {task.splitlines()[0]}", "duration_seconds": 7.47,
-              # As measured (1.4.x): the run's sum over its model calls, the cache reads beside input_tokens.
-              "num_turns": 1, "usage": {"input_tokens": 6865, "output_tokens": 63, "thinking_tokens": 0,
-                                        "cache_read_tokens": 4096, "total_tokens": 6928}}
+              "response": "" if error else f"did: {task.splitlines()[0]}", **run}
     if error:
         result["error"] = "the model request failed with an unspecified error"
     if denied:

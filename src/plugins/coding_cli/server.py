@@ -319,6 +319,20 @@ def _counts(usage: Any) -> Optional[dict]:
     return counts or None
 
 
+def _highest(*totals: dict) -> dict:
+    """Per count the highest of several conversation totals (usage, turns, duration_s): a conversation only grows."""
+    usage: dict = {}
+    best: dict = {}
+    for total in totals:
+        for key, value in (total.get("usage") or {}).items() if isinstance(total.get("usage"), dict) else ():
+            if isinstance(value, (int, float)):
+                usage[key] = max(usage.get(key, 0), int(value))
+        for key in ("turns", "duration_s"):
+            if isinstance(total.get(key), (int, float)):
+                best[key] = max(best.get(key, 0), total[key])
+    return {"usage": usage, **best} if usage else best
+
+
 def _bounded(value: Any, default: float, low: float, high: float) -> Optional[float]:
     try:
         return max(low, min(float(value if value not in (None, "") else default), high))
@@ -1713,6 +1727,11 @@ class CodingCliServer(SchemaBasedToolServer):
                               duration_s=round(float(result.get("duration_ms") or 0) / 1000),
                               denials=[_denial(d) for d in result.get("permission_denials") or []][:20],
                               cost_usd=result.get("total_cost_usd"), usage=_counts(result.get("usage")))
+                if record.get("cli") == "antigravity":
+                    try:
+                        self._this_run_only(record)
+                    except Exception:  # noqa: BLE001 - a count must not fail a run that ended well
+                        logger.warning("coding_cli: run %s keeps agy's conversation counts", run_id, exc_info=True)
                 output = result.get("structured_output")
                 if output is not None:
                     size = len(json.dumps(output, ensure_ascii=False))
@@ -1732,6 +1751,53 @@ class CodingCliServer(SchemaBasedToolServer):
             record.update(state="failed", ended_at=time.time(), note=f"finalizing failed: {exc}")
         self._save(record)
         return record
+
+    def _this_run_only(self, record: dict) -> None:
+        """An agy run's counts without the conversation it resumed.
+
+        agy reports a resumed conversation whole: tokens, turns and duration of every run before it in, measured on
+        a server (11.11.2026) to the token -- and every reader summed the earlier runs once more. Subtracted is the
+        highest total known for the conversation (its id, not the prior run: a run may resume one that is not the
+        conversation's last), kept in conversations/<id>.json; a run that brought no counts (killed, cut, 0 tokens
+        with the network gone) lowers nothing there. The CLI's own counts stay in the record as ``conversation``.
+        """
+        whole = {"usage": record.get("usage"), "turns": record.get("turns"), "duration_s": record.get("duration_s")}
+        record["conversation"] = whole
+        session = str(record.get("claude_session") or "")
+        kept = self._root() / "conversations" / f"{session}.json" if _SESSION.fullmatch(session) else None
+        before = self._conversation_before(record, kept)
+        if isinstance(whole["usage"], dict):
+            seen = before.get("usage") if isinstance(before.get("usage"), dict) else {}
+            record["usage"] = {k: max(0, v - int(seen.get(k) or 0)) for k, v in whole["usage"].items()}
+        for key in ("turns", "duration_s"):
+            if isinstance(whole[key], (int, float)) and isinstance(before.get(key), (int, float)):
+                record[key] = max(0, whole[key] - before[key])
+        if kept is not None:
+            try:
+                kept.parent.mkdir(parents=True, exist_ok=True)
+                _replace(kept, json.dumps(_highest(before, whole)))
+            except OSError:
+                logger.warning("coding_cli: the conversation total of run %s was not kept", record.get("run_id"))
+
+    def _conversation_before(self, record: dict, kept: Optional[Path]) -> dict:
+        """The highest total known for the record's conversation before it: its file, or -- a conversation from before
+        the file -- the runs it resumed one after the other, whose counts were the CLI's then."""
+        try:
+            if kept is not None and kept.is_file():
+                known = json.loads(kept.read_text(encoding="utf-8"))
+                return known if isinstance(known, dict) else {}
+        except (OSError, ValueError):
+            pass
+        before: dict = {}
+        seen, prior_id = set(), record.get("prior")
+        while prior_id and prior_id not in seen:
+            seen.add(prior_id)
+            prior = self._load(prior_id)
+            if not prior:
+                break
+            before = _highest(before, prior.get("conversation") or prior)
+            prior_id = prior.get("prior")
+        return before
 
     # ── answers ──
 
