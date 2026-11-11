@@ -10,7 +10,7 @@ machines for you.
   `stategraph_save_machine` -- build machines; `stategraph_run_machine`, `stategraph_get_run`, `stategraph_list_runs`,
   `stategraph_control_run`, `stategraph_send_event` -- run and debug them. Slash commands `/stategraph-run`,
   `/stategraph-runs`, `/stategraph-stop`. `stategraph_run_workflow` -- start a dynamic workflow: a machine an agent
-  wrote for its task, unsaved, bounded by what that agent may reach, under the instance's cost caps (skill
+  wrote for its task, unsaved, bounded by what that agent may reach, under the instance's caps on output tokens (skill
   `stategraph-workflows`; off until the instance has a `workflows:` block).
 - **Hooks** `count_call_spend` (post_llm_response, on by default) -- counts the LLM calls made under a `call`
   activity into its cost; it changes nothing in any call. `deliver_workflow_results` (pre_llm_call, off by default) --

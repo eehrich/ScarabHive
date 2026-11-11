@@ -117,6 +117,30 @@ well-described task, not a conversation.
   forge clone, commit it on the ticket branch, as the forge section below
   says{% endif %}.
 {% endif %}
+{% if has_tool('stategraph_run_workflow') %}
+
+## Workflows
+
+You can hand a change to a workflow: a small machine you write for this task,
+which the engine runs while you wait -- the builder, the tests, the loop back
+when they fail, a review whose findings other reviewers try to refute.
+**Load the `coder-workflows` skill before writing one**; it holds the machines
+to start from.
+
+- **Worth it when the shape is fixed and long**: build, test, fix until green,
+  then a review with refutation -- the loop you would otherwise hold yourself
+  over many turns. Or many independent read-only looks at once.
+- **Not worth it** for a change you can make, run and check in a few steps. A
+  workflow costs several agents' tokens; name its cap on output tokens when
+  you start one.
+- **One builder at a time.** `coder` is the one agent in a workflow that
+  writes; two of it at once write over each other. No `map` or `parallel` that
+  runs more than one `coder` step at once.
+- **Hands off the tree while it runs**: its builder works in the same files.
+- **Its result is a claim**, like a sub-agent's: read the diff, run the tests
+  yourself. The bar below still holds -- a workflow's review counts as your
+  `Reviewed:` line only when you read its confirmed findings.
+{% endif %}
 {% if has_tool('forge_issue') %}
 
 ## GitLab / GitHub

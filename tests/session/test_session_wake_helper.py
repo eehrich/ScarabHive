@@ -18,7 +18,7 @@ import pytest
 
 from agent_system.config.models import SessionPresenceConfig
 from agent_system.core import session_presence as presence_module
-from agent_system.core.session_presence import (PRESENCE_OFF, SessionPresence,
+from agent_system.core.session_presence import (PRESENCE_OFF, SessionPresence, process_ends_with_its_run,
                                                 wake_blocked, wake_session)
 from types import SimpleNamespace
 
@@ -451,3 +451,19 @@ async def test_only_a_turn_woken_after_the_first_ring_ends_the_ringing(config, h
     monkeypatch.setattr(SessionPresence, "notify", notify)
     await wake_session(config, "sess-1", "someone", what="a background command")
     assert rings == ["delivered_next_step"] * 3, rings
+
+@pytest.mark.asyncio
+async def test_a_process_that_ends_with_its_run_says_so_up_front_and_still_rings(config, notified):
+    """agent-run, a one-shot agent-cli run and a woken run take their background work down with them: a caller
+    told the wake is armed ended its turn over a job that died with the process. Work that ends while the run
+    still lasts rings as ever -- the run's release() wakes the session for it in a process of its own."""
+    assert wake_blocked(config, "sess-1", "someone") == ""
+    process_ends_with_its_run()
+    try:
+        blocked = wake_blocked(config, "sess-1", "someone")
+        assert "ends with its run" in blocked, blocked
+        assert await wake_session(config, "sess-1", "someone", what="a job") == "woke_session"
+        assert len(notified) == 1
+    finally:
+        process_ends_with_its_run(False)
+    assert wake_blocked(config, "sess-1", "someone") == ""

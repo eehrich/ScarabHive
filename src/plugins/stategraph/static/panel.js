@@ -1713,7 +1713,7 @@ const MACHINE_FIELD_SCHEMA = {
   machines: { type: 'object', description: 'machines inside this file, name: {params, context, initial, states, ...}; machine: <name> runs one; they share the companion module and imports' },
   resources: { type: 'object', description: 'name: {open, fork, close} activities' },
   agent: { type: 'object', description: 'offer this machine as an agent, no config entry: {name, description, input, task_param, on_wait, params, promote, visibility (default private)}; every process declares it as it starts' },
-  limits: { type: 'object', description: 'max_steps, timeout, concurrency, max_cost' },
+  limits: { type: 'object', description: 'max_steps, timeout, concurrency, max_cost, max_output_tokens' },
   finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
 };
 const COMMON_FIELDS = ['timeout', 'retry', 'idempotent', 'description'];  // every kind has them: listed last
@@ -3740,6 +3740,7 @@ function drawResult() {
       ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
       ${run.spend ? html`<span class="pk-muted" title="What the run cost so far -- its agents with their sub-agents, the LLM calls its call functions made and the runs it started: tokens in ↑ and out ↓">${spendText(run.spend)}</span>` : ''}
       ${budgetView(run)}
+      ${outputTokensView(run)}
       <span class="pk-grow"></span>
       ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
@@ -3794,6 +3795,16 @@ function budgetView(run) {
   const tone = spent >= limit ? 'danger' : spent >= 0.8 * limit ? 'warn' : '';
   const text = `${own ? `own $${spent.toFixed(4)} ` : ''}of $${limit} limit`;
   return html`<span class="${tone ? `pk-text--${tone}` : 'pk-muted'}" title="limits.max_cost: once the run's own activities reach it, no agent, decide or call activity starts${run.children?.length ? ' (the runs it started count in the spend beside, not toward the limit)' : ''}">${text}</span>`;
+}
+
+/** The run's own output tokens against its limits.max_output_tokens (a dynamic workflow always has one): warn from
+ * 80 %, danger once reached. Nothing without the limit, or from a server that does not answer it. */
+function outputTokensView(run) {
+  if (!isNumber(run.max_output_tokens) || !isNumber(run.output_tokens)) return '';
+  const limit = run.max_output_tokens;
+  const used = run.output_tokens;
+  const tone = used >= limit ? 'danger' : used >= 0.8 * limit ? 'warn' : '';
+  return html`<span class="${tone ? `pk-text--${tone}` : 'pk-muted'}" title="limits.max_output_tokens: once the run's own agents have written this many output tokens (thinking included), no agent, decide or call activity starts">own ↓${tokenCount(used)} of ${tokenCount(limit)} output tokens</span>`;
 }
 
 /** One finished activity, folded: what it was and how it went; its answer is drawn when it is opened. */

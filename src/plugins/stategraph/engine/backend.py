@@ -603,7 +603,9 @@ class ScarabHiveBackend:
             raise
         except Exception as exc:
             raise ActivityError("decision_failed", f"{type(exc).__name__}: {exc}") from exc
-        act.meta.update({"model": result.model, "cost": result.cost})
+        # tokens as an agent's meta carries them: run.output_tokens and limits.max_output_tokens count them too
+        act.meta.update({"model": result.model, "cost": result.cost,
+                         "tokens": {"prompt": result.input_tokens, "completion": result.output_tokens, "cached": 0}})
         return {name: {"value": answer.value, "confidence": answer.confidence,
                        "probabilities": answer.probabilities}
                 for name, answer in result.answers.items()}

@@ -21,6 +21,7 @@ import pytest
 from agent_system.config.models import (AgentSystemConfig, MCPAuthConfig, MCPServersConfig, RemoteMCPConfig,
                                          ToolConfig, ToolServerConfig)
 from agent_system.core.session_presence import alive
+from agent_system.core.session_presence import wake as wake_module
 from plugins.coding_cli import run as cli
 from plugins.coding_cli import server as server_module
 from plugins.coding_cli.server import CodingCliServer
@@ -185,7 +186,7 @@ def ring_recorder(monkeypatch):
         rings.append((session_id, user_id, still_needed))
         return "woke_session"
 
-    monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "")
+    monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "")
     monkeypatch.setattr(server_module, "wake_session", wake)
     return rings
 
@@ -1161,7 +1162,7 @@ class SubAgentPresence:
     (0, False, "../s1", "cannot be watched")])
 async def test_a_woken_run_or_a_sub_agent_is_not_promised_a_wake(repo, monkeypatch, woken, sub_agent, session, reason):
     """wake_blocked checks neither (core/session_presence/wake.py)."""
-    monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "")
+    monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "")
     monkeypatch.setattr(server_module, "wake_depth", lambda: woken)
     monkeypatch.setattr(server_module, "presence_for", lambda cfg: SubAgentPresence() if sub_agent else None)
     server = make_server(repo, wait_s=0.2)
@@ -1622,7 +1623,7 @@ async def test_a_ring_cut_short_is_rung_again(repo, monkeypatch):
         rings.append(session_id)
         await asyncio.sleep(30)
 
-    monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "")
+    monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "")
     monkeypatch.setattr(server_module, "wake_session", slow_wake)
     first = make_server(repo, wait_s=0.2)
     started, _ = await call(first, "run_task", task="SLEEP 0.5")
@@ -1790,7 +1791,7 @@ async def test_a_process_that_cannot_ring_leaves_the_ring_to_one_that_can(repo, 
     if why == "woken":
         monkeypatch.setattr(server_module, "wake_depth", lambda: 1)
     elif why == "blocked":
-        monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "waking is switched off")
+        monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "waking is switched off")
     else:
         def refused(*args):
             raise PermissionError(13, "sharing violation")
@@ -1799,6 +1800,25 @@ async def test_a_process_that_cannot_ring_leaves_the_ring_to_one_that_can(repo, 
     server._ring(record["run_id"])
     await ended(server, record["run_id"])
     assert len(rings) == 1 and not server._file(record["run_id"], "rung").exists()
+
+
+async def test_a_one_shot_process_rings_for_a_run_that_has_ended(repo, monkeypatch):
+    """The one-shot mark refuses work that would die with the process, not the ring for work that is over."""
+    rings = ring_recorder(monkeypatch)
+    monkeypatch.setattr(server_module, "wake_blocked", wake_module.wake_blocked)
+    monkeypatch.setattr(wake_module, "_ruled_out", lambda *a: "")
+    record = await unwatched(repo, "SLEEP 0.3")
+    await gone(record["pid"])
+    server = make_server(repo)
+    server._file(record["run_id"], "wake").write_text(json.dumps({"session_id": "s1", "user_id": "admin"}))
+    wake_module.process_ends_with_its_run()
+    try:
+        assert "ends with its run" in wake_module.wake_blocked(None, "s1", "admin"), "the mark was not set"
+        await server._settle(record["run_id"])
+        await ended(server, record["run_id"])
+    finally:
+        wake_module.process_ends_with_its_run(False)
+    assert len(rings) == 1
 
 
 def test_a_claim_whose_write_fails_leaves_nothing_behind(tmp_path):
@@ -2295,7 +2315,7 @@ async def test_a_run_whose_call_answered_early_goes_on_when_taken_over(repo, mon
     params = {"task": "WRITE b.txt x\nSLEEP 30", "_user_id": "admin", "_session_id": "s1"}
     if how == "broken status":
         # A sub-agent's session: a run going is answered as such, its watch dead or not -- never with a wake.
-        monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "")
+        monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "")
         monkeypatch.setattr(server_module, "presence_for", lambda cfg: SubAgentPresence())
         server = taker = make_server(repo, wait_s=5)
         answer = await server.run_task({**params, "_status": BrokenStatus()})

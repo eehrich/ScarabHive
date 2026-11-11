@@ -541,7 +541,8 @@ class MailServer(SchemaBasedToolServer):
         store = self.store
         current = await asyncio.to_thread(store.get, "watch")
         if action == "on":
-            blocked = wake_blocked(self.system_config, session_id, user_id)
+            # The watch is stored, not a task of this process: whoever holds the poll lease rings for it.
+            blocked = wake_blocked(self.system_config, session_id, user_id, outlives_the_process=True)
             if not blocked and await self._is_sub_agent(session_id, user_id):
                 blocked = "a sub-agent's session is never woken"
             if blocked:

@@ -14,7 +14,7 @@ title: Review a diff, verify every finding
 params:
   diff: {type: string, required: true}
   lenses: {type: array, default: ["correctness", "security"]}
-limits: {max_cost: 2.0, concurrency: 4}
+limits: {max_output_tokens: 200000, concurrency: 4}
 context: {confirmed: []}
 initial: review
 states:
@@ -80,13 +80,13 @@ def test_a_valid_workflow_in_the_subset_with_the_shape_meets_every_criterion():
     result = score(GOOD)
     assert result["passed"], result
     assert result["score"] == 1.0
-    assert result["of"] == 7, result   # parses, validates, max_cost, subset, agents, fan_out, two_stage
+    assert result["of"] == 7, result   # parses, validates, max_output_tokens, subset, agents, fan_out, two_stage
 
 
 def test_a_workflow_without_a_cost_cap_misses_that_criterion_only():
-    result = score(GOOD.replace("limits: {max_cost: 2.0, concurrency: 4}", "limits: {concurrency: 4}"))
+    result = score(GOOD.replace("limits: {max_output_tokens: 200000, concurrency: 4}", "limits: {concurrency: 4}"))
     assert not result["passed"]
-    assert "missing: max_cost" in result["detail"], result
+    assert "missing: max_output_tokens" in result["detail"], result
     assert result["score"] == 6 / 7
 
 

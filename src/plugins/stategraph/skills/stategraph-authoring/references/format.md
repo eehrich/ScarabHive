@@ -48,7 +48,7 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
 | `vars` | name → template, or one template | | Agent template vars for every agent this machine spawns (§11). |
 | `vars_from` | agent name | | Take that agent's configured `template_vars` as vars (§11). |
-| `limits` | `{max_steps, timeout, concurrency, max_cost}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10); `concurrency`: leaf activities (every kind but the composites) of the whole run at once (branches, items and submachines included; a call's `sg.tool()` within its turn), root machine only; `max_cost`: USD the whole run may spend, root machine only (§10). |
+| `limits` | `{max_steps, timeout, concurrency, max_cost, max_output_tokens}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10); `concurrency`: leaf activities (every kind but the composites) of the whole run at once (branches, items and submachines included; a call's `sg.tool()` within its turn), root machine only; `max_cost`: USD the whole run may spend, root machine only (§10); `max_output_tokens`: the LLM output tokens (thinking included) the whole run may produce, root machine only, the same way. |
 | `resources` | name → `{open, fork, close}` | | External state of each frame of this machine: a store namespace, a forum group (§14). |
 | `agent` | `{name, description, input, task_param, on_wait, params, promote, visibility, category}` | | Offers this machine as an agent without a config entry: every process declares it as it starts (the keys of a `type: stategraph_machine` entry, see its README; `{}` takes the defaults: `<id>_agent`, text for one string param else json, `ask`, `private` -- a SAM offers it only with `visibility: tool` or `both`; `category`: the group the agent picker lists it under, none: Other -- its runs' sessions carry it too, and the session list's folders file them by it). A problem of the block is SG111, a warning -- the machine itself runs; a changed block counts from the next start. |
 | `finally` | activity | | Runs once when a frame of this machine ends, however it ends (§14). |
@@ -1043,7 +1043,9 @@ first).
   not retried, journaled. The activity that crossed the limit finishes, but no retry
   attempt of it starts past the limit (it fails `budget_exceeded`); `finally`
   activities and `sg.tool()` calls are not stopped. A guard can branch on it before:
-  `guard: run.cost < 0.8 * 5`. Read it in the frame that runs the branches, after
+  `guard: run.cost < 0.8 * 5`. `limits.max_output_tokens` works the same over
+  `run.output_tokens` (`meta.tokens.completion`): the same cap on every model and route.
+  Read it in the frame that runs the branches, after
   their join: inside a parallel branch or a map item it counts the siblings that
   finished first, and a replay may finish them in another order.
 - A wait state's `timeout` starts when the wait starts; its deadline is stored, so a
@@ -1129,7 +1131,7 @@ any state inside waits.
 | SG105 | warning | `ctx.<name>` is read but neither declared in `context` nor assigned |
 | SG106 | warning | Impure code in a code field or template |
 | SG107 | warning | A data field whose whole value looks like a reference, without braces |
-| SG108 | warning | A root machine with `limits.timeout`, `limits.concurrency` or `limits.max_cost` used as a submachine |
+| SG108 | warning | A root machine with `limits.timeout`, `limits.concurrency`, `limits.max_cost` or `limits.max_output_tokens` used as a submachine |
 | SG109 | warning | A state completes (it has `do`, or a final inside it) but has no completion transition: should it complete, the run fails with `no_transition` |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
 | SG111 | warning | `agent:`: the agent it offers cannot run (`task_param`, a required param without default left out, a fixed `params` entry the machine does not declare or whose value does not fit its type or enum), or another server or a config entry of this machine holds its name -- the machine itself runs |

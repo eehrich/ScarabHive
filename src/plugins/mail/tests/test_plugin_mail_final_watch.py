@@ -26,7 +26,7 @@ def rings(monkeypatch):
         return "woke_session"
 
     monkeypatch.setattr(mail, "wake_session", wake_session)
-    monkeypatch.setattr(mail, "wake_blocked", lambda config, session_id, user_id: "")
+    monkeypatch.setattr(mail, "wake_blocked", lambda config, session_id, user_id, **k: "")
     monkeypatch.setattr(mail, "presence_for", lambda config: None)
     return calls, hold
 

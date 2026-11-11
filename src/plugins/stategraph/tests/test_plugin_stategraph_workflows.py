@@ -21,7 +21,8 @@ from plugins.stategraph.tests.stategraph_testkit import FakeBackend, tool_config
 from plugins.stategraph.workflows import (WaitingResults, WorkflowSettings, agent_places, inline_problems,
                                           settings_of, with_terms)
 
-SETTINGS = {"default_max_cost": 2.0, "max_cost_ceiling": 10.0, "default_concurrency": 3, "max_concurrent_agents": 2}
+SETTINGS = {"default_max_output_tokens": 2000, "max_output_tokens_ceiling": 10000, "default_concurrency": 3,
+            "max_concurrent_agents": 2}
 
 SERVERS = {
     "stategraph": {"type": "stategraph", "enabled": True},
@@ -95,13 +96,16 @@ async def settled(server, run_id):
 def test_without_the_settings_block_no_workflow_starts_and_the_answer_names_the_keys():
     with pytest.raises(ValueError) as off:
         settings_of(tool_config_like({}))
-    assert "no workflows: block" in str(off.value) and "max_cost_ceiling" in str(off.value)
+    assert "no workflows: block" in str(off.value) and "max_output_tokens_ceiling" in str(off.value)
     with pytest.raises(ValueError) as half:
-        settings_of(tool_config_like({"workflows": {"default_max_cost": 1}}))
-    assert "lacks max_cost_ceiling, default_concurrency" in str(half.value)
+        settings_of(tool_config_like({"workflows": {"default_max_output_tokens": 1}}))
+    assert "lacks max_output_tokens_ceiling, default_concurrency" in str(half.value)
     with pytest.raises(ValueError) as upside_down:
-        settings_of(tool_config_like({"workflows": {**SETTINGS, "default_max_cost": 50}}))
-    assert "above max_cost_ceiling" in str(upside_down.value)
+        settings_of(tool_config_like({"workflows": {**SETTINGS, "default_max_output_tokens": 50000}}))
+    assert "above max_output_tokens_ceiling" in str(upside_down.value)
+    with pytest.raises(ValueError) as fraction:  # a token count is whole
+        settings_of(tool_config_like({"workflows": {**SETTINGS, "default_max_output_tokens": 2.5}}))
+    assert "whole number" in str(fraction.value)
 
 
 def tool_config_like(values):
@@ -115,13 +119,15 @@ def tool_config_like(values):
 
 def test_the_terms_take_the_smaller_cap_and_always_set_a_concurrency():
     settings = WorkflowSettings(**SETTINGS)
-    text, cap, concurrency = with_terms(REVIEW.replace("{max_steps: 50}", "{max_steps: 50, max_cost: 4.0}"),
-                                        settings, 1.5)
-    assert (cap, concurrency) == (1.5, 3)
-    assert "max_cost: 1.5" in text and "concurrency: 3" in text and "max_steps: 50" in text, text
+    text, cap, concurrency = with_terms(
+        REVIEW.replace("{max_steps: 50}", "{max_steps: 50, max_output_tokens: 4000}"), settings, 1500)
+    assert (cap, concurrency) == (1500, 3)
+    assert "max_output_tokens: 1500" in text and "concurrency: 3" in text and "max_steps: 50" in text, text
     assert "# the author's own note survives" in text
-    assert with_terms(REVIEW, settings, None)[1] == 2.0            # neither: the default
-    assert with_terms(REVIEW.replace("{max_steps: 50}", "{max_cost: 0.5}"), settings, None)[1] == 0.5
+    assert with_terms(REVIEW, settings, None)[1] == 2000           # neither: the default
+    assert with_terms(REVIEW.replace("{max_steps: 50}", "{max_output_tokens: 500}"), settings, None)[1] == 500
+    # a USD cap the machine sets itself stays, as one bound more
+    assert "max_cost: 0.5" in with_terms(REVIEW.replace("{max_steps: 50}", "{max_cost: 0.5}"), settings, None)[0]
     assert with_terms(REVIEW.replace("{max_steps: 50}", "{concurrency: 2}"), settings, None)[2] == 2
     # a machine asking for more than the operator allows gets the most it may: what runs at once can spend past
     # the cap (it is checked before an activity starts)
@@ -132,8 +138,8 @@ def test_the_terms_take_the_smaller_cap_and_always_set_a_concurrency():
 
 def test_a_cap_above_the_ceiling_is_refused_not_lowered():
     with pytest.raises(ValueError) as refused:
-        with_terms(REVIEW, WorkflowSettings(**SETTINGS), 25.0)
-    assert "above this installation's ceiling of 10 USD" in str(refused.value)
+        with_terms(REVIEW, WorkflowSettings(**SETTINGS), 25000)
+    assert "above this installation's ceiling of 10000" in str(refused.value)
 
 
 def test_an_inline_machine_reads_no_file_beside_it():
@@ -167,7 +173,7 @@ def test_a_workflow_calls_only_tools_its_author_may_call():
 
 async def test_a_workflow_runs_from_its_snapshot_with_its_terms_written_in(server):
     fake_backends(server, {"find": "a bug", "verify/0": "stands"})
-    started = await server.service.start_workflow(REVIEW, user_id="ann", caller="lead", max_cost=1.0)
+    started = await server.service.start_workflow(REVIEW, user_id="ann", caller="lead", max_output_tokens=1000)
 
     row = await settled(server, started["run_id"])
     assert row["status"] == "succeeded", row.get("error")
@@ -175,9 +181,9 @@ async def test_a_workflow_runs_from_its_snapshot_with_its_terms_written_in(serve
     assert server.machines.find("quick_review") is None, "an inline workflow is never saved"
     snapshot = row["definition"]["files"]
     text = next(iter(snapshot.values()))
-    assert "max_cost: 1.0" in text and "concurrency: 3" in text, text
+    assert "max_output_tokens: 1000" in text and "concurrency: 3" in text, text
     assert row["workflow"]["caller"] == "lead" and row["workflow"]["max_concurrent_agents"] == 2
-    assert started["max_cost"] == 1.0 and started["concurrency"] == 3
+    assert started["max_output_tokens"] == 1000 and started["concurrency"] == 3
 
 
 async def test_a_workflow_naming_an_agent_its_author_cannot_start_never_runs(server):
@@ -227,7 +233,7 @@ description: >-
 params:
   diff: {type: string, required: true}
   lenses: {type: array, default: ["correctness", "security", "concurrency"]}
-limits: {concurrency: 6, max_cost: 3.0, timeout: 1h, max_steps: 400}
+limits: {concurrency: 6, max_output_tokens: 3000, timeout: 1h, max_steps: 400}
 context: {confirmed: [], lost: []}
 
 machines:
@@ -613,6 +619,19 @@ async def test_the_answer_says_whether_the_result_comes_by_itself(server, monkey
     assert shipped["deliver_workflow_results"] is False and shipped["confirm_workflow_results"] is False
 
 
+async def test_the_tool_takes_the_cap_in_output_tokens_as_a_model_writes_it(server):
+    fake_backends(server, {"find": "a bug", "verify/0": "stands"})
+
+    async def start(machine_id, cap):
+        return await server.run_workflow({"yaml": REVIEW.replace("quick_review", machine_id), "max_output_tokens": cap,
+                                          "_agent_name": "lead", "_user_id": "ann", "_session_id": "s1"})
+
+    taken = await start("as_float", 1500.0)  # 1500.0: as often as 1500
+    assert taken["status"] == "success" and taken["max_output_tokens"] == 1500, taken
+    refused = await start("half_a_token", 1500.5)
+    assert refused["status"] == "error" and "whole number" in refused["error"], refused
+
+
 async def test_only_its_callers_get_run_reads_its_result(server):
     server.run_store.create_run("r1", "quick_review", {}, user_id="ann", workflow={"caller": "lead", "session": "s1"})
     server.run_store.update_run("r1", status="succeeded", output={})
@@ -754,22 +773,85 @@ states:
 
 
 async def test_a_wide_map_stops_at_the_cap_and_overshoots_by_at_most_what_ran_at_once(server):
-    """The cap is checked before an activity starts: the items of a wide map pass that check together at a cost
-    of 0. Checked again once an item holds its turn, at most the items running at once spend past it."""
-    class Spending(FakeBackend):
+    """The cap is checked before an activity starts: the items of a wide map pass that check together at 0 output
+    tokens. Checked again once an item holds its turn, at most the items running at once produce past it."""
+    class Writing(FakeBackend):  # every agent writes 1000 output tokens
         async def agent_create(self, act, **kw):
             try:
                 await asyncio.sleep(0.02)
                 return "ok", "inst"
             finally:
-                act.meta["cost"] = round((act.meta.get("cost") or 0.0) + 1.0, 6)
-    server.service.backend_factory = lambda: (lambda run_id: Spending())
-    started = await server.service.start_workflow(WIDE, user_id="ann", caller="lead", max_cost=2.0)
+                tokens = act.meta.setdefault("tokens", {"prompt": 0, "completion": 0, "cached": 0})
+                tokens["prompt"] += 50000  # input is not counted: it is mostly cached
+                tokens["completion"] += 1000
+    server.service.backend_factory = lambda: (lambda run_id: Writing())
+    started = await server.service.start_workflow(WIDE, user_id="ann", caller="lead", max_output_tokens=2000)
     row = await settled(server, started["run_id"])
-    cap, spent = server.run_manager.budget(row["id"])
+    cap, produced = server.run_manager.output_tokens(row["id"])
+    assert cap == 2000
     assert started["concurrency"] == 3, "a machine's own concurrency is held to the operator's most"
-    assert spent <= cap + started["concurrency"], (spent, row["output"])
-    assert row["output"].count("failed") >= 10 - (cap + started["concurrency"]), row["output"]
+    assert cap <= produced <= cap + 1000 * started["concurrency"], (produced, row["output"])
+    assert row["output"].count("failed") >= 10 - (2 + started["concurrency"]), row["output"]
+    assert "budget_exceeded" in str(server.run_store.tail(row["id"], limit=200)), "fixture: the cap stopped it"
+
+
+COUNTED = """\
+stategraph: 1
+id: counted
+title: write, then branch on what it wrote
+initial: write
+states:
+  write:
+    do: {agent: finder, task: "write"}
+    transitions:
+      - {target: much, guard: "run.output_tokens >= 1000"}
+      - {target: little, guard: else}
+  much: {type: final, output: much}
+  little: {type: final, output: little}
+"""
+
+
+async def test_a_guard_reads_the_output_tokens_so_far_and_prompt_tokens_do_not_count(server):
+    class Writing(FakeBackend):
+        def __init__(self, completion):
+            super().__init__({})
+            self.completion = completion
+
+        async def agent_create(self, act, **kw):
+            act.meta["tokens"] = {"prompt": 90000, "completion": self.completion, "cached": 80000}
+            return "ok", "inst"
+
+    for completion, branch in ((1200, "much"), (300, "little")):
+        server.service.backend_factory = lambda c=completion: (lambda run_id: Writing(c))
+        started = await server.service.start_workflow(COUNTED, user_id="ann", caller="lead")
+        row = await settled(server, started["run_id"])
+        assert row["output"] == branch, (completion, row.get("error"))
+        assert server.run_manager.output_tokens(row["id"]) == (2000, completion)  # the default cap, written in
+
+
+async def test_the_result_turn_names_the_output_tokens_the_run_produced(server):
+    server.run_store.create_run("r1", "quick_review", {}, user_id="ann")
+    server.run_store.record("r1", "activity", "find", state="find", status="done",
+                            data={"meta": {"tokens": {"prompt": 50000, "completion": 1234, "cached": 0}}})
+    server.run_store.update_run("r1", status="succeeded", final_state="done", output={"found": []})
+    server.workflow_results.add("s1", "r1")
+    turn = (await server.hooks_plugin.on_pre_llm_call(call("s1"))).context.messages[-1]
+    assert ", 1234 output tokens" in turn.content.splitlines()[0], turn.content
+
+
+def test_a_submachines_own_cap_on_output_tokens_is_named_as_ignored(tmp_path):
+    from plugins.stategraph.model.validate import validate_tree
+    from plugins.stategraph.store import MachineStore
+
+    (tmp_path / "inner.yaml").write_text(
+        "stategraph: 1\nid: inner\ntitle: inner\nlimits: {max_output_tokens: 500}\ninitial: done\n"
+        "states:\n  done: {type: final}\n", encoding="utf-8")
+    outer = ("stategraph: 1\nid: outer\ntitle: outer\nimports: {inner: ./inner.yaml}\ninitial: run\nstates:\n"
+             "  run:\n    do: {machine: inner}\n    transitions: [{target: done}]\n  done: {type: final}\n")
+    tree = validate_tree(MachineStore([str(tmp_path)], [str(tmp_path)]).load_files({"outer.yaml": outer},
+                                                                                   machine_id="outer"))
+    named = [p for p in tree.problems if p.code == "SG108" and "max_output_tokens" in p.message]
+    assert named, [(p.code, p.message) for p in tree.problems]
 
 
 async def test_the_backend_hands_the_end_on_and_a_failing_hand_off_changes_nothing(tmp_path):

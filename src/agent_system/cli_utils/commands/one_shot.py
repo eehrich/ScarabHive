@@ -201,16 +201,23 @@ async def stream_run(
 def run_one_shot(agent: Agent, task: Union[str, ChatMessage], control: RunControl,
                  session_id: str, *, raw: bool, verbose: bool, show_tools: bool,
                  show_status: bool, llm_override: Any, llm_profile_info: Optional[str]) -> dict:
-    """Run *task* once: collected with --raw, else streamed with status."""
-    if raw:
-        # Raw mode: use run_events with result collection
-        from ...servers.agent.result_utils import collect_final_result
+    """Run *task* once: collected with --raw, else streamed with status. The process ends with it: a job the run
+    starts in the background is told to poll, not to wait for a wake (core/session_presence/wake.py)."""
+    from ...core.session_presence import process_ends_with_its_run
 
-        result = control.run(collect_final_result(agent, task, request_id=control.request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
-        if result.get("cancelled"):
-            control.stopped = True   # a Ctrl-C collect_final_result caught
-        return result
-    return control.run(stream_run(agent, task, control, session_id, verbose=verbose, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+    process_ends_with_its_run()
+    try:
+        if raw:
+            # Raw mode: use run_events with result collection
+            from ...servers.agent.result_utils import collect_final_result
+
+            result = control.run(collect_final_result(agent, task, request_id=control.request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
+            if result.get("cancelled"):
+                control.stopped = True   # a Ctrl-C collect_final_result caught
+            return result
+        return control.run(stream_run(agent, task, control, session_id, verbose=verbose, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+    finally:
+        process_ends_with_its_run(False)
 
 
 def _pretty_print_result(res: dict, *, show_tools: bool, verbose: bool, streamed_errors: list) -> None:

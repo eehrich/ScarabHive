@@ -26,8 +26,21 @@ logger = logging.getLogger(__name__)
 #: visible, not quietly demoted.
 PRESENCE_OFF = "session presence is off (config: session_presence.enabled)"
 
+#: Whether this process ends with its run: agent-run, a one-shot agent-cli run, a woken run. Its entry point
+#: says so while the run lasts (process_ends_with_its_run); work it started in the background goes down with
+#: it, so there is nothing left to wake anybody when that work would end. The API and agent-cli chat outlive
+#: their turns.
+_ENDS_WITH_ITS_RUN = False
 
-def wake_blocked(system_config: Any, session_id: str, user_id: str) -> str:
+
+def process_ends_with_its_run(ends: bool = True) -> None:
+    """Mark this process as one that ends with its run -- a one-shot entry point, before the run; ``False`` in its
+    ``finally`` (a test process runs many)."""
+    global _ENDS_WITH_ITS_RUN
+    _ENDS_WITH_ITS_RUN = ends
+
+
+def wake_blocked(system_config: Any, session_id: str, user_id: str, outlives_the_process: bool = False) -> str:
     """Why waking this session is ruled out already, or "" when it is not.
 
     Note the direction: here "" is the GOOD answer, while ``wake_session``
@@ -41,8 +54,13 @@ def wake_blocked(system_config: Any, session_id: str, user_id: str) -> str:
     out fine. Two of ``notify``'s exits cannot be:
 
     * Whether the process holding the work is still there when the work ends.
-      A one-shot ``agent-cli run`` ends its turn and takes its background work
-      with it, and nothing in this tree marks which kind of process this is.
+      A one-shot run (agent-run, ``agent-cli run``, a woken run) ends with its
+      turn and takes its background work with it; its entry point says so
+      (process_ends_with_its_run), and that is answered here. A process that
+      dies otherwise -- killed, crashed -- is not known up front. Work that does
+      not live in this process (a watch stored on disk that whichever process
+      holds the lease polls, a ring for work that has already ended) passes
+      ``outlives_the_process=True`` and is not refused for it.
     * Whether this is a sub-agent's session, which is never woken -- the run
       that spawned it hands its result over. Reading that means parsing the
       whole session file (``_stored_session``), which is the conversation, on
@@ -52,6 +70,17 @@ def wake_blocked(system_config: Any, session_id: str, user_id: str) -> str:
     So a caller told the wake is armed must still treat being woken as the
     good case and polling as the fallback.
     """
+    blocked = _ruled_out(system_config, session_id, user_id)
+    if blocked or outlives_the_process or not _ENDS_WITH_ITS_RUN:
+        return blocked
+    # Only up front: work that ends while this run still lasts rings as ever (wake_session), and the run's
+    # release() wakes the session in a process of its own for it.
+    return ("this process ends with its run (a one-shot agent-run or agent-cli run) and takes work it started "
+            "in the background with it")
+
+
+def _ruled_out(system_config: Any, session_id: str, user_id: str) -> str:
+    """What rules a wake out whenever it is asked: up front (wake_blocked) and when the work ends (wake_session)."""
     presence = presence_for(system_config)
     if presence is None:
         return PRESENCE_OFF
@@ -160,7 +189,7 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
     down should not be held up over a message.
     """
     try:
-        blocked = wake_blocked(system_config, session_id, user_id)
+        blocked = _ruled_out(system_config, session_id, user_id)
         if blocked:
             # By the REASON, not by a stand-in for it: presence being off is a
             # setting somebody chose, everything else is somebody asking for a

@@ -25,13 +25,16 @@ def data_dir(tmp_path, monkeypatch, request):
 
 
 def _usage_db(data: Path, rows) -> None:
+    """Rows are (request id, cost) or (request id, cost, timestamp); without one, the record is from now."""
     import sqlite3
+    import time
     db = data / "context_usage_tracker" / "usage.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE usage_snapshots (request_id TEXT, cost REAL, prompt_tokens INTEGER, "
-                     "completion_tokens INTEGER)")
-        conn.executemany("INSERT INTO usage_snapshots VALUES (?, ?, 10, 2)", rows)
+                     "completion_tokens INTEGER, timestamp REAL)")
+        conn.executemany("INSERT INTO usage_snapshots VALUES (?, ?, 10, 2, ?)",
+                         [(*row, time.time()) if len(row) == 2 else row for row in rows])
 
 
 def _suite(tmp_path: Path, body: str) -> Path:
@@ -543,11 +546,81 @@ def test_a_shared_run_names_the_installations_data_directory_absolute(tmp_path, 
     jdir.mkdir()
     monkeypatch.setattr(runner, "run_bounded", lambda *a, **k: 0)
     monkeypatch.setattr(runner, "usage_of", lambda *a, **k: {})
+    monkeypatch.setattr(runner, "stategraph_runs", lambda *a, **k: [])  # the installation's journal stays unread
     result = runner._agent_run(suite, "20261028-120000-abcd", {"arm": "base", "rep": 0, "n": 1, "task": "t1"},
                                suite.tasks[0], jdir, tmp_path, tmp_path / "data")
     assert Path(result["data_dir"]).is_absolute(), result["data_dir"]
     assert Path(result["data_dir"]) == PROJECT_ROOT / data_path()
-    assert result["stategraph_runs"] is None
+
+
+def test_the_calls_of_a_machine_the_agent_started_are_the_runs_cost(tmp_path, monkeypatch):
+    """A machine the agent starts (run_machine, a workflow) runs its agents under <its run id>_NNN, not under the
+    agent's request id: an A/B of an agent with and without workflows counted the workflow's agents as free.
+    A submachine's id under its parent's counts once; a call of no run of this agent's not at all, nor one a
+    run made before this task began (a chain's earlier task, already counted there)."""
+    from plugins.agent_eval.suite import load_suite
+    from plugins.stategraph.engine.journal import RunStore
+
+    suite = load_suite(_suite(tmp_path, """
+        name: s
+        agent: a
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """))
+    jdir, data = tmp_path / "job", tmp_path / "rundata"
+    jdir.mkdir()
+    runs = RunStore(data / "stategraph" / "runs.db")
+
+    def child(args, **kwargs):
+        request_id = json.loads(Path(args[-1]).read_text(encoding="utf-8"))["request_id"]
+        runs.create_run("sg_wf1", "m", {}, status="succeeded")
+        runs.create_run("sg_wf1_child", "m", {}, status="succeeded")
+        _usage_db(data, [(request_id, 0.25), (f"{request_id}_1", 0.5), ("sg_wf1_001", 1.0),
+                         ("sg_wf1_child_001", 2.0), ("sg_other_001", 8.0), ("sg_wf1_000", 16.0, 1.0)])
+        (jdir / "result-t1.json").write_text(json.dumps({"answer": "ok"}), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(runner, "run_bounded", child)
+    result = runner._agent_run(suite, "20261028-120000-abcd", {"arm": "base", "rep": 0, "n": 1, "task": "t1"},
+                               suite.tasks[0], jdir, tmp_path, data)
+    assert {r["id"] for r in result["stategraph_runs"]} == {"sg_wf1", "sg_wf1_child"}, "fixture: the runs it started"
+    assert result["calls"] == 4
+    assert result["cost"] == pytest.approx(3.75)
+
+
+def test_a_shared_run_counts_the_workflows_it_started_and_nobody_else_s(tmp_path, monkeypatch):
+    """In the installation's data directory everyone's runs are: a shared suite counted no machine run at all,
+    and a workflow's agents were free. Its workflows are the ones whose caller was this request."""
+    from plugins.agent_eval.suite import load_suite
+    from plugins.stategraph.engine.journal import RunStore
+
+    install = tmp_path / "install"
+    monkeypatch.setenv(DATA_DIR_ENV, str(install))
+    suite = load_suite(_suite(tmp_path, """
+        name: s
+        agent: a
+        data: shared
+        tasks:
+          - {id: t1, input: x, check: {expect: {contains: [ok]}}}
+    """))
+    jdir = tmp_path / "job"
+    jdir.mkdir()
+    runs = RunStore(install / "stategraph" / "runs.db")
+
+    def child(args, **kwargs):
+        request_id = json.loads(Path(args[-1]).read_text(encoding="utf-8"))["request_id"]
+        runs.create_run("sg_wf", "m", {}, status="succeeded", workflow={"request": f"{request_id}_2"})
+        runs.create_run("sg_wf_sub", "m", {}, status="succeeded", parent_run="sg_wf")
+        runs.create_run("sg_theirs", "m", {}, status="succeeded", workflow={"request": "someone_else"})
+        _usage_db(install, [(request_id, 0.25), ("sg_wf_001", 1.0), ("sg_wf_sub_001", 2.0), ("sg_theirs_001", 8.0)])
+        (jdir / "result-t1.json").write_text(json.dumps({"answer": "ok"}), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(runner, "run_bounded", child)
+    result = runner._agent_run(suite, "20261028-120000-abcd", {"arm": "base", "rep": 0, "n": 1, "task": "t1"},
+                               suite.tasks[0], jdir, tmp_path, tmp_path / "data")
+    assert {r["id"] for r in result["stategraph_runs"]} == {"sg_wf", "sg_wf_sub"}
+    assert result["cost"] == pytest.approx(3.25)
 
 
 def test_usage_and_machine_runs_read_a_data_directory_whose_path_has_a_hash(tmp_path):

@@ -43,8 +43,8 @@ plugins:
       # its task and starts unsaved. Off without this block -- the caps are the operator's to choose,
       # there are no built-in ones. Set it in config (e.g. config/plugins.yaml, a stategraph entry):
       #   workflows:
-      #     default_max_cost: 2.0        # USD per run when the call names none
-      #     max_cost_ceiling: 20.0       # USD; a call or machine asking for more is refused
+      #     default_max_output_tokens: 200000   # LLM output tokens (thinking included) per run, when the call names none
+      #     max_output_tokens_ceiling: 1000000  # a call or machine asking for more is refused
       #     default_concurrency: 4       # agent activities of one run at once, when it sets none
       #     max_concurrency: 6           # the most a workflow may set itself (optional; else the default)
       #     max_concurrent_agents: 8     # agent activities of every workflow run of a process at once

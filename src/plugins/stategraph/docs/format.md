@@ -30,7 +30,7 @@ events:                             # named events this machine accepts
   approve: {description: go on}
 context: {draft: null, round: 0}    # ctx: the machine's variables (JSON)
 vars: {tone: "{{ params.tone }}"}   # template vars for every agent it spawns
-limits: {max_steps: 1000, timeout: 2h}   # also concurrency (leaf activities at once), max_cost (USD)
+limits: {max_steps: 1000, timeout: 2h}   # also concurrency (leaf activities at once), max_cost (USD), max_output_tokens
 initial: write
 states:
   write:                            # a state with an activity: completes when it ends
@@ -112,7 +112,7 @@ Error types: `agent_failed`, `schema_invalid`, `parse_failed`, `check_failed`, `
 `tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `join_failed`, `activity_failed`, `timeout`,
 `interrupted`, `template_failed`, `params_invalid`, `unmocked`, `no_backend`, `config`;
 engine: `loop_limit`, `no_transition`, `guard_failed`, `action_failed`,
-`wait_timeout`, `not_serialisable`, `budget_exceeded` (`limits.max_cost` reached; `run.cost` is the spend so far).
+`wait_timeout`, `not_serialisable`, `budget_exceeded` (`limits.max_cost` or `limits.max_output_tokens` reached; `run.cost` and `run.output_tokens` are the spend so far).
 `error.where` names the code field that failed (`one.exit`). Not catchable: `step_limit`, `timed_out`,
 `cancelled`, `diverged`.
 

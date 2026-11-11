@@ -1215,6 +1215,20 @@
           "description": "USD the whole run may spend (run.cost): once reached, an agent, decide or call activity fails with budget_exceeded instead of starting",
           "title": "Max Cost"
         },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "LLM output tokens (completion, thinking included) the whole run may produce (run.output_tokens): once reached, an agent, decide or call activity fails with budget_exceeded instead of starting. Unlike USD it means the same on every model and route, a subscription's too",
+          "title": "Max Output Tokens"
+        },
         "max_steps": {
           "default": 1000,
           "description": "macro steps per machine instance",

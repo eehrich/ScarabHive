@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import sys
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -393,16 +394,23 @@ def _child(suite: Suite, job: Dict[str, Any], jdir: Path, name: str, workspace: 
                                     "config": config_layer(suite)}, ensure_ascii=False), encoding="utf-8")
     result_path.unlink(missing_ok=True)  # one of an earlier call (a judge's again) is not this one's answer
     log = jdir / f"child-{name}.log"
-    started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    started_at = time.time()
+    started = datetime.fromtimestamp(started_at, timezone.utc).isoformat(timespec="milliseconds")
     exit_code = run_bounded([sys.executable, "-m", "plugins.agent_eval.child", str(job_file)], cwd=workspace,
                             log=log, timeout=timeout, env=child_env(suite, data))
     # From the usage store, not from the child: a run killed at its timeout wrote nothing, and is often the
     # costliest one. With it what a check reads the run's products from: the data directory (its stores) and the
-    # machine runs it started -- those of a fresh one only: in the installation's, every run since would count.
+    # machine runs it started: in a fresh one every run since; in the installation's, where everyone's runs are,
+    # the workflows whose caller was this run (stategraph_runs, started_by).
     fresh = suite.data == "fresh"
-    usage = {**usage_of(request_id, data if fresh else None),
+    machine_runs = (stategraph_runs(data, started) if fresh
+                    else stategraph_runs(PROJECT_ROOT / data_path(), started, started_by=request_id))
+    # A machine the agent started (run_machine, a workflow) runs its agents under <its run id>_NNN, not under the
+    # agent's request: its calls are this run's cost too.
+    usage = {**usage_of(request_id, data if fresh else None, also=[r["id"] for r in machine_runs or ()],
+                        since=started_at),
              "data_dir": str(data if fresh else PROJECT_ROOT / data_path()),  # absolute: a check runs elsewhere
-             "stategraph_runs": stategraph_runs(data, started) if fresh else None}
+             "stategraph_runs": machine_runs}
     if exit_code is None:
         return {"status": "timeout", "request_id": request_id, "exit": None, **usage,
                 "detail": f"timed out after {timeout:.0f}s"}
@@ -620,26 +628,47 @@ def _fork_job(task: Task) -> Optional[Dict[str, Any]]:
             "definition": fork.definition, "mocks": fork.mocks, "stategraph": fork.stategraph}
 
 
-def stategraph_runs(data: Path, since: str) -> List[Dict[str, Any]]:
+def stategraph_runs(data: Path, since: str, started_by: Optional[str] = None) -> List[Dict[str, Any]]:
     """The stategraph runs in *data* that began or moved on at *since* or later (UTC, as the journal writes it): a
     chain keeps its data directory from task to task, and a task's are the runs its own agent run started or drove
-    on. Only the child writes that journal: nothing else moves them."""
+    on. Only the child writes that journal: nothing else moves them.
+
+    With *started_by* (a request id: the installation's journal, which everyone writes), only the dynamic
+    workflows that request or one of its sub-requests started, and the runs below them. A machine an agent
+    started with run_machine is not among them: its row does not name the request that started it."""
     db = data / "stategraph" / "runs.db"
     if not db.is_file():
         return []
+    # json_valid first: one row whose column is not JSON would fail the whole query on everyone's journal
+    by = (", CASE WHEN json_valid(workflow) THEN json_extract(workflow, '$.request') END"
+          if started_by is not None else "")
     try:
         with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=10) as conn:
-            rows = conn.execute("SELECT id, machine_id, status, final_state, caller_run, parent_run FROM runs "
+            rows = conn.execute(f"SELECT id, machine_id, status, final_state, caller_run, parent_run{by} FROM runs "
                                 "WHERE created_at >= ? OR updated_at >= ? ORDER BY created_at",
                                 (since, since)).fetchall()
     except sqlite3.Error:
         return []
-    return [dict(zip(("id", "machine", "status", "final_state", "caller_run", "parent_run"), row)) for row in rows]
+    runs = [dict(zip(("id", "machine", "status", "final_state", "caller_run", "parent_run"), row)) for row in rows]
+    if started_by is None:
+        return runs
+    mine = {row[0] for row in rows if isinstance(row[6], str) and (
+        row[6] == started_by or row[6].startswith(started_by + "_"))}
+    grew = True
+    while grew:  # and below them: a submachine (parent_run), a run a call activity started (caller_run)
+        below = {r["id"] for r in runs if r["id"] not in mine and (r["parent_run"] in mine or r["caller_run"] in mine)}
+        mine |= below
+        grew = bool(below)
+    return [r for r in runs if r["id"] in mine]
 
 
-def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
+def usage_of(request_id: str, data: Optional[Path], also: Sequence[str] = (),
+             since: Optional[float] = None) -> Dict[str, Any]:
     """Calls, tokens and cost of one run, sub-agents included: the usage tracker's records whose request id is
-    the run's or starts with ``<run's>_`` (sub-requests). *data* is the run's own data directory; None means the
+    the run's or starts with ``<run's>_`` (sub-requests) -- or is one of *also* (the machine runs it started),
+    or starts with that; a record matching several counts once. Those of *also* only from *since* (epoch s) on:
+    a chain keeps its data directory, and a machine run an earlier task started and this one drove on brought
+    that task's calls along, already counted there. *data* is the run's own data directory; None means the
     installation's. Unknown (None) when the store is not where the tracker keeps it by default."""
     db = (data or data_path()) / "context_usage_tracker" / "usage.db"
     unknown = {"calls": None, "cost": None, "estimated_cost": None, "prompt_tokens": None, "completion_tokens": None,
@@ -650,8 +679,12 @@ def usage_of(request_id: str, data: Optional[Path]) -> Dict[str, Any]:
         # as_uri: a '#' or '%' in the path would otherwise cut the URI -- and open a stray database read-write
         with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=10) as conn:
             # '`' sorts right after '_': the range is exactly the ids that start with "<id>_".
-            mine = "FROM usage_snapshots WHERE request_id = ? OR (request_id > ? AND request_id < ?)"
-            ids = (request_id, request_id + "_", request_id + "`")
+            under = "(request_id = ? OR (request_id > ? AND request_id < ?))"
+            machines = [root for root in dict.fromkeys(also) if root != request_id]
+            late = "" if since is None else " AND timestamp >= ?"
+            mine = "FROM usage_snapshots WHERE " + " OR ".join([under] + [f"({under}{late})"] * len(machines))
+            ids = tuple(value for i, root in enumerate([request_id, *machines])
+                        for value in (root, root + "_", root + "`", *((since,) if i and since is not None else ())))
             row = conn.execute("SELECT COUNT(*), SUM(cost), SUM(cost IS NULL), SUM(prompt_tokens), "
                                f"SUM(completion_tokens) {mine}", ids).fetchone()
             try:

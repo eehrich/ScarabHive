@@ -405,7 +405,7 @@ NAMESPACE_FIELDS = {
                  "model", "cost"),
     "error": ("type", "message", "state", "data", "cause", "branch", "index", "visits", "where"),
     "event": ("name", "data"),
-    "run": ("id", "origin", "step", "machine", "state", "visits", "entered", "frame", "cost"),
+    "run": ("id", "origin", "step", "machine", "state", "visits", "entered", "frame", "cost", "output_tokens"),
     "ending": ("reason", "state", "error"),
 }
 

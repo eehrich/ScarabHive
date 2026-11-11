@@ -20,7 +20,7 @@ turn of yours.
 - **Not** for a handful of tool calls, a lookup, or work whose next step depends on judging the last
   one in ways you cannot write down as a guard. Do that yourself.
 - A workflow can start dozens of agents. Write one when the user asked for it or the task clearly
-  needs the breadth, and say what the cost cap is.
+  needs the breadth, and say what its cap on output tokens is.
 
 **Scout first, then fan out.** List the files, read the diff, find the modules yourself; then write
 the workflow over the list you found and pass it in as `params`.
@@ -32,7 +32,7 @@ the workflow over the list you found and pass it in as `params`.
 2. Write the machine: one self-contained YAML text, submachines under `machines:`, no `imports`,
    no `python:`. Give it an id of its own (not one of a saved machine).
 3. `stategraph_validate_machine(yaml=...)` until it reports no error.
-4. `stategraph_run_workflow(yaml=..., params=..., max_cost=...)` starts it in the background. The
+4. `stategraph_run_workflow(yaml=..., params=..., max_output_tokens=...)` starts it in the background. The
    answer says whether you will be woken and whether the result then comes by itself; its `next`
    says what to do. Otherwise read it with `stategraph_get_run(run_id, wait="finish")`.
 
@@ -46,7 +46,7 @@ id: <name>                      # [a-z][a-z0-9_]*
 title: <one line>
 params:                         # what you pass in
   files: {type: array, required: true}
-limits: {max_cost: 2.0, concurrency: 4, max_steps: 400, timeout: 1h}   # always set max_cost
+limits: {max_output_tokens: 200000, concurrency: 4, max_steps: 400, timeout: 1h}   # always set max_output_tokens
 context: {results: []}          # ctx: the workflow's variables (JSON)
 machines:                       # local submachines: a box per item, see "Pipeline"
   one: {params: {...}, context: {...}, initial: ..., states: {...}}
@@ -153,7 +153,7 @@ scoring them with a `schema`, then the winner in the output.
 
 ## Rules
 
-- Always `limits.max_cost`. Start small; a cap that is hit ends the run with `budget_exceeded`,
+- Always `limits.max_output_tokens`: what its agents may write, thinking included -- the same on every model. Start small; a cap that is hit ends the run with `budget_exceeded`,
   which a transition can catch to return what was done so far.
 - Prefer the pipeline to a barrier.
 - Say what was dropped. A `fail: collect` that lost items, or an `until` that stopped early, goes

@@ -298,6 +298,11 @@ class LimitsSpec(Strict):
     max_cost: Optional[float] = Field(
         None, ge=0, description="USD the whole run may spend (run.cost): once reached, an agent, decide or call "
                                 "activity fails with budget_exceeded instead of starting")
+    max_output_tokens: Optional[int] = Field(
+        None, ge=1, description="LLM output tokens (completion, thinking included) the whole run may produce "
+                                "(run.output_tokens): once reached, an agent, decide or call activity fails with "
+                                "budget_exceeded instead of starting. Unlike USD it means the same on every model "
+                                "and route, a subscription's too")
 
     @field_validator("timeout")
     @classmethod

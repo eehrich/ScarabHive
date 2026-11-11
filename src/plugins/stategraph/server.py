@@ -556,11 +556,11 @@ class StateGraphServer(SchemaBasedToolServer):
     async def run_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
             agent = params.get("_agent")
-            max_cost = params.get("max_cost")
+            cap = params.get("max_output_tokens")
             started = await self.service.start_workflow(
                 params.get("yaml"), params=_object(params, "params"),
-                max_cost=float(max_cost) if isinstance(max_cost, (int, float)) and not isinstance(max_cost, bool)
-                else max_cost,
+                # a model writes 50000.0 as often as 50000
+                max_output_tokens=int(cap) if isinstance(cap, float) and cap.is_integer() else cap,
                 wake=params.get("wake_when_done") is not False, user_id=params.get("_user_id"),
                 caller=params.get("_agent_name") or getattr(agent, "name", None),
                 caller_session=params.get("_session_id"), caller_request=params.get("_request_id"))
@@ -578,7 +578,7 @@ class StateGraphServer(SchemaBasedToolServer):
             return started
         return await self._run_tool(params, "run_workflow", body,
                                     lambda r: f"workflow {r['machine_id']} started: run {r['run_id']}, "
-                                              f"max {r['max_cost']:g} USD, wake {r['wake'][:40]}")
+                                              f"max {r['max_output_tokens']} output tokens, wake {r['wake'][:40]}")
 
     async def _wait(self, run_id: str, max_wait: float, token: Any, *, terminate: bool = True) -> dict[str, Any]:
         """Wait for a run to leave running. A cancelled caller stops waiting; one that started the run (terminate)

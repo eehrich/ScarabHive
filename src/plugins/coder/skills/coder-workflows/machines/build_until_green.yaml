@@ -1,0 +1,188 @@
+# Build a change, test it, fix until green -- then review it, and let other reviewers try to refute every
+# finding before it goes back to the builder. One builder at a time; the reviewers read in parallel.
+# Copy it, give it an id of its own, change what the task needs; then validate and run it.
+stategraph: 1
+id: build_until_green
+title: Build until green, then review with refutation
+
+params:
+  task:   {type: string, required: true, description: "What to build: the goal, the files with paths, the constraints"}
+  tests:  {type: string, required: true, description: "What the tester runs, e.g. pytest tests/test_x.py -q"}
+  lenses: {type: array, default: [correctness, error handling, the callers of what changed], description: One reviewer per lens}
+
+limits: {max_output_tokens: 400000, concurrency: 3, max_steps: 300, timeout: 3h}
+
+context:
+  builds: 0
+  notes: ""
+  summary: ""
+  files: []
+  failing: ""
+  findings: []
+  open_findings: []
+  lost: []
+  problem: null
+
+initial: build
+
+states:
+  build:
+    description: The coder makes the change -- or fixes what the tests or the review found.
+    max_visits: 5
+    do:
+      agent: coder
+      task: |
+        {{ params.task }}
+
+        You are the builder of a workflow. After you, a tester runs `{{ params.tests }}`, and once they pass,
+        reviewers read your change. Do not start a coder_reviewer yourself and do not commit. Make the change,
+        run what is quick to run, and answer with what you changed and the files you touched.
+        {{ ctx.notes }}
+      schema:
+        type: object
+        required: [summary, files]
+        properties:
+          summary: {type: string}
+          files: {type: array, items: {type: string}}
+    transitions:
+      - target: test
+        effect: |
+          ctx.builds = ctx.builds + 1
+          ctx.summary = out["summary"]
+          ctx.files = ctx.files + [f for f in out["files"] if f not in ctx.files]
+      - trigger: error
+        target: failed
+        effect: ctx.problem = error.message
+
+  test:
+    description: The tester runs the tests; red goes back to the builder with the failure, at most four builds.
+    do:
+      agent: coder_tester
+      task: |
+        Run `{{ params.tests }}` in the workspace and say whether every test passed. Change no file. In `output`,
+        the failing tests with their errors, cut to what a fix needs; empty when all passed.
+      schema:
+        type: object
+        required: [passed, output]
+        properties:
+          passed: {type: boolean}
+          output: {type: string}
+    transitions:
+      - target: review
+        guard: out["passed"]
+      - target: build
+        guard: ctx.builds < 4
+        effect: |
+          ctx.notes = "The tests failed after your last change. Fix the cause, not the tests:\n" + out["output"]
+      - target: not_green
+        guard: else
+        effect: ctx.failing = out["output"]
+      - trigger: error
+        target: failed
+        effect: ctx.problem = error.message
+
+  review:
+    description: One reviewer per lens, in parallel; read-only.
+    do:
+      map: params.lenses
+      as: lens
+      concurrency: 3
+      fail: collect
+      each:
+        agent: coder_reviewer
+        task: |
+          Review this change for {{ lens }} only. It is uncommitted in the working tree: read the files yourself.
+          What it should do: {{ params.task }}
+          What the builder says it did: {{ ctx.summary }}
+          Files: {{ ctx.files }}
+          Report only findings that name a failing case -- the file, the line, the claim and the input or state
+          that breaks it. None found: an empty list.
+        schema:
+          type: object
+          required: [findings]
+          properties:
+            findings:
+              type: array
+              items:
+                type: object
+                required: [file, line, claim]
+                properties:
+                  file: {type: string}
+                  line: {type: integer}
+                  claim: {type: string}
+    transitions:
+      - target: verify
+        effect: |
+          ctx.lost = ctx.lost + ["review: " + lens for lens, r in zip(params.lenses, out) if r["status"] != "succeeded"]
+          ctx.findings = [f for r in out if r["status"] == "succeeded" for f in r["out"]["findings"]]
+
+  verify:
+    description: >-
+      Three skeptics per finding try to refute it; it stands when at least two cannot, falls when two refute it,
+      and is lost when skeptics failed and leave neither.
+    do:
+      map: ctx.findings
+      as: finding
+      concurrency: 3
+      fail: collect
+      each:
+        map: range(3)
+        as: skeptic
+        fail: collect
+        each:
+          agent: coder_reviewer
+          task: |
+            Try to refute this finding against the code: a guard before it, a caller that rules the input out,
+            a branch no entry point reaches. Read the places. Answer refuted=true when you cannot show the
+            failing case yourself.
+
+            {{ finding }}
+          schema:
+            type: object
+            required: [refuted, reason]
+            properties:
+              refuted: {type: boolean}
+              reason: {type: string}
+    transitions:
+      - target: build
+        guard: >-
+          ctx.builds < 4 and len([f for f, r in zip(ctx.findings, out) if r["status"] == "succeeded"
+          and sum(1 for v in r["out"] if v["status"] == "succeeded" and not v["out"]["refuted"]) >= 2]) > 0
+        effect: |
+          votes = [[v["out"]["refuted"] for v in r["out"] if v["status"] == "succeeded"]
+                   if r["status"] == "succeeded" else [] for r in out]
+          ctx.open_findings = [f for f, vs in zip(ctx.findings, votes) if vs.count(False) >= 2]
+          ctx.lost = ctx.lost + ["verify: " + f["claim"] for f, vs in zip(ctx.findings, votes)
+                                 if vs.count(False) < 2 and vs.count(True) < 2]
+          ctx.notes = ("The tests pass. Reviewers found these problems in your change, and each survived an "
+                       "attempt to refute it. Fix them:\n" + str(ctx.open_findings))
+      - target: done
+        effect: |
+          votes = [[v["out"]["refuted"] for v in r["out"] if v["status"] == "succeeded"]
+                   if r["status"] == "succeeded" else [] for r in out]
+          ctx.open_findings = [f for f, vs in zip(ctx.findings, votes) if vs.count(False) >= 2]
+          ctx.lost = ctx.lost + ["verify: " + f["claim"] for f, vs in zip(ctx.findings, votes)
+                                 if vs.count(False) < 2 and vs.count(True) < 2]
+
+  done:
+    type: final
+    output:
+      summary: "{{ ctx.summary }}"
+      files: "{{ ctx.files }}"
+      builds: "{{ ctx.builds }}"
+      open_findings: "{{ ctx.open_findings }}"
+      lost: "{{ ctx.lost }}"
+
+  not_green:
+    type: final
+    status: failed
+    output:
+      problem: "the tests still fail after {{ ctx.builds }} builds"
+      failing: "{{ ctx.failing }}"
+      summary: "{{ ctx.summary }}"
+      files: "{{ ctx.files }}"
+
+  failed:
+    type: final
+    status: failed
+    output: {problem: "{{ ctx.problem }}", summary: "{{ ctx.summary }}", files: "{{ ctx.files }}"}

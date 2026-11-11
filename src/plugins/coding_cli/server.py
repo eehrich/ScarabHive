@@ -1571,7 +1571,8 @@ class CodingCliServer(SchemaBasedToolServer):
             return
         # wake_session judges the RINGER's depth: a woken process would take
         # the lease and wake nobody. Left untaken, a process that can ring does.
-        if wake_depth() or wake_blocked(self.system_config, session_id, user_id):
+        # The run has ended: a one-shot process rings for it like any other.
+        if wake_depth() or wake_blocked(self.system_config, session_id, user_id, outlives_the_process=True):
             return
         try:
             if lease.exists():

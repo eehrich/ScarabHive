@@ -2,7 +2,7 @@
 #
 # The planner gets the skill stategraph-workflows, the catalog and the validator -- nothing else -- and a
 # coding or game-dev task to plan as a stategraph machine. It does not run the machine: it answers with the
-# YAML. The check (checks.py) scores the answer by criterion: parses, validates, sets limits.max_cost, stays in
+# YAML. The check (checks.py) scores the answer by criterion: parses, validates, sets limits.max_output_tokens, stays in
 # the workflow subset, names only the task's agents, and has the shape the task asks for (fan-out, a second
 # fan-out to check, a pipeline, collected failures, a bounded loop).
 #

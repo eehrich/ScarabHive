@@ -2109,6 +2109,15 @@ const CASES = {
       `opened, the cost with its tokens: ${body.innerHTML}`);
   },
 
+  async a_run_with_a_cap_on_output_tokens_shows_its_own_against_it() {
+    RUN2.max_output_tokens = 200000;
+    RUN2.output_tokens = 170000;  // 85 %: warned (the panel is booted once per case)
+    await boot('?machine=review&run=r2');
+    const span = $('runResult').innerHTML.match(/<span class="([^"]*)"[^>]*>(own ↓[^<]*output tokens)<\/span>/);
+    check(span && span[1] === 'pk-text--warn' && span[2] === 'own ↓170.0k of 200.0k output tokens',
+      `from 80 % of the cap it warns: ${span}`);
+  },
+
   async the_result_lists_what_each_state_cost_a_phase_with_its_states() {
     RUN2.spend = { cost: 0.875, activities: 3, tokens: { prompt: 30, completion: 6, cached: 0 }, cost_is_estimate: false,
       cost_unpriced_calls: 1, by_state: [

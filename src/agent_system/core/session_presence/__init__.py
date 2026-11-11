@@ -56,7 +56,7 @@ from .presence import (
     stopped_by_user,
 )
 from .process import WAKE_DEPTH_ENV, WAKE_TASK, alive, spawn_wake, wake_command, wake_depth
-from .wake import PRESENCE_OFF, wake_blocked, wake_session
+from .wake import PRESENCE_OFF, process_ends_with_its_run, wake_blocked, wake_session
 
 __all__ = [
     "PRESENCE_OFF",
@@ -69,6 +69,7 @@ __all__ = [
     "forget_stop",
     "note_stop",
     "presence_for",
+    "process_ends_with_its_run",
     "sessions_dir",
     "spawn_wake",
     "stopped_by_user",

@@ -16,15 +16,17 @@ from typing import Any, Optional
 
 #: The instance setting, and the keys it must have: without them no workflow starts (the user sets the caps).
 SETTINGS_KEY = "workflows"
-REQUIRED = ("default_max_cost", "max_cost_ceiling", "default_concurrency")
+REQUIRED = ("default_max_output_tokens", "max_output_tokens_ceiling", "default_concurrency")
 #: Top-level keys an inline machine may not use: they read files next to the machine, which it has not.
 NOT_INLINE = ("imports", "python")
 
 
 @dataclass(frozen=True)
 class WorkflowSettings:
-    default_max_cost: float
-    max_cost_ceiling: float
+    #: Caps in LLM output tokens, not USD: a token means the same on every model and route -- a subscription's
+    #: window fills with them too -- and output is what costs (input is mostly cached).
+    default_max_output_tokens: int
+    max_output_tokens_ceiling: int
     default_concurrency: int
     #: Agent activities of every workflow run of this process at once; None: no bound beyond each run's.
     max_concurrent_agents: Optional[int] = None
@@ -52,16 +54,16 @@ def settings_of(server_config: Any) -> WorkflowSettings:
     if missing:
         raise ValueError(f"dynamic workflows are off: {SETTINGS_KEY} lacks {', '.join(missing)}")
     settings = WorkflowSettings(
-        default_max_cost=float(_number(raw, "default_max_cost")),
-        max_cost_ceiling=float(_number(raw, "max_cost_ceiling")),
+        default_max_output_tokens=_number(raw, "default_max_output_tokens", whole=True),
+        max_output_tokens_ceiling=_number(raw, "max_output_tokens_ceiling", whole=True),
         default_concurrency=_number(raw, "default_concurrency", whole=True),
         max_concurrent_agents=(_number(raw, "max_concurrent_agents", whole=True)
                                if raw.get("max_concurrent_agents") is not None else None),
         max_concurrency=(_number(raw, "max_concurrency", whole=True)
                          if raw.get("max_concurrency") is not None else None))
-    if settings.default_max_cost > settings.max_cost_ceiling:
-        raise ValueError(f"{SETTINGS_KEY}.default_max_cost ({settings.default_max_cost:g}) is above "
-                         f"max_cost_ceiling ({settings.max_cost_ceiling:g})")
+    if settings.default_max_output_tokens > settings.max_output_tokens_ceiling:
+        raise ValueError(f"{SETTINGS_KEY}.default_max_output_tokens ({settings.default_max_output_tokens}) is above "
+                         f"max_output_tokens_ceiling ({settings.max_output_tokens_ceiling})")
     return settings
 
 
@@ -73,35 +75,37 @@ def inline_problems(data: Any) -> list[str]:
             "and no companion module" for key in NOT_INLINE if key in data]
 
 
-def with_terms(text: str, settings: WorkflowSettings, max_cost: Optional[float]) -> tuple[str, float, int]:
-    """The machine's text with the limits it runs under written in, and those limits (max_cost, concurrency).
+def with_terms(text: str, settings: WorkflowSettings, max_output_tokens: Optional[int]) -> tuple[str, int, int]:
+    """The machine's text with the limits it runs under written in, and those limits (max_output_tokens,
+    concurrency).
 
-    max_cost: the smaller of the caller's and the machine's own, else either, else the default -- never above the
-    ceiling (refused, not lowered: the caller learns its plan is too costly). concurrency: the machine's, else the
-    default, at most max_concurrency (else the default): the cap is checked before an activity starts, so what runs
-    at once is what can still spend past it.
+    max_output_tokens: the smaller of the caller's and the machine's own, else either, else the default -- never
+    above the ceiling (refused, not lowered: the caller learns its plan is too big). A limits.max_cost the machine
+    sets stays, as one bound more. concurrency: the machine's, else the default, at most max_concurrency (else the
+    default): the cap is checked before an activity starts, so what runs at once is what can still go past it.
     Written into the text, the limits are in the run's snapshot: the panel shows them, a replay reads them."""
     from .model.loader import parse_yaml
     from .model.yamledit import apply_op
 
     data = parse_yaml(text)
     limits = data.get("limits") if isinstance(data, dict) and isinstance(data.get("limits"), dict) else {}
-    own = limits.get("max_cost")
-    if own is not None and (isinstance(own, bool) or not isinstance(own, (int, float)) or own <= 0):
-        raise ValueError(f"limits.max_cost must be a number above 0, not {own!r}")
-    if max_cost is not None and (isinstance(max_cost, bool) or not isinstance(max_cost, (int, float))
-                                 or max_cost <= 0):
-        raise ValueError(f"max_cost must be a number above 0 (USD), not {max_cost!r}")
-    given = [float(v) for v in (own, max_cost) if v is not None]
-    cap = min(given) if given else settings.default_max_cost
-    if cap > settings.max_cost_ceiling:
-        raise ValueError(f"max_cost {cap:g} USD is above this installation's ceiling of "
-                         f"{settings.max_cost_ceiling:g} USD ({SETTINGS_KEY}.max_cost_ceiling)")
+    own = limits.get("max_output_tokens")
+    if own is not None and (isinstance(own, bool) or not isinstance(own, int) or own <= 0):
+        raise ValueError(f"limits.max_output_tokens must be a whole number above 0, not {own!r}")
+    if max_output_tokens is not None and (isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int)
+                                          or max_output_tokens <= 0):
+        raise ValueError(f"max_output_tokens must be a whole number above 0 (LLM output tokens), "
+                         f"not {max_output_tokens!r}")
+    given = [v for v in (own, max_output_tokens) if v is not None]
+    cap = min(given) if given else settings.default_max_output_tokens
+    if cap > settings.max_output_tokens_ceiling:
+        raise ValueError(f"max_output_tokens {cap} is above this installation's ceiling of "
+                         f"{settings.max_output_tokens_ceiling} ({SETTINGS_KEY}.max_output_tokens_ceiling)")
     concurrency = limits.get("concurrency")
     if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
         concurrency = settings.default_concurrency
     concurrency = min(concurrency, settings.max_concurrency or settings.default_concurrency)
-    terms = {**limits, "max_cost": cap, "concurrency": concurrency}
+    terms = {**limits, "max_output_tokens": cap, "concurrency": concurrency}
     return apply_op(text, {"op": "update_machine", "fields": {"limits": terms}}), cap, concurrency
 
 

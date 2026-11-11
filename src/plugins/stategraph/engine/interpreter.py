@@ -195,7 +195,8 @@ class Frame:
                                  "machine": self.machine.id,
                                  "state": leaf.name if leaf else None, "visits": dict(self.visits),
                                  "entered": dict(self.entered_step),
-                                 "frame": self.prefix, "cost": round(self.run.cost, 6)}, "run"),
+                                 "frame": self.prefix, "cost": round(self.run.cost, 6),
+                                 "output_tokens": self.run.output_tokens}, "run"),
             # a resource not opened (its open failed, or has not run yet) reads as None: a finally can check it
             "resources": namespace_of({**dict.fromkeys(self.machine.spec.resources), **self.resources}, "resources"),
             "out": None, "error": None, "event": None, "activity": None,

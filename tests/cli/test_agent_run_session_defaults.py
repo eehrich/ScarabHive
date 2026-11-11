@@ -123,6 +123,24 @@ def _run(**kwargs):
         loop.close()
 
 
+def test_the_run_tells_background_work_that_the_process_ends_with_it(run_env, monkeypatch):
+    """A job the run starts in the background dies with agent-run: its starter is told to poll, not to wait for
+    a wake (core/session_presence/wake.py) -- for the run only, a test process runs many."""
+    from agent_system.core.session_presence import wake
+
+    during = []
+    request = agent_run.run_agent_request
+
+    async def run_request(*args, **kwargs):
+        during.append(wake._ENDS_WITH_ITS_RUN)
+        return await request(*args, **kwargs)
+
+    monkeypatch.setattr(agent_run, "run_agent_request", run_request)
+    _run(session_id="s1")
+    assert during == [True]
+    assert wake._ENDS_WITH_ITS_RUN is False
+
+
 class TestAgentRunContinuesLikeAgentCli:
     def test_the_session_agent_is_used(self, run_env):
         _run(session_id="s1")

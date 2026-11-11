@@ -427,6 +427,8 @@ class RunContext:
         #: run.cost: what the activity outcomes met so far cost (meta.cost) -- counted as each is journaled or
         #: replayed, so a replay reads the same value at the same point; limits.max_cost bounds it
         self.cost = 0.0
+        #: run.output_tokens: the same for their LLM output (meta.tokens.completion); limits.max_output_tokens bounds it
+        self.output_tokens = 0
         #: the original exception behind the error that ended the run (a call's own code raised it), in this process
         #: only: never journaled -- an in-process caller of the run gets it back (FEAT-12)
         self.exception: Optional[BaseException] = None
@@ -474,9 +476,12 @@ class RunContext:
             self.interrupted.add(key)
 
     def add_cost(self, *rows: dict[str, Any]) -> None:
-        """run.cost: add what these activity rows' data cost (``meta.cost``)."""
+        """run.cost and run.output_tokens: add what these activity rows' data cost (``meta.cost``,
+        ``meta.tokens.completion``)."""
         for data in rows:
-            self.cost += self.cost_of((data or {}).get("meta"))
+            meta = (data or {}).get("meta")
+            self.cost += self.cost_of(meta)
+            self.output_tokens += self.output_tokens_of(meta)
 
     def count_recorded(self, key: str) -> None:
         """run.cost: add what the recorded activity at ``key`` -- and, a composite, every activity below it -- cost,
@@ -490,6 +495,13 @@ class RunContext:
         """What an activity's ``meta`` says it cost (``meta.cost``; 0 without a number)."""
         cost = (meta or {}).get("cost")
         return cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+
+    @staticmethod
+    def output_tokens_of(meta: Optional[dict[str, Any]]) -> int:
+        """The LLM output tokens an activity's ``meta`` says it produced (``meta.tokens.completion``; 0 without)."""
+        tokens = (meta or {}).get("tokens")
+        value = tokens.get("completion") if isinstance(tokens, dict) else None
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
     def _load_journal(self) -> None:
         for row in self.store.rows(self.id, kinds=("activity", "event", "edit", "timer", "trace")):
@@ -1946,6 +1958,17 @@ class RunManager:
         row["terminal"] = row["status"] in TERMINAL_STATUSES
         return row
 
+    def output_tokens(self, run_id: str) -> tuple[Optional[int], int]:
+        """The run's limits.max_output_tokens -- of its own definition's root machine, None without one -- and its
+        own run.output_tokens, as ``budget`` answers for USD."""
+        live = self.live.get(run_id)
+        if live is not None:
+            return live.ctx.machine.spec.limits.max_output_tokens, live.ctx.output_tokens
+        used = self.store.run_output_tokens(run_id)
+        if used is None:  # no journal rows (retention kept only what it spent)
+            used = int(((self.store.spend(run_id) or {}).get("tokens") or {}).get("completion", 0))
+        return self._definition_facts(run_id)["max_output_tokens"], int(used)
+
     def budget(self, run_id: str) -> tuple[Optional[float], float]:
         """The run's limits.max_cost -- of its own definition's root machine, None without one -- and its own
         run.cost: the running total while it runs here, else the same sum from its journal (RunStore.run_cost: a
@@ -1977,12 +2000,13 @@ class RunManager:
             source = (self.store.get_run(origin) or {}).get("definition", definition) if origin != run_id else definition
         except Exception:  # the store, not the definition: asked again next time
             logger.debug("run %s: its definition not read", run_id, exc_info=True)
-            return {"defaults": {}, "max_cost": None}
+            return {"defaults": {}, "max_cost": None, "max_output_tokens": None}
         own = self._root_spec(run_id, definition)
         spec = own if source is definition else self._root_spec(run_id, source)
         facts = {"defaults": {name: param.default for name, param in spec.params.items() if param.default is not None}
                              if spec is not None else {},
-                 "max_cost": own.limits.max_cost if own is not None else None}
+                 "max_cost": own.limits.max_cost if own is not None else None,
+                 "max_output_tokens": own.limits.max_output_tokens if own is not None else None}
         with self._facts_lock:  # nobody else drops the entry this one is about to drop
             if len(self._facts) >= DEFAULTS_KEPT:
                 self._facts.pop(next(iter(self._facts)), None)

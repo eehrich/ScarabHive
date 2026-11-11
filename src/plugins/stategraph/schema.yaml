@@ -126,13 +126,13 @@ tools:
   - type: function
     function:
       name: "{{ name }}_run_workflow"
-      description: "Start a dynamic workflow: a machine you wrote for this task (skill stategraph-workflows), run in the background without being saved. It may name only agents you could start yourself and tools you may call; it runs under a cost cap and is woken back to you when it ends -- its result comes with your next turn. Validation errors come back before anything runs."
+      description: "Start a dynamic workflow: a machine you wrote for this task (skill stategraph-workflows), run in the background without being saved. It may name only agents you could start yourself and tools you may call; it runs under a cap on its agents' output tokens and is woken back to you when it ends -- its result comes with your next turn. Validation errors come back before anything runs."
       parameters:
         type: object
         properties:
           yaml: {type: string, description: "the machine, one self-contained text (submachines under machines:, no imports, no python:); its id must not name a saved machine"}
           params: {type: object, description: "the machine's params (run input)"}
-          max_cost: {type: number, description: "USD cap for this run; the smaller of this and the machine's own limits.max_cost applies, else the installation's default; above its ceiling the run is refused"}
+          max_output_tokens: {type: integer, description: "cap on the LLM output tokens (thinking included) of all the run's agents; the smaller of this and the machine's own limits.max_output_tokens applies, else the installation's default; above its ceiling the run is refused"}
           wake_when_done: {type: boolean, default: true, description: "you may end your turn: your session is woken when the run ends (the answer says whether that works here); false: read it yourself with get_run"}
         required: [yaml]
         additionalProperties: false

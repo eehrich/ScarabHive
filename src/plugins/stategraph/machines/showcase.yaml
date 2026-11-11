@@ -82,6 +82,7 @@ limits:
   timeout: 2h                              # the whole run, time spent running only
   concurrency: 4                           # leaf activities of the whole run at once
   max_cost: 50                             # USD the whole run may spend; past it: budget_exceeded
+  max_output_tokens: 2000000               # LLM output tokens its agents may write; past it: budget_exceeded
 
 resources:                                 # external state per frame (format §14)
   store:

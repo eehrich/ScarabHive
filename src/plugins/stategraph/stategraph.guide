@@ -291,7 +291,7 @@ activity lists those it started), what the run cost so
 far -- its agents with their sub-agents, the LLM calls its
 @{tt}call@{utt} functions made and the runs it started (tokens in ↑ and out ↓; ~ marks an amount
 estimated from the price table) and, when the run has a
-@{tt}limits.max_cost@{utt}, its own cost against it -- the runs it started
+@{tt}limits.max_cost@{utt} or @{tt}limits.max_output_tokens@{utt}, its own cost or output against it -- the runs it started
 are not bounded by it and count only in the spend beside -- with more than one state @{b}Cost by
 state@{ub} (a state that runs a submachine holds what its machine's
 states cost: the cost of a phase), the final state of each
@@ -430,6 +430,10 @@ every way out.
 @{bullet}@{tt}limits.max_cost@{utt} caps what a run spends in USD:
 @{tt}run.cost@{utt} is the spend so far; once it is reached, the next
 agent, decide or call activity fails with @{tt}budget_exceeded@{utt}.
+@{tt}limits.max_output_tokens@{utt} does the same for the LLM output
+tokens its agents produce, thinking included (@{tt}run.output_tokens@{utt})
+-- a cap that means the same on every model and route, a subscription's
+too, and output is what costs: input is mostly cached.
 @{bullet}@{tt}python: <id>.py@{utt} names a @{b}companion module@{ub}: its
 public functions are in scope in guards, effects and templates, and can be
 @{tt}call@{utt} activities.
@@ -1025,8 +1029,8 @@ the operator's to choose, there are no built-in ones:
 stategraph:
   type: stategraph
   workflows:
-    default_max_cost: 2.0       # USD per run when the call names none
-    max_cost_ceiling: 20.0      # USD; a call or machine asking for more is refused
+    default_max_output_tokens: 200000   # LLM output tokens per run, when the call names none
+    max_output_tokens_ceiling: 1000000  # a call or machine asking for more is refused
     default_concurrency: 4      # agent activities of one run at once, when it sets none
     max_concurrency: 6          # the most a workflow may set itself (optional; else the default)
     max_concurrent_agents: 8    # of every workflow run of a process at once (optional)
@@ -1063,12 +1067,15 @@ those.
 @{tt}python:@{utt}; submachines go under @{tt}machines:@{utt}. Its id may
 not name a saved machine. It runs with the instance's runner.
 @{bullet}@{b}Its caps, written in.@{ub} The smaller of the call's
-@{tt}max_cost@{utt} and the machine's own, else the default -- refused
-above the ceiling -- and a @{tt}concurrency@{utt}, are written into its
+@{tt}max_output_tokens@{utt} and the machine's own, else the default --
+refused above the ceiling -- and a @{tt}concurrency@{utt}, are written into its
 text before it runs: they are in the run's snapshot, the panel shows them,
 a replay reads them. The cap is checked before an activity starts -- and
 again once it holds its turn -- so a run goes past it by at most what its
-agents running at once still spend.
+agents running at once still produce. Output tokens, not USD: the same
+cap on every model and route, a subscription's too. Input is not
+counted -- it is mostly cached; @{tt}max_steps@{utt} and
+@{tt}timeout@{utt} bound a run that reads much and writes little.
 
 @{h2}Its end
 
@@ -1270,7 +1277,8 @@ caller's spend, pause and end leave it alone.
 @{tt}get_run@{utt} also answers @{tt}max_cost@{utt} (the run's own
 @{tt}limits.max_cost@{utt}, or null) and @{tt}cost@{utt} (its own
 @{tt}run.cost@{utt}, without its children; a fork's copied steps
-count, as its guard counts them) beside the spend.
+count, as its guard counts them) beside the spend -- and the same for
+output tokens: @{tt}max_output_tokens@{utt} and @{tt}output_tokens@{utt}.
 @endnode
 
 @node hook "The cost hook"

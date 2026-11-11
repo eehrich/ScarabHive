@@ -163,6 +163,9 @@ def _validate_file(fc: _FileContext) -> None:
     if fc.is_submachine and spec.limits.max_cost is not None:
         fc.problem("warning", "SG108", "limits.max_cost of a submachine is ignored; the run's root machine "
                                        "bounds what the whole run spends", ["limits", "max_cost"])
+    if fc.is_submachine and spec.limits.max_output_tokens is not None:
+        fc.problem("warning", "SG108", "limits.max_output_tokens of a submachine is ignored; the run's root machine "
+                                       "bounds what the whole run produces", ["limits", "max_output_tokens"])
     for name, state in fc.states.items():
         _check_state(fc, name, state, fc.paths[name])
     _check_graph(fc)

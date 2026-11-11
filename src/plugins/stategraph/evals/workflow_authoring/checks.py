@@ -128,7 +128,7 @@ def score(workspace: Any, run: dict, task: Any) -> dict[str, Any]:
     errors = validation_errors(text) if met["parses"] else ["does not parse"]
     met["validates"] = not errors
     notes += errors[:3]
-    met["max_cost"] = isinstance((spec.get("limits") or {}).get("max_cost"), (int, float))
+    met["max_output_tokens"] = isinstance((spec.get("limits") or {}).get("max_output_tokens"), int)
     used_forbidden = [k for k in FORBIDDEN_TOP if k in spec] + sorted(
         {k for a in _activities(spec) for k in FORBIDDEN_KINDS if k in a})
     met["subset"] = met["parses"] and not used_forbidden

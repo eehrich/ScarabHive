@@ -363,7 +363,7 @@ class ActivityRun:
                 self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
                 raise failure
 
-        budgeted = kind.spends and leaf and not self.finalizer and not self.literal  # limits.max_cost applies
+        budgeted = kind.spends and leaf and not self.finalizer and not self.literal  # limits.max_cost, max_output_tokens
         over = self._over_budget() if budgeted else None
         if over is not None:
             self._journal("error", {**base, "error": over.as_dict(), "meta": self.meta})
@@ -523,13 +523,18 @@ class ActivityRun:
 
     def _over_budget(self) -> Optional[ActivityError]:
         """budget_exceeded once the run's spend -- with what this activity's attempts so far spent, not counted into
-        run.cost before its outcome is journaled -- reached limits.max_cost; None below it or without one."""
-        limit = self.run.machine.spec.limits.max_cost
+        run.cost / run.output_tokens before its outcome is journaled -- reached limits.max_cost or
+        limits.max_output_tokens; None below both, or without either."""
+        limits = self.run.machine.spec.limits
         spent = self.run.cost + self.run.cost_of(self.meta)
-        if limit is None or spent < limit:
-            return None
-        return ActivityError("budget_exceeded", f"{self.path}: the run has spent {spent:.4f} USD, "
-                             f"limits.max_cost is {limit:g}")
+        if limits.max_cost is not None and spent >= limits.max_cost:
+            return ActivityError("budget_exceeded", f"{self.path}: the run has spent {spent:.4f} USD, "
+                                 f"limits.max_cost is {limits.max_cost:g}")
+        produced = self.run.output_tokens + self.run.output_tokens_of(self.meta)
+        if limits.max_output_tokens is not None and produced >= limits.max_output_tokens:
+            return ActivityError("budget_exceeded", f"{self.path}: the run has produced {produced} output tokens, "
+                                 f"limits.max_output_tokens is {limits.max_output_tokens}")
+        return None
 
     def _mocked(self) -> Any:
         """This attempt's mock: its answer, or its ``$error`` raised (a non-JSON mock fails not_serialisable)."""

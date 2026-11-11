@@ -1135,6 +1135,17 @@ class RunStore:
                 (run_id,)).fetchone()
         return cost if count else None
 
+    def run_output_tokens(self, run_id: str) -> Optional[int]:
+        """The run's run.output_tokens as its next resume would count it (RunContext.output_tokens):
+        ``meta.tokens.completion`` over the rows run_cost reads. None without activity rows."""
+        with self._lock:
+            count, tokens = self._db().execute(
+                "SELECT COUNT(*), TOTAL(CASE WHEN status IN ('done', 'error') THEN"
+                " json_extract(data, '$.meta.tokens.completion') END)"
+                " FROM journal WHERE run_id = ? AND kind = 'activity' AND key NOT GLOB 'rewound.*'",
+                (run_id,)).fetchone()
+        return int(tokens) if count else None
+
     def spend(self, run_id: str, *, children: bool = False, _seen: Optional[set[str]] = None
               ) -> Optional[dict[str, Any]]:
         """What the run's agent and decide activities cost, its submachines' included: the sum of their

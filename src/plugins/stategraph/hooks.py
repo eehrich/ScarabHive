@@ -44,8 +44,9 @@ def holds(messages: Any, head: str) -> bool:
 
 def result_turn(row: dict[str, Any]) -> str:
     """What the caller reads of a workflow run that ended: how, its cost, and its output or error."""
-    cost = row.get("cost")
-    head = (result_head(row) + (f", cost {float(cost):.4f} USD" if isinstance(cost, (int, float)) else "") + ".")
+    cost, produced = row.get("cost"), row.get("output_tokens")
+    head = (result_head(row) + (f", {produced} output tokens" if isinstance(produced, int) else "")
+            + (f", cost {float(cost):.4f} USD" if isinstance(cost, (int, float)) else "") + ".")
     body = row.get("output") if row.get("output") is not None else row.get("error")
     text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, indent=1, default=str)
     if len(text) > RESULT_CHARS:
@@ -90,7 +91,8 @@ class StateGraphHooks(PluginHook):
                 if run_id not in run_ids and not results.waiting(run_id):
                     results.deliver(run_id, session)
                     continue
-                turn = result_turn({**row, "cost": server.run_manager.budget(run_id)[1]})
+                turn = result_turn({**row, "cost": server.run_manager.budget(run_id)[1],
+                                    "output_tokens": server.run_manager.output_tokens(run_id)[1]})
             except Exception:  # noqa: BLE001 - it stays waiting: a poll for the caller, never a failed call
                 logger.warning("stategraph: workflow run %s not handed to its caller", run_id, exc_info=True)
                 continue

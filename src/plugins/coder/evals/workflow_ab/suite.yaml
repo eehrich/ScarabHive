@@ -1,0 +1,84 @@
+# Does a workflow make the coder better, and what does it cost?
+#
+# The same agent, coder_lead, twice: `workflow` as shipped -- it may hand a change to a workflow (build until
+# green, review with refutation; skill coder-workflows) -- and `solo` without the workflow tools, so the
+# prompt's workflow section is not rendered either: the coder as it is. Two tasks in a small ledger package:
+#   currencies  a feature across three modules, with cases the task states and tests/ does not show -- the
+#               kind of change a review with refutation is for
+#   bugs        three small bugs the tests show, one they do not -- a change a workflow should not pay for
+# The check (checks.py) runs the template's tests and hidden ones beside this file; the detail says how many
+# workflow runs the agent started, so "the workflow arm did not use one" is visible, not averaged in. The cost
+# of a run includes the agents of the workflows it started (agent_eval counts their <run id>_NNN requests).
+#
+# Run it with:  agent-eval run src/plugins/coder/evals/workflow_ab/suite.yaml
+name: coder-workflow-ab
+agent: coder_lead
+description: "coder_lead with and without dynamic workflows: test share incl. hidden cases, and cost"
+repeats: 1
+timeout_s: 3600
+parallel: 2
+budget_usd: 5                   # no new runs past it; one repeat per arm is a first look, not a verdict
+data: fresh
+config:
+  plugins:
+    servers:
+      stategraph:
+        # the runs' user may run workflows (stategraph's tools are admin work)
+        allowed_users: [cli_user]
+        workflows:
+          default_max_output_tokens: 400000
+          max_output_tokens_ceiling: 800000
+          default_concurrency: 3
+          max_concurrency: 4
+          max_concurrent_agents: 4
+      # Only the run's workspace and the skills: the hidden tests live in this suite's folder in the checkout,
+      # and the preloaded search would find them by the task's words.
+      coder_fs:
+        allowed_directories: [".", "src/plugins/coder/skills/"]
+      coder_fs_ro:
+        allowed_directories: [".", "src/plugins/coder/skills/"]
+      # Every agent of both arms on one cheap model: the lead (it inherits the coder's chain), the builder and
+      # the three it starts. What is compared is the workflow, not the model.
+      coder:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+      coder_explorer:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+      coder_reviewer:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+      coder_tester:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+arms:
+  workflow: {}
+  solo:
+    agent_config:
+      tools:
+        allowed: ["!stategraph/*", "!coder_lead_sam/*"]
+      skills:
+        on_demand: ["!coder-workflows", "!stategraph-workflows"]
+tasks:
+  - id: currencies
+    kind: learn
+    workspace: ledger_feature
+    input: >-
+      The current directory is a small Python package, ledger (read README.md). Add currencies to it:
+      (1) In a ledger line an amount may be followed by a currency code: three letters, after one or more
+      spaces, case-insensitive and kept upper-case ("-3.50 usd" is USD). Anything else after the number is an
+      error (ValueError). Entry gets a field `currency`: the code, or None for an amount without one -- None
+      means the base currency, and Entry(day, text, amount, category) keeps working.
+      (2) A new module ledger/currency.py with `convert(entries, rates, base="EUR")`: a new list in the same
+      order, every entry in the base currency with currency None. `rates` maps a code to the value of one unit
+      of it in the base currency. An entry already in the base currency (None, or the base's own code) keeps
+      its amount and needs no rate; a converted amount is rounded to cents, half to even. A code without a rate
+      is a ValueError that names the code.
+      (3) `totals_by_category` and `monthly` in ledger/report.py take `rates=None, base="EUR"`: with rates
+      they convert first; without rates an entry in another currency is a ValueError, never a sum of mixed
+      currencies. tests/ has tests for part of this; do not change them. Run the tests with python -m pytest.
+    check: {python: "plugins.coder.evals.workflow_ab.checks:score"}
+  - id: bugs
+    kind: learn
+    workspace: ledger_bugs
+    input: >-
+      The current directory is a small Python package, ledger (read README.md). Its tests fail: find the bugs
+      in ledger/ and fix them, so the package does what README.md and the docstrings say. Do not change the
+      tests. Run them with python -m pytest.
+    check: {python: "plugins.coder.evals.workflow_ab.checks:score"}

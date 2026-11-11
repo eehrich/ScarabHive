@@ -844,3 +844,27 @@ async def test_a_machine_s_agent_group_files_its_run_session_with_its_own(harnes
     assert row["status"] == "succeeded", row
     stored = await host.sessions.load_session("ann", f"sg_{run_id}")
     assert stored["metadata"].get("category") == ("Video" if block else None)
+
+
+async def test_a_decision_model_s_output_tokens_count_against_the_run_s_cap(monkeypatch):
+    """A decide through a decision model counted into max_cost but never into run.output_tokens: its meta had
+    no tokens, and limits.max_output_tokens is meant for any machine."""
+    from types import SimpleNamespace
+
+    import agent_system.llm.decisions as decisions
+    from plugins.llm_decisions.system_one import Answer, DecisionsResult
+    from plugins.stategraph.engine.runner import RunContext
+
+    class Client:
+        async def decide(self, input, questions, **kwargs):
+            return DecisionsResult(answers={"q": Answer(name="q", type="choice", value="yes", confidence=0.9, probabilities={"yes": 0.9})},
+                                   model="m", provider=None, id=None, input_tokens=120, output_tokens=7, cost=0.001,
+                                   duration_ms=1.0)
+
+    monkeypatch.setattr(decisions, "create_decisions_from_profile", lambda config, profile: Client())
+    act = SimpleNamespace(meta={}, finalizer=False)
+    backend = ScarabHiveBackend(runner=None, system_config=None, session_id="sg_r1", user_id="ann")
+    answers = await backend.decide(act, questions={"q": {}}, input="x", profile=None)
+    assert answers["q"]["value"] == "yes", "fixture: the decision went through"
+    assert RunContext.output_tokens_of(act.meta) == 7
+

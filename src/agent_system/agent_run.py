@@ -192,6 +192,10 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         force: Run the session even though another process holds it
         request_id: The run's request id (optional; default a new short id)
     """
+    from .core.session_presence import process_ends_with_its_run
+
+    # this process ends with the run: a job the run starts in the background is told to poll, not to wait for a wake
+    process_ends_with_its_run()
     presence = None
     stopped = False   # Ctrl-C: its user stopped the run (core/session_presence/)
     try:
@@ -421,6 +425,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         traceback.print_exc()
         sys.exit(1)
     finally:
+        process_ends_with_its_run(False)
         if presence:
             presence.release(actual_session_id, session_user, stopped=stopped)
         # Shutdown batch queue manager if it was started

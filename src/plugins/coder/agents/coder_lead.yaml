@@ -1,0 +1,83 @@
+# The coder that can hand a task to a dynamic workflow.
+#
+# Everything the coder is (`type: coder`), plus: it writes a small stategraph
+# machine for a task -- build, test, fix until green, a review whose findings
+# others try to refute -- and the engine runs it while the lead waits (skill
+# coder-workflows, format in stategraph-workflows).
+#
+# A separate agent, not the coder itself: an agent that may start workflows may
+# not appear in any machine (a machine may not start machines, SG007), and
+# saved machines name `coder` as their builder. Here `coder` is the builder of
+# the lead's workflows: a workflow may name only agents its author could start
+# itself, so the lead starts it through a sub-agent manager of its own,
+# coder_lead_sam, next to the coder's explorer, reviewer and tester.
+#
+# Workflows are off until the installation sets their caps: the `workflows:`
+# block of the stategraph instance (default_max_output_tokens, max_output_tokens_ceiling, ...).
+plugins:
+  servers:
+
+    coder_lead:
+      type: coder
+      enabled: true
+      description: "Coder with dynamic workflows: hands a larger change to a workflow that builds, tests and fixes until green, then has the change reviewed and every finding challenged before it counts"
+
+      self_tool_descriptions:
+        coder_lead_execute_task: "Implement, fix or refactor code in the workspace -- on its own or as a workflow of agents that builds, tests until green and reviews the change before reporting"
+        coder_lead_list_available_tools: "List the coding tools available (files, shell, sub-agents, workflows, skills)"
+
+      agent_config:
+        skills:
+          # merged into the coder's: the patterns, and the format they are written in
+          on_demand: ["+coder-workflows", "+stategraph-workflows"]
+
+        tools:
+          allowed:
+            - "+coder_lead_sam/*"                         # the coder, as the builder of a workflow
+            - "+stategraph/stategraph_catalog"            # the agents a workflow may use
+            - "+stategraph/stategraph_validate_machine"
+            - "+stategraph/stategraph_run_workflow"
+            - "+stategraph/stategraph_get_run"            # its state and result
+
+        hooks:
+          enabled: true
+          overrides:
+            # The result of a workflow comes as a turn of its own when it ends.
+            # Both: the first hands it in, the second marks it delivered once a
+            # history holds it (stategraph README, "Dynamic workflows").
+            stategraph.deliver_workflow_results:
+              enabled: true
+            stategraph.confirm_workflow_results:
+              enabled: true
+            # Off, as coder_sam's in the coder: it lists its sub-agents with a
+            # tool call when it needs to.
+            coder_lead_sam.inject_sub_agent_context:
+              enabled: false
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["coding", "harness", "workflows", "review", "tests"]
+        category: "Development"
+        # chat only: a sub-agent manager that could start it would make its caller one that reaches machines
+        visibility: "ui"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell, workflows and write access to the whole checkout
+
+    # The lead's second sub-agent manager: the coder, which its workflows name
+    # as their builder. A workflow's agents are not spawned through it (the
+    # engine creates their sessions), so max_sub_agents_per_type binds only a
+    # coder the lead spawns itself; one builder at a time in a workflow is the
+    # pattern's (build_until_green builds in a loop) -- two in one tree write
+    # over each other. Explorer, reviewer and tester stay on coder_sam, which
+    # the lead inherits.
+    coder_lead_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "coder_lead: the coder as the builder of its workflows"
+      max_nesting_depth: 3          # lead -> coder -> its explorer/reviewer/tester
+      max_sub_agents_per_type: 1
+      max_sub_agents_per_session: 10
+      default_wait_timeout: 3600
+      auto_archive_on_limit: true
+      allowed_agents:
+        - coder

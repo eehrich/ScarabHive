@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.core.session_presence import wake as wake_module
 from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.mail import server as mail
 from plugins.mail.tests.test_plugin_mail import FakeSMTP
@@ -136,7 +137,7 @@ def woken(monkeypatch):
         return "woke_session"
 
     monkeypatch.setattr(mail, "wake_session", wake_session)
-    monkeypatch.setattr(mail, "wake_blocked", lambda config, session_id, user_id:
+    monkeypatch.setattr(mail, "wake_blocked", lambda config, session_id, user_id, **k:
                         "" if session_id and user_id else "this call belongs to no session")
     monkeypatch.setattr(mail, "presence_for", lambda config: None)
     return calls
@@ -507,6 +508,20 @@ async def test_only_the_lease_holder_polls_and_a_stop_hands_it_over(imap):
     assert await first.poll_once(now=1003.0) == [], "and holds the lease now"
     assert await first.poll_once(now=1002.0 + max(mail.LEASE_MIN_S, 3 * second.poll_seconds) + 1) == [], "an expired lease is taken over"
     assert second.store.lease()[0] == first.owner
+
+
+async def test_a_one_shot_process_may_still_set_a_watch(imap, woken, monkeypatch):
+    """The watch is stored: whichever process holds the poll lease rings for it, not the one-shot run that set it."""
+    monkeypatch.setattr(mail, "wake_blocked", wake_module.wake_blocked)
+    monkeypatch.setattr(wake_module, "_ruled_out", lambda *a: "")
+    wake_module.process_ends_with_its_run()
+    try:
+        result, _ = await call(server(), "watch", {"action": "on", "_session_id": "s-1", "_user_id": "u-1"})
+        assert result["status"] != "error", result
+        refused = wake_module.wake_blocked(AgentSystemConfig(), "s-1", "u-1")
+    finally:
+        wake_module.process_ends_with_its_run(False)
+    assert "ends with its run" in refused, "the mark was not set -- this test would be vacuous"
 
 
 async def test_watch_off_and_status(imap, woken):

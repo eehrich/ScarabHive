@@ -550,7 +550,8 @@ class StateGraphService:
 
     # ------------------------------------------------------------ dynamic workflows (workflows.py)
     async def start_workflow(self, yaml: Any, *, params: Optional[dict[str, Any]] = None,
-                             max_cost: Optional[float] = None, wake: bool = True, user_id: Optional[str] = None,
+                             max_output_tokens: Optional[int] = None, wake: bool = True,
+                             user_id: Optional[str] = None,
                              caller: Optional[str] = None, caller_session: Optional[str] = None,
                              caller_request: Optional[str] = None) -> dict[str, Any]:
         """Start ``yaml`` -- a machine the calling agent wrote for its task -- without saving it: it lives in its
@@ -589,7 +590,7 @@ class StateGraphService:
             # and its runner would all be the saved machine's
             raise ServiceError(409, f"id {machine_id!r} names a saved machine; give the workflow an id of its own")
         try:
-            text, cap, concurrency = with_terms(yaml, settings, max_cost)
+            text, cap, concurrency = with_terms(yaml, settings, max_output_tokens)
         except ValueError as exc:
             raise ServiceError(422, str(exc)) from None
 
@@ -617,7 +618,7 @@ class StateGraphService:
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         self._note(run_id, "started", who=user_id, why="start_workflow", machine=machine_id, caller=caller)
-        return {"run_id": run_id, "machine_id": machine_id, "max_cost": cap, "concurrency": concurrency,
+        return {"run_id": run_id, "machine_id": machine_id, "max_output_tokens": cap, "concurrency": concurrency,
                 "wake": "armed" if workflow["wake"] else f"not armed: {armed}"}
 
     async def _wake_armed(self, user_id: Optional[str], session_id: Optional[str]) -> str:
@@ -1271,6 +1272,7 @@ class StateGraphService:
         row["spend"] = self.run_store.spend(run_id, children=True)
         # what bounds it (FEAT-6): its own definition's limits.max_cost, and its own run.cost -- not its children's
         row["max_cost"], row["cost"] = self.runs.budget(run_id)
+        row["max_output_tokens"], row["output_tokens"] = self.runs.output_tokens(run_id)
         children = self.run_store.children(run_id)
         if children:  # the runs its call activities started (FEAT-1)
             row["children"] = children

@@ -93,8 +93,8 @@ async def test_the_hooks_record_for_the_coder_harness_and_the_feature_demo_only(
             half.append(agent_name)
     assert half == [], f"one hook without the other records nothing: {half}"
     # gamedev and its tester are the coder harness too (type: coder / coder_tester); the
-    # read-only explorer and reviewer record nothing, but are not named as spawns that don't. The feature
-    # tour shows checkpoints and rewind.
+    # read-only explorer and reviewer record nothing, but are not named as spawns that don't. coder_lead
+    # is the coder too (type: coder). The feature tour shows checkpoints and rewind.
     assert sorted(set(recording) - _further_roots_agents()) == [
-        "coder", "coder_explorer", "coder_reviewer", "coder_tester", "feature_demo_agent", "gamedev",
-        "gamedev_tester"]
+        "coder", "coder_explorer", "coder_lead", "coder_reviewer", "coder_tester", "feature_demo_agent",
+        "gamedev", "gamedev_tester"]
