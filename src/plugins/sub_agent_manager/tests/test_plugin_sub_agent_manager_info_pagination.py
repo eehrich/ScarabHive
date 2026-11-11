@@ -597,3 +597,19 @@ class TestDeleteTakesALoneIdAsOne:
                                               "instance_ids": sub_id})
 
         assert (result["status"], result["instance_id"]) == ("archived", sub_id), result
+
+
+class TestWhoAnswered:
+    @pytest.mark.asyncio
+    async def test_an_assistant_turn_names_the_backend_that_answered_it(self, server, session_service,
+                                                                        session_manager, sub_session):
+        """A caller that keeps a result for later must tell a fallback's answer from the primary's."""
+        sub_id, _ = sub_session
+        sub_data = await session_manager.load_session(USER, sub_id)
+        sub_data["messages"].append(_message("assistant", "the answer", served_by="fallback-backend"))
+        await session_manager.save_session(sub_data)
+
+        result = await server._handle_info(_params(sub_id, session_service, limit=2))
+
+        assert result["messages"][-1]["served_by"] == "fallback-backend"
+        assert "served_by" not in result["messages"][-2], "a turn without the field gained one"

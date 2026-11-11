@@ -1900,6 +1900,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         if msg.get("role") == "tool" and msg.get("name"):
             entry["tool_name"] = msg["name"]
 
+        # Which backend answered (a fallback link of the profile chain, say): a caller that keeps a
+        # result for later must be able to tell a fallback's answer from the primary's.
+        if msg.get("role") == "assistant" and msg.get("served_by"):
+            entry["served_by"] = msg["served_by"]
+
         return entry
 
     # ========== Async Job Management Handlers ==========
