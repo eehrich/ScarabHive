@@ -15,6 +15,7 @@ Drives the real build_app over ASGI; the agent's run is the only fake.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from types import SimpleNamespace
 
@@ -203,3 +204,70 @@ async def test_a_finished_run_from_run_is_not_offered_as_a_finished_job(tmp_path
 
     assert "sse_clients" not in status and "events_buffered" not in status, status
     assert status.get("completed") is not True, status
+
+
+async def _status_once_over(client, request_id, timeout=10.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        status = (await client.get(f"/api/requests/{request_id}/status")).json()
+        if status.get("completed"):
+            return status
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"the detached run never ended: {status}")
+
+
+async def test_a_detached_run_answers_at_once_and_hands_its_answer_to_the_status(tmp_path, monkeypatch):
+    """``detach``: a caller of runs that take days holds no connection through them. It
+    gets the id at once; the answer /run would have sent comes with the status."""
+    from agent_system import app as app_mod
+
+    _disable_auth(monkeypatch)
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+    app = app_mod.build_app()
+    request_id = f"detach{uuid.uuid4().hex[:10]}"
+    go = _a_run_that_waits(monkeypatch, f"s{uuid.uuid4().hex[:10]}")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        try:
+            response = await asyncio.wait_for(client.post(
+                "/run", json={"task": "a book", "request_id": request_id, "detach": True}), timeout=10.0)
+            assert response.status_code == 202, response.text
+            assert response.json()["request_id"] == request_id
+            job = await _job_of(request_id)
+            assert job.status == JobStatus.RUNNING, "the run did not go on after its answer"
+            running = (await client.get(f"/api/requests/{request_id}/status")).json()
+            assert running["completed"] is False and "result" not in running, running
+            # a caller taking the run over counts its work from its start
+            assert isinstance(running["started_at"], float) and running["started_at"] <= time.time(), running
+        finally:
+            go.set()
+        status = await _status_once_over(client, request_id)
+
+    assert status["result"]["summary"] == "done", status
+
+
+async def test_a_detached_run_that_breaks_says_so_in_its_result(tmp_path, monkeypatch):
+    from agent_system import app as app_mod
+    from agent_system.api import run_routes
+
+    _disable_auth(monkeypatch)
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+    app = app_mod.build_app()
+    request_id = f"detach{uuid.uuid4().hex[:10]}"
+
+    async def collect_breaks(*args, **kwargs):
+        raise RuntimeError("the agent broke")
+
+    import agent_system.servers.agent.result_utils as result_utils
+    monkeypatch.setattr(result_utils, "collect_final_result", collect_breaks)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/run", json={"task": "a book", "request_id": request_id, "detach": True})
+        assert response.status_code == 202, response.text
+        status = await _status_once_over(client, request_id)
+
+    assert status["result"]["status"] == "error", status
+    assert "the agent broke" in status["result"]["errors"][0], status
+    # a failure of agent-api, not of the run (collect_final_result keeps those in its result): what was a 500
+    assert "the agent broke" in status["result"]["server_error"], status
+    assert not run_routes._detached_runs, "a finished detached run is still held"

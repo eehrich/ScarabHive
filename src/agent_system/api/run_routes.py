@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 
 from agent_system import app_state
@@ -70,7 +71,7 @@ async def _mirror_run_as_job(request_id: str, user_id: str, agent_name: str,
             yield event
 
     try:
-        await get_background_job_manager().create_job(
+        job = await get_background_job_manager().create_job(
             request_id=request_id, user_id=user_id, agent_name=agent_name,
             session_id=session_id, agent_runner=relay, llm_profile=llm_profile,
             llm_params=llm_params, mirror=True)
@@ -78,7 +79,28 @@ async def _mirror_run_as_job(request_id: str, user_id: str, agent_name: str,
         logger.warning("[RUN] refused duplicate request_id=%s -- a job is already running under it", request_id)
         raise HTTPException(status_code=409, detail="request_id is already running")
 
-    return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None))
+    return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None), job=job)
+
+
+#: Detached runs (``"detach": true``) going on after their request was answered: held so the
+#: event loop's weak reference is not all that keeps them.
+_detached_runs: set[asyncio.Task] = set()
+
+
+async def _finish_detached(collect: Any, job: Any, cleanup: Any) -> None:
+    """A detached run to its end: its answer -- the body POST /run would have sent -- goes to
+    the job (``job.result``), which the status endpoint hands to whoever polls it."""
+    try:
+        job.result = await collect()
+    except Exception as exc:  # noqa: BLE001 - the caller is gone: its answer is the only report
+        # What the waiting /run answered with a 500 (the run itself ends in its result: collect_final_result
+        # catches its errors -- this is the save after it, a full disk, a locked database): ``server_error``
+        # tells it from the run's own failure, so a caller can retry it as it retried the 500.
+        logger.exception("[RUN] detached run %s failed", job.request_id)
+        why = f"{type(exc).__name__}: {exc}"
+        job.result = {"status": "error", "calls": [], "errors": [why], "server_error": why}
+    finally:
+        cleanup()   # after the result: the job ends with it in place
 
 
 def _remove_uploads(temp_files: list, temp_dir: Any) -> None:
@@ -154,6 +176,10 @@ async def run(
     # (form field ``attended``; the chat sends it with files). Only a run
     # streamed back to that client can be: the text-only run is not.
     attended = False
+    # JSON body ``detach`` (a JSON body carries no files): answer at once (202 with the request_id) and run on; the answer
+    # /run would have sent comes from GET /api/requests/{rid}/status once the run is over.
+    # A caller with runs of hours or days holds no connection through them.
+    detach = False
 
     # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "...", "request_id": "..."}
     if content_type.startswith('application/json'):
@@ -175,6 +201,7 @@ async def run(
                 client_request_id = body.get('request_id')
             # Session presence: run a session another process holds anyway
             force = force or bool(body.get('force'))
+            detach = body.get('detach') is True
 
     # multipart/form-data: parse form and files
     elif content_type.startswith('multipart/form-data'):
@@ -284,6 +311,17 @@ async def run(
                 selected_agent._session_tracker.discard_session(session_id)
             raise
         held = None
+        handed_over = False
+
+        def cleanup() -> None:
+            mirror.close()
+            let_go(selected_agent, held, user_id)
+            if made_session:
+                selected_agent._session_tracker.discard_session(session_id)
+            # Cleanup: release request + derived sub-request ids (tool
+            # suffixes, sub-agents) from the ownership map
+            release_request_user_tree(request_id)
+
         try:
             # Register request ownership for status stream security -- AFTER
             # all validations and inside the try whose finally releases it.
@@ -302,32 +340,37 @@ async def run(
                     refused.append(event)
                 return mirror.put(event)
 
-            # Pass LLM override to collect_final_result
-            result = await collect_final_result(
-                selected_agent, task,
-                request_id=request_id,
-                session_id=session_id,
-                llm_override=llm_override,
-                llm_profile_info_override=llm_profile_info,
-                on_event=on_event,
-            )
+            async def collect() -> dict:
+                # Pass LLM override to collect_final_result
+                result = await collect_final_result(
+                    selected_agent, task,
+                    request_id=request_id,
+                    session_id=session_id,
+                    llm_override=llm_override,
+                    llm_profile_info_override=llm_profile_info,
+                    on_event=on_event,
+                )
 
-            # Save session after execution (if session_id was provided or created) --
-            # not one the run was refused, nor one somebody holds after it
-            # (after_run): another run of this process, or an append saving it.
-            if session_id and app_state.session_service and not refused:
-                await save_after_run(selected_agent, user_id, session_id, llm_profile,
-                                     not session_exists, llm_choice)
+                # Save session after execution (if session_id was provided or created) --
+                # not one the run was refused, nor one somebody holds after it
+                # (after_run): another run of this process, or an append saving it.
+                if session_id and app_state.session_service and not refused:
+                    await save_after_run(selected_agent, user_id, session_id, llm_profile,
+                                         not session_exists, llm_choice)
+                return result
 
-            return result
+            if detach:
+                # Refusals above are answered as always; from here the run is the job's
+                run_task = asyncio.create_task(_finish_detached(collect, mirror.job, cleanup))
+                _detached_runs.add(run_task)
+                run_task.add_done_callback(_detached_runs.discard)
+                handed_over = True
+                return JSONResponse(status_code=202, content={
+                    "request_id": request_id, "session_id": session_id, "status": "running"})
+            return await collect()
         finally:
-            mirror.close()
-            let_go(selected_agent, held, user_id)
-            if made_session:
-                selected_agent._session_tracker.discard_session(session_id)
-            # Cleanup: release request + derived sub-request ids (tool
-            # suffixes, sub-agents) from the ownership map
-            release_request_user_tree(request_id)
+            if not handed_over:
+                cleanup()
 
     # Process uploaded files for multimodal input
     from agent_system.utils.multimodal_processor import (

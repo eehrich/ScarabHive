@@ -79,18 +79,24 @@ async def get_request_status(request_id: str, request: Request, ctx: AppContext 
     await _refuse_foreign_request(request_id, await ctx.enforce_endpoint_security(request))
     # A finished MIRROR (POST /run) answers as if there had been no job: its
     # caller had the answer, and "completed" with the job's keys is what the
-    # writer reconcile takes as proof that a book run is done.
-    if job and job.mirror and job.status != JobStatus.RUNNING:
+    # writer reconcile takes as proof that a book run is done. Not a detached
+    # one (``"detach": true``): its answer is the job's ``result``, given here.
+    if job and job.mirror and job.status != JobStatus.RUNNING and job.result is None:
         job = None
     if job:
-        return {
+        answer = {
             "request_id": request_id,
             "status": job.status.value,
             "completed": job.status != JobStatus.RUNNING,
             "error": job.error_message,
             "sse_clients": job.sse_client_count,
             "events_buffered": len(job.events),
+            # When the run began (epoch s): a caller taking it over counts its work from here
+            "started_at": job.created_at,
         }
+        if job.result is not None and job.status != JobStatus.RUNNING:
+            answer["result"] = job.result   # the body POST /run would have answered with
+        return answer
 
     # Fallback to session tracker — checks the DEFAULT agent first
     # (cheap), then walks the agent registry so requests running on

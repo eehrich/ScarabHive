@@ -190,10 +190,17 @@ Routes that read fields from the body use `parse_json_object()`: valid JSON
 that is not an object (`[]`, `"x"`) is a 400 `Body must be a JSON object`.
 
 **`POST /run`** takes JSON `{task, session_id, agent_name, llm_profile,
-session_title, request_id, force}`, the same as query parameters, or
+session_title, request_id, force, detach}`, the same as query parameters, or
 multipart (`task`, `files`, `attended`). Without files it waits for the run
 and answers `{"task", "calls", "summary"}`, plus `errors`, `cancelled` or
 `refused` when they apply. With files it streams the run as SSE.
+`"detach": true` (JSON only) answers at once, `202 {request_id, session_id,
+status: "running"}`, and the run goes on: a caller of runs that take hours or
+days holds no connection through them. Once the run is over,
+`GET /api/requests/{request_id}/status` carries the answer the waiting form
+would have sent as `result` (a run that broke answers `{"status": "error",
+"errors": [...]}`); it lives in the job, in this process -- an agent-api
+restart loses it with the run.
 
 **`GET /events`** takes `task`, `session_id`, `agent` (or `agent_name`),
 `llm_profile`, `request_id`, `force`, `session_title`, `attended` as query
@@ -225,6 +232,9 @@ the stream and may be asked (see `request_context.set_run_attended`).
 6. `collect_final_result` (`servers/agent/result_utils.py`) drives
    `Agent.run_events` and collects calls, summary and errors.
 7. `SessionService.save_session` stores the session; the JSON result goes back.
+   Detached, steps 6 and 7 run in a task of their own after the 202
+   (`_finish_detached`), which hands the result to the job
+   (`BackgroundJob.result`); refusals up to step 5 are answered as always.
 
 ### 5.2 `GET`/`POST /events`
 
