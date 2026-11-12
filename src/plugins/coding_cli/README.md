@@ -18,7 +18,8 @@ revoked at its end, held to the run's tool bindings (`pin`). Both CLIs reach it.
   `resume` an ended one), `coding_cli_get_run`, `coding_cli_cancel_run` and `coding_cli_quota` (the subscription's
   windows, without starting a run). They are offered only when the Claude Code executable and a usable workdir are
   there.
-- **Agent** -- `claude_code_agent`, which only relays work to Claude Code; the coder agent has the tools too.
+- **Agents** -- `claude_code_agent` and `agy_code_agent`, which only relay work to Claude Code (instance
+  `coding_cli`) and to Antigravity (instance `agy_cli`); the coder agent has the Claude Code tools too.
 - **Hooks / panel** -- none.
 
 The entry ships in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude`, `mcp_servers` and `web`,

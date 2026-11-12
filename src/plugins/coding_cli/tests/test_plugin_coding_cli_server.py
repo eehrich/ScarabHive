@@ -330,6 +330,58 @@ def test_a_key_rotated_by_a_second_line_is_hidden_too(tmp_path):
     assert made.hidden == ["config/secrets.env", "notes.md", "quoted.md"]
 
 
+def test_a_folder_or_a_pattern_hides_every_file_under_it(tmp_path):
+    """An exclude is a git pathspec: a folder or a glob takes all it matches, nested too -- and no
+    neighbour whose name only begins the same."""
+    repo = fresh_repo(tmp_path / "repo")
+    for rel in ("src/vendor_x/a.py", "src/vendor_x/deep/b.py", "notes/drafts/c.md", "src/vendor/d.py",
+                "notes/e.md"):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("x\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "tree")
+    worktree = tmp_path / "wt"
+
+    made = cli.make_worktree(repo, worktree, "b1", ["src/vendor_*", "notes/drafts"])
+
+    assert made.hidden == ["notes/drafts/c.md", "src/vendor_x/a.py", "src/vendor_x/deep/b.py"]
+    assert not any(worktree.joinpath(rel).exists() for rel in made.hidden)
+    assert (worktree / "src/vendor/d.py").exists() and (worktree / "notes/e.md").exists()
+    assert git(worktree, "status", "--porcelain") == "", "a hidden file reads as deleted"
+
+
+def _link_folder(link: Path, target: Path) -> None:
+    """A directory link without admin rights: a junction on Windows, a symlink elsewhere."""
+    if sys.platform == "win32":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_worktree_git_refuses_goes_also_when_its_folder_is_named_through_a_link(tmp_path):
+    """git writes the worktree's gitdir resolved; the data folder may be named through a link. Locked by
+    an add that was killed, its .git file taken by a remove that ran out of time: git refuses the rest."""
+    repo = fresh_repo(tmp_path / "repo")
+    (tmp_path / "real").mkdir()
+    try:
+        _link_folder(tmp_path / "linked", tmp_path / "real")
+    except OSError as exc:
+        pytest.skip(f"this file system makes no directory link: {exc}")
+    worktree = tmp_path / "linked" / "run1"
+    git(repo, "worktree", "add", "-q", "-b", "coding_cli/run1", str(worktree))
+    git(repo, "worktree", "lock", "--reason", "initializing", str(worktree))
+    (worktree / ".git").unlink()
+    gitdir = (repo / ".git" / "worktrees" / "run1" / "gitdir").read_text(encoding="utf-8")
+    assert "linked" not in gitdir, f"fixture: git kept the link in the gitdir ({gitdir!r}) -- nothing to resolve"
+
+    cli.remove_worktree(repo, worktree, "coding_cli/run1")
+
+    assert git(repo, "branch", "--list", "coding_cli/*").strip() == ""
+    assert git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert not (tmp_path / "real" / "run1").exists()
+
+
 async def test_a_rewritten_git_file_does_not_move_the_commit(repo):
     """The .git file in the worktree is the run's to rewrite: the plugin's git
     keeps to the git directory it was made with."""
@@ -1996,10 +2048,14 @@ async def test_a_long_hidden_list_is_capped(repo, data_root):
 
 
 
-@pytest.mark.parametrize("breaks", ["hiding the secrets", "starting claude code", "the worktree is gone"])
+@pytest.mark.parametrize("breaks", ["hiding the secrets", "starting claude code", "the worktree is gone",
+                                    "an add killed holding its lock", "a remove stopped past its .git file"])
 async def test_a_run_that_did_not_start_leaves_no_worktree_or_branch(tmp_path, monkeypatch, breaks):
     """Answered "not started", nothing names the worktree and branch it had made -- and the
-    cleanup touches no other worktree, not even one whose folder is missing just now."""
+    cleanup touches no other worktree, not even one whose folder is missing just now. A worktree
+    add that timed out was killed holding git's "initializing" lock: git removes that one itself
+    (the hand path is broken for that case). A remove stopped halfway took the .git file already,
+    and git refuses the rest: that worktree goes as well."""
     repo = fresh_repo(tmp_path / "repo")
     git(repo, "worktree", "add", "-q", "-b", "mine", str(tmp_path / "mine"))
     (tmp_path / "mine").rename(tmp_path / "unmounted")
@@ -2007,11 +2063,21 @@ async def test_a_run_that_did_not_start_leaves_no_worktree_or_branch(tmp_path, m
     server.workdirs["repo"]["exclude"] = ["a.txt"]
 
     def broken(*args, **kwargs):
-        if breaks == "the worktree is gone":
-            for made in (server._root() / "worktrees").glob("*"):
+        for made in (server._root() / "worktrees").glob("*"):
+            if breaks == "the worktree is gone":
                 shutil.rmtree(made)
+            elif breaks in ("an add killed holding its lock", "a remove stopped past its .git file"):
+                git(repo, "worktree", "lock", "--reason", "initializing", str(made))
+                if breaks == "a remove stopped past its .git file":
+                    (repo / ".git" / "worktrees" / made.name / "index.lock").touch()
+                    (made / ".git").unlink()
         raise OSError("broken on purpose")
 
+    def no_hand_path(*args, **kwargs):
+        raise AssertionError("git refused a worktree it removes itself")
+
+    if breaks == "an add killed holding its lock":
+        monkeypatch.setattr(cli, "_drop_worktree_entry", no_hand_path)
     monkeypatch.setattr(cli, "launch" if breaks == "starting claude code" else "secret_values", broken)
     result, _ = await call(server, "run_task", task="WRITE b.txt hello")
     assert "not started" in result["error"] and "broken on purpose" in result["error"]

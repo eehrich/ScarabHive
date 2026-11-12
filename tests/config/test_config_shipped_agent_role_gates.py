@@ -41,7 +41,7 @@ SRC = REPO / "src"
 #: src/plugins_<name> root are not named here (the open-source checkout has none); the gate check
 #: below holds them all the same.
 EXPECTED_ADMIN = frozenset({
-    "blender_agent", "claude_code_agent", "coder", "coder_explorer", "coder_reviewer",
+    "agy_code_agent", "blender_agent", "claude_code_agent", "coder", "coder_explorer", "coder_reviewer",
     "coder_tester", "coder_ultra", "file_ops_test_agent", "gamedev", "gamedev_tester", "godot_agent",
     "skills_agent", "skills_agent_multimodal", "sysadmin_agent",
 })

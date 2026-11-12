@@ -666,8 +666,11 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
         found = git(path, "grep", "-l", "-z", "-I", "-F", "-f", "-", stdin="\n".join(sorted(values)) + "\n",
                     ok=(0, 1))
         hidden = sorted(excluded | {f for f in found.split("\0") if f})
+    if hidden:
+        # One call for all: an excluded folder holds thousands of files, and a git process each took some
+        # 50 ms on Windows -- over two minutes for 2700 files (measured 12.11.2026).
+        git(path, "update-index", "--skip-worktree", "-z", "--stdin", stdin="\0".join(hidden) + "\0")
     for tracked in hidden:
-        git(path, "update-index", "--skip-worktree", "--", tracked)
         (path / tracked).unlink(missing_ok=True)
     return Worktree(base, git_dir, hidden)
 
@@ -688,12 +691,37 @@ def remove_worktree(repo: Path, path: Path, branch: str) -> None:
     """Takes back what make_worktree made for a run that never started, as far as it got. Only this
     worktree's entry -- `remove --force` drops it even when the folder is gone (measured, git 2.36): a
     repo-wide prune would drop the entries of the owner's own worktrees whose folder is missing just now
-    (an unmounted drive)."""
-    for args in (("worktree", "remove", "--force", str(path)), ("branch", "-D", branch)):
-        try:
-            git(repo, *args)
-        except GitError:
-            pass
+    (an unmounted drive). Forced twice: an add that timed out was killed holding its "initializing" lock,
+    which one --force does not lift. A remove that ran out of time was killed with the worktree's .git file
+    already deleted (on NTFS it deletes in name order): git then refuses the rest ("validation failed"), and
+    prune keeps a locked one -- the worktree and then its branch stayed (git's answers measured, the stop
+    read off such a leftover, 12.11.2026). Then its own entry goes by hand: the one whose gitdir names this
+    folder, which is this run's own, named by its id. The hand path would take a merely locked one too;
+    twice forced, git does that itself, and git's internals are touched only where git refuses."""
+    try:
+        git(repo, "worktree", "remove", "--force", "--force", str(path))
+    except GitError:
+        _drop_worktree_entry(repo, path)
+    try:
+        git(repo, "branch", "-D", branch)
+    except GitError:
+        pass
+
+
+def _drop_worktree_entry(repo: Path, path: Path) -> None:
+    """The entry of the worktree at *path* in the repo's worktrees folder, and the folder itself. Compared
+    resolved: git writes the gitdir resolved (links, a subst drive), the data folder may sit behind one."""
+    def same(a: str | Path) -> str:
+        return os.path.normcase(os.path.realpath(a))
+    with contextlib.suppress(GitError, OSError):
+        common = Path(git(repo, "rev-parse", "--git-common-dir").strip())
+        for entry in (common if common.is_absolute() else Path(repo) / common).joinpath("worktrees").iterdir():
+            with contextlib.suppress(OSError):
+                # relative where git writes it so (worktree.useRelativePaths): to the entry's own folder
+                gitdir = entry / (entry / "gitdir").read_text(encoding="utf-8").strip()
+                if same(gitdir.parent) == same(path):
+                    shutil.rmtree(entry)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def secret_values(path: Path) -> set[str]:

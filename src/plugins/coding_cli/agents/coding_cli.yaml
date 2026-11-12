@@ -52,7 +52,7 @@ plugins:
       # The longest task run_task takes, in characters (1000 to 1000000).
       max_task_chars: 20000
       # Claude Code's model; empty: the subscription's default.
-      model: ""
+      model: opus
       # Claude Code's --effort (low, medium, high, xhigh, max); empty: its default. --restricted leaves the
       # user's settings, their effortLevel too, unread.
       effort: ""
@@ -85,5 +85,48 @@ plugins:
 
       metadata:
         category: "Development"
+        visibility: "ui"   # a chat partner; no agent gets it as a tool
         # role gate (auth/agent_access.py): Claude Code on the operator's subscription, in this checkout
+        min_role: "admin"
+
+    # The same with Google's Antigravity CLI (agy) on its Google login: no shell, and a web search in
+    # every run (the guide's "Antigravity instead of Claude Code"). A query can carry what the worktree
+    # shows: whatever must not leave belongs in its exclude.
+    agy_cli:
+      type: coding_cli
+      enabled: true
+      description: "Antigravity (Gemini), headless on the operator's Google login: programming tasks in a git worktree, results on a branch"
+      cli: antigravity
+      command: agy
+      allowed_users: [admin, cli_user]
+      workdirs:
+        scarabhive:
+          path: "."
+          web: true          # required for agy: its web search cannot be switched off
+          exclude: [config/secrets.env, config/local.env, config/local.yaml, config/config.yaml]
+      wait_s: 300
+      max_run_minutes: 60
+      max_parallel: 1
+      max_task_chars: 20000
+      # One of `agy models`; the level is in the name (an effort beside it would be dropped).
+      model: gemini-4-argon-medium
+      pass_env: []
+
+    agy_code_agent:
+      type: claude_code_agent
+      enabled: true
+      description: "Hand a programming task to Antigravity (Gemini, on the operator's Google login) and report the branch and changes it left"
+
+      self_tool_descriptions:
+        agy_code_agent_execute_task: "Have Antigravity carry out a programming task in a git worktree; returns the branch, the changed files and its report"
+        agy_code_agent_list_available_tools: "List the tools the Antigravity agent uses"
+
+      agent_config:
+        system_template: "./prompts/agy_code_agent.md"
+        tools:
+          allowed:
+            - "agy_cli/*"
+
+      metadata:
+        # role gate (auth/agent_access.py): agy on the operator's Google login, in this checkout
         min_role: "admin"

@@ -29,9 +29,10 @@ An instance can run Google's @{b}Antigravity CLI@{ub} (@{tt}agy@{utt})
 instead, on the Google login it was set up with: @{tt}cli: antigravity@{utt},
 see @{" Antigravity instead of Claude Code " link setup}.
 
-The plugin has four tools, no hooks and no panel. It also ships an agent,
-@{tt}claude_code_agent@{utt}, that only relays work to Claude Code; the
-coder agent has the tools too.
+The plugin has four tools, no hooks and no panel. It also ships two agents
+that only relay work: @{tt}claude_code_agent@{utt} to Claude Code and
+@{tt}agy_code_agent@{utt} to Antigravity (instance @{tt}agy_cli@{utt}); the
+coder agent has the Claude Code tools too.
 
 @{code}
 For users
@@ -422,12 +423,22 @@ llm_profile | or-gemini-flash, or-deepseek-flash -- it only relays
 max_steps | 20
 tools | +coding_cli/*
 metadata.min_role | admin
-metadata.visibility | not set: private -- neither in the agent list nor a tool of other agents
+metadata.visibility | ui -- in the chat's agent list, a tool of no other agent
 @{body}
 
-As shipped it is therefore reached by name, e.g.
-@{tt}agent-cli run --agent claude_code_agent "..."@{utt}. The coder agent has the
-four tools itself (deferred: loaded on demand with @{tt}tool_search@{utt}).
+@{tt}agy_code_agent@{utt} is the same agent for Antigravity: it inherits
+everything, with @{tt}agy_cli/*@{utt} as its tools and a prompt of its own
+(@{tt}agents/prompts/agy_code_agent.md@{utt}) that adds that agy has no shell
+-- it names the checks instead of running them -- and searches the web in every
+run, so a task carries nothing secret. A query can carry what the worktree
+shows as well: whatever must not leave belongs in the @{tt}exclude@{utt} of
+its instance @{tt}agy_cli@{utt}, which ships with the secret files of
+@{tt}coding_cli@{utt}'s. Its @{tt}command@{utt} is
+@{tt}agy@{utt}; a host where agy is not on the service's PATH names it in its
+local config.
+
+The coder agent has the four Claude Code tools itself (deferred: loaded on
+demand with @{tt}tool_search@{utt}).
 @endnode
 
 @node run_task "run_task"
@@ -691,7 +702,7 @@ plugins:
       max_run_minutes: 60
       max_parallel: 1
       max_task_chars: 20000
-      model: ""
+      model: opus
       effort: ""
       pass_env: []
 @{body}

@@ -19,7 +19,6 @@ from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 from plugins.coding_cli.server import CodingCliServer
 
 PLUGIN = Path(__file__).resolve().parent.parent
-_TOOL_REF = re.compile(r"\bcoding_cli_([a-z_]+)\b")
 
 
 @pytest.fixture(scope="module")
@@ -33,8 +32,8 @@ def resolved(config, name):
     return cfg
 
 
-def schema_tools(**template_vars) -> set[str]:
-    schema = load_schema_from_dir(str(PLUGIN), template_vars={"name": "coding_cli", **template_vars})
+def schema_tools(name="coding_cli", **template_vars) -> set[str]:
+    schema = load_schema_from_dir(str(PLUGIN), template_vars={"name": name, **template_vars})
     return {t["function"]["name"] for t in schema.get("tools") or []}
 
 
@@ -58,15 +57,27 @@ def test_the_instance_keeps_the_subscription_to_its_owner(config):
     assert {"config/secrets.env", "config/config.yaml"} <= set(cfg.workdirs["scarabhive"]["exclude"])
 
 
-def test_the_agent_may_call_every_tool_and_its_prompt_names_only_real_ones(config):
-    agent = resolved(config, "claude_code_agent")
-    tools = schema_tools(configured=True, workdirs=["scarabhive"])
+@pytest.mark.parametrize("agent_name, instance", [("claude_code_agent", "coding_cli"), ("agy_code_agent", "agy_cli")])
+def test_the_agent_may_call_every_tool_and_its_prompt_names_only_real_ones(config, agent_name, instance):
+    agent = resolved(config, agent_name)
+    windows = (resolved(config, instance).cli or "claude") != "antigravity"   # agy reports none: no quota tool
+    tools = schema_tools(instance, configured=True, workdirs=["scarabhive"], windows=windows)
     allowed = agent.agent_config.tools.allowed
-    assert all(tool_matches_patterns(t, "coding_cli", allowed) for t in tools)
+    assert all(tool_matches_patterns(t, instance, allowed) for t in tools)
     # The prompt the agent renders: an inherited system_prompt would beat the template.
     assert agent.agent_config.system_prompt is None
     template = Path(agent.agent_config.system_template)
-    assert template.resolve() == (PLUGIN / "agents" / "prompts" / "claude_code_agent.md").resolve()
+    assert template.resolve() == (PLUGIN / "agents" / "prompts" / f"{agent_name}.md").resolve()
     prompt = template.read_text(encoding="utf-8")
-    named = {f"coding_cli_{m}" for m in _TOOL_REF.findall(prompt)}
+    # every tool name of the plugin's shape, whatever its prefix: a prompt copied from the other agent names
+    # the other instance's tools, which this agent does not have
+    named = {m.group(0) for m in re.finditer(r"\b\w+?_(?:run_task|get_run|cancel_run|quota)\b", prompt)}
     assert named and named <= tools, named - tools
+
+
+def test_the_agy_instance_keeps_the_secrets_out_of_what_its_web_search_could_carry(config):
+    cfg = resolved(config, "agy_cli")
+    assert cfg.enabled and cfg.cli == "antigravity" and set(cfg.allowed_users) == {"admin", "cli_user"}
+    workdir = cfg.workdirs["scarabhive"]
+    assert workdir["web"] is True, "agy searches the web in every run: a workdir without web is skipped"
+    assert {"config/secrets.env", "config/config.yaml"} <= set(workdir["exclude"])
