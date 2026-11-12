@@ -40,5 +40,10 @@
     "**/.*",
     ".venv"
   ],
-  "git.detectWorktrees": false
+  "git.detectWorktrees": false,
+  "git.repositoryScanIgnoredFolders": [
+    "node_modules",
+    "data",
+    ".claude/worktrees"
+  ]
 }
