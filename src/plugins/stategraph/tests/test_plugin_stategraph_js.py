@@ -457,6 +457,7 @@ PANEL_CASES = [
     "a_final_s_settings_send_status_and_output_as_yaml",
     "the_machine_settings_are_an_update_machine",
     "an_apply_without_a_change_sends_nothing",
+    "the_bar_names_what_is_typed_and_applies_the_settings_before_the_activity",
     "typing_offers_apply_and_an_unchanged_apply_takes_it_back",
     "a_run_again_that_fails_unfolds_the_form_and_the_test_options_say_what_they_hold",
     "a_status_filter_on_another_machine_does_not_unfold_new_run",

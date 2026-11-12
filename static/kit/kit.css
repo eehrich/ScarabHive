@@ -297,6 +297,18 @@
 .pk-error { font-size: var(--text-xs); color: var(--danger); }
 .pk-form { display: flex; flex-direction: column; gap: var(--space-4); max-width: 480px; }
 .pk-form-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+/* Changes typed and not yet applied, for a pane of several forms: one bar at its foot says which and takes them all
+   (Apply) or none (Discard). Sticky at the bottom of its scrolling box; hidden while nothing waits. */
+.pk-savebar {
+  position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); background: var(--surface-2); border-top: 1px solid var(--border-default);
+  box-shadow: 0 -4px 12px var(--shadow-soft); font-size: var(--text-sm);
+}
+.pk-savebar[hidden] { display: none; }
+/* the list of what waits wraps in a narrow pane; the buttons, together, then go to a line of their own, on the right */
+.pk-savebar-text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+.pk-savebar-actions { display: flex; gap: var(--space-2); margin-left: auto; }
+.pk-savebar-text strong { color: var(--text-primary); font-weight: 600; }
 
 /* -------------------------------------------------------------------- tabs */
 

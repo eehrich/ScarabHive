@@ -2572,6 +2572,27 @@ const CASES = {
     check(!lastEdit() && !TOASTS.length, `sent: ${JSON.stringify(lastEdit())}, said ${JSON.stringify(TOASTS)}`);
   },
 
+  async the_bar_names_what_is_typed_and_applies_the_settings_before_the_activity() {
+    await boot('?machine=fields');
+    await choose('judge');
+    check($('inspectorSave').hidden, 'the bar shows with nothing typed');
+    // drawn in this order, as the inspector draws them: the activity above the settings
+    const activity = $('side-inspect').appendChild(formOf('activity', { kind: ['kind', 'decide', 'decide'], question: ['text', 'q', 'a sharper question'] }));
+    const settings = $('side-inspect').appendChild(formOf('state-fields', { max_visits: ['number', '', '4'] }));
+    // typed into: a field inside each form (formOf's elements are what a submit reads, not the form's children)
+    for (const form of [activity, settings]) await $('side-inspect').fire('input', { target: form.appendChild(element('input', {})) });
+    const said = $('inspectorSaveText').innerHTML;
+    check(!$('inspectorSave').hidden && said.includes('2 changes') && said.includes('Activity') && said.includes('Settings'),
+      `the bar does not name both: hidden ${$('inspectorSave').hidden}, "${said}"`);
+    await $('inspectorApply').fire('click', {});
+    await settle();
+    const sent = CALLS.filter(([, path]) => path.endsWith('/edit')).map(([, , json]) => json.op);
+    // a new kind changes which settings the state has: settings typed after it would be dropped by the redraw (the
+    // stub's answer to the edit stops the bar there: what comes after the first one is not this case's)
+    check(JSON.stringify(sent[0] ?? null).includes('max_visits'),
+      `not the settings first: ${JSON.stringify(sent)}, said ${JSON.stringify(TOASTS)}`);
+  },
+
   async typing_offers_apply_and_an_unchanged_apply_takes_it_back() {
     await boot('?machine=fields');
     await choose('judge');

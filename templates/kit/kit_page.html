@@ -94,6 +94,16 @@
       <label class="pk-switch"><input type="checkbox" role="switch" checked> Switch</label>
     </div>
     <div id="kitIconPicker"></div>
+    <div class="pk-card pk-stack" style="padding: 0; overflow: hidden;">
+      <p class="pk-help" style="padding: var(--space-3) var(--space-3) 0;">.pk-savebar: at the foot of a pane of several forms, while changes wait</p>
+      <div class="pk-savebar" role="region" aria-label="Changes not applied">
+        <span class="pk-savebar-text"><strong>2 changes</strong> not applied: Description, Activity</span>
+        <span class="pk-savebar-actions">
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost">Discard</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--primary">{{ icon('check', size='sm') }} Apply</button>
+        </span>
+      </div>
+    </div>
     <div class="pk-form-actions"><button type="button" class="pk-btn">Cancel</button><button type="button" class="pk-btn pk-btn--primary">Save</button></div>
   </form>
   <h3>Two columns, segmented, choices</h3>

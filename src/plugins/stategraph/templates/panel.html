@@ -124,6 +124,15 @@
       <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="side-debug" data-tab="debug">Debug</button>
     </div>
     <div id="side-inspect" class="sg-side-body" role="tabpanel"></div>
+    {#- one bar for every inspector form: which have text not applied, and Apply/Discard for all of them (panel.js
+        drawSavebar); Enter in a field, Ctrl+Enter anywhere, applies too #}
+    <div id="inspectorSave" class="pk-savebar" role="region" aria-label="Changes not applied" hidden>
+      <span class="pk-savebar-text" id="inspectorSaveText"></span>
+      <span class="pk-savebar-actions">
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="inspectorDiscard" title="Drop what was typed: the fields show the machine again">Discard</button>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="inspectorApply" title="Apply every change listed (Enter, Ctrl+Enter)">{{ icon('check', size='sm') }} Apply</button>
+      </span>
+    </div>
     <div id="side-debug" class="sg-side-body" role="tabpanel" hidden>
       <div id="dbgRun"></div>
       {#- right under the run: the frames, folded to a line each, are where its submachines are found #}
@@ -131,7 +140,7 @@
       <div class="sg-section">
         <h4 class="pk-section-title">Watch <span id="dbgWatchScope" class="pk-muted"></span></h4>
         <div id="dbgWatch"></div>
-        <form class="pk-row sg-inline" id="watchForm">
+        <form class="pk-row sg-inline sg-watch-form" id="watchForm">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="len(ctx.issues)" aria-label="Watch expression" autocomplete="off">
           <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="condition" placeholder="only if (optional)" aria-label="Pause only if this is true" title="A Python expression: the watch pauses only where it is true" autocomplete="off">
           <button type="submit" class="pk-btn pk-btn--sm">{{ icon('eye', size='sm') }} Watch</button>

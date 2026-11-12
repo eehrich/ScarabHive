@@ -72,9 +72,22 @@
 .sg-transition { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-0); }
 .sg-transition[aria-current="true"] { border-color: var(--accent); }
 .sg-transition-head { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; font-size: var(--text-sm); }
+/* the way it goes gives way first, cut with an ellipsis: the buttons wrap only when the fixed parts do not fit */
+.sg-transition-way { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sg-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); }
 .sg-fields > label { color: var(--text-muted); }
 .sg-field-help { grid-column: 2; margin-top: calc(-1 * var(--space-1)); }
+/* a field of several lines (YAML, code, prose) takes the pane's whole width, its label above it: beside the labels
+   a flow mapping of params was cut to a few characters per line */
+.sg-fields > .sg-wide { grid-column: 1 / -1; }
+.sg-fields > label.sg-wide { margin-top: var(--space-1); }
+.sg-fields > .sg-field-help.sg-wide { margin-top: 0; }
+/* the inspector's Apply bar lives beside the forms, not in them: shown with the inspector only */
+#side-inspect[hidden] ~ #inspectorSave { display: none; }
+/* the watch form: the expression and its condition each a line of their own, so neither is cut to a few letters */
+.sg-inline.sg-watch-form { flex-wrap: wrap; }  /* over .sg-inline's nowrap, further down */
+.sg-watch-form > .pk-input { flex: 1 1 100%; }
+.sg-watch-form > .pk-btn { margin-left: auto; }
 .sg-field-text { min-height: 0; font-size: var(--text-xs); }
 .sg-fragment { min-height: 160px; font-size: var(--text-xs); line-height: 1.55; tab-size: 2; white-space: pre; }
 .sg-yaml { flex: 1 1 auto; min-height: 320px; font-size: var(--text-xs); line-height: 1.55; tab-size: 2; white-space: pre; }

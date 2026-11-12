@@ -54,6 +54,7 @@ const S = {
   framePrefix: null,    // the frame of the selected run the author picked to see on another machine's canvas
   frameTrail: [],       // [{machine, prefix}]: the frames the canvas showed before each jump to another, for Back
   framesOpen: new Set(),  // prefixes of the debug pane's frames the author unfolded
+  stateYamlOpen: false,    // the inspector's folded YAML box of a state is open (kept across redraws)
   stateFramesOpen: false,  // the inspector's folded list of a state's submachine runs is open ...
   stateFramesFor: null,    // ... for this state
   resultOpen: new Set(),  // indexes of the result's activities the author opened
@@ -231,6 +232,7 @@ function drawStateFrames() {
 
 $('side-inspect').addEventListener('toggle', (event) => {
   if (event.target.dataset?.stateFrames !== undefined) S.stateFramesOpen = event.target.open;
+  if (event.target.id === 'stateYaml') S.stateYamlOpen = event.target.open;
 }, true);
 
 /** The frame of the selected run the canvas shows: the root on the run's own machine; on another, the frame of the
@@ -1382,9 +1384,8 @@ function transitionEditor(t) {
     <div class="sg-transition-head">
       <span class="pk-mono">#${t.index}</span>
       ${t.trigger !== 'done' ? badge(t.trigger, t.trigger === 'error' ? 'danger' : 'info') : ''}
-      <span class="pk-mono">${t.source} → ${t.target ?? '(internal)'}</span>
+      <span class="pk-mono sg-transition-way" title="${t.source} → ${t.target ?? '(internal)'}">${t.source} → ${t.target ?? '(internal)'}</span>
       ${pinned?.errors ? badge(counted(pinned.errors, 'error'), 'danger') : ''}
-      <span class="pk-grow"></span>
       ${writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="move-up" title="Try it earlier" aria-label="Move up" ${t.index === Math.min(...siblings.map((s) => s.index)) ? 'disabled' : ''}>${icon('arrow-up', { size: 'sm' })}</button>
       <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="move-down" title="Try it later" aria-label="Move down" ${t.index === Math.max(...siblings.map((s) => s.index)) ? 'disabled' : ''}>${icon('arrow-down', { size: 'sm' })}</button>
       <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="remove-transition" title="Remove" aria-label="Remove transition">${icon('trash-2', { size: 'sm' })}</button>` : ''}
@@ -1412,8 +1413,9 @@ ${t.effect ?? ''}</textarea>
   </form>`;
 }
 
-/** An inspector form's Apply: offered once its form holds typed text (markApplies), primary then. */
-const applyButton = html`<div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm" data-apply disabled>${icon('save', { size: 'sm' })} Apply</button></div>`;
+/** An inspector form's own submit, hidden: the bar under the inspector applies every form at once (drawSavebar,
+ * applyInspector). Kept per form: each is still applied as one edit of its own, by the path a submit takes. */
+const applyButton = html`<button type="submit" class="pk-btn pk-btn--sm" data-apply disabled hidden>${icon('save', { size: 'sm' })} Apply</button>`;
 
 /** Each Apply as its form stands: disabled until text is typed into it (S.inspectorDrafts), primary once there is. */
 function markApplies() {
@@ -1424,6 +1426,7 @@ function markApplies() {
     button.disabled = !typed;
     button.classList.toggle('pk-btn--primary', typed);
   }
+  drawSavebar();
 }
 
 /** A YAML key as a label: max_visits -> Max visits. */
@@ -1462,6 +1465,7 @@ function drawInspector() {
   const m = S.machine;
   S.inspectorDrafts.clear();  // the forms are drawn anew: what was typed into them is gone (callers asked first)
   setDirty(savable());
+  drawSavebar();
   if (!m) {
     render(pane, '');  // the pane hides without a machine (panel.css)
     return;
@@ -1491,7 +1495,7 @@ ${note.text}</textarea>
         <p class="pk-help">Kept in the file under notes: and drawn on the canvas; the engine never reads it.</p>
         ${editable ? html`<div class="pk-form-actions">
           <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove-note">${icon('trash-2', { size: 'sm' })} Remove</button>
-          <button type="submit" class="pk-btn pk-btn--sm" data-apply disabled>${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
+          <button type="submit" class="pk-btn pk-btn--sm" data-apply disabled hidden>${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
       </form></div>`);
     return;
   }
@@ -1560,13 +1564,6 @@ ${note.text}</textarea>
       </label>` : ''}
       ${problemList(pinned?.problems)}
     </div>
-    <div class="sg-section">
-      <h4 class="pk-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${runLabel(live.id)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
-      ${hooks.length ? html`<div class="pk-row sg-checks">
-        ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${human(at)}</label>`)}
-      </div><div id="bpConditions" class="pk-stack">${conditionFields(state.name)}</div>` : ''}
-      ${why ? html`<p class="pk-help">${why}</p>` : ''}
-    </div>
     ${state.type === 'state' && !state.composite ? html`<div class="sg-section">
       <h4 class="pk-section-title">Activity</h4>
       <form data-form="activity" class="pk-stack">
@@ -1598,13 +1595,20 @@ ${note.text}</textarea>
       </form>` : ''}
     </div>
     <div class="sg-section">
-      <h4 class="pk-section-title">YAML</h4>
+      <h4 class="pk-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${runLabel(live.id)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
+      ${hooks.length ? html`<div class="pk-row sg-checks">
+        ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${human(at)}</label>`)}
+      </div><div id="bpConditions" class="pk-stack">${conditionFields(state.name)}</div>` : ''}
+      ${why ? html`<p class="pk-help">${why}</p>` : ''}
+    </div>
+    <div class="sg-section">
+      <details class="pk-details" id="stateYaml" ${S.stateYamlOpen ? 'open' : ''}><summary>YAML of this state</summary>
       <form data-form="set-state" class="pk-stack">
         ${codeBox(fragment, html`<textarea class="pk-textarea pk-input--mono sg-fragment" name="yaml" spellcheck="false" wrap="off"
           aria-label="The state's YAML" ${applies ? '' : 'readonly'}>${fragment}</textarea>`)}
         ${lock ? html`<p class="pk-help">${lock}: edit it in the YAML tab.</p>` : ''}
         ${applies ? applyButton : ''}
-      </form>
+      </form></details>
     </div>
     <div class="sg-section" id="stateFrames" hidden></div>`);
   drawStateFrames();
@@ -1714,6 +1718,7 @@ const MACHINE_FIELD_SCHEMA = {
   resources: { type: 'object', description: 'name: {open, fork, close} activities' },
   agent: { type: 'object', description: 'offer this machine as an agent, no config entry: {name, description, input, task_param, on_wait, params, promote, visibility (default private)}; every process declares it as it starts' },
   limits: { type: 'object', description: 'max_steps, timeout, concurrency, max_cost, max_output_tokens' },
+  resume: { enum: ['manual', 'auto'], description: 'auto: the API resumes a run a restart interrupted by itself' },
   finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
 };
 const COMMON_FIELDS = ['timeout', 'retry', 'idempotent', 'description'];  // every kind has them: listed last
@@ -1757,7 +1762,8 @@ function field(name, p = {}, value, { text, locked = false, required = false, pr
   if ((shape === 'line' || shape === 'duration') && orig.includes('\n')) shape = 'text';  // an input drops line breaks
   const off = !S.machine.writable || locked;
   const common = { id, name, shape, orig, off };
-  const label = html`<label for="${id}">${human(name)}${required ? ' *' : ''}</label>`;
+  const wide = ['yaml', 'text', 'code', 'prose'].includes(shape);  // a box of lines: the pane's width (panel.css)
+  const label = html`<label for="${id}" class="${wide ? 'sg-wide' : ''}">${human(name)}${required ? ' *' : ''}</label>`;
   if (shape === 'enum' || shape === 'bool') {
     const options = shape === 'bool' ? ['true', 'false'] : [...new Set([p, ...(p.anyOf || [])].flatMap((o) => o.enum || []))];
     return html`${label}<select class="pk-select pk-select--sm" ${attrs(common)}>
@@ -1767,10 +1773,10 @@ function field(name, p = {}, value, { text, locked = false, required = false, pr
   if (shape === 'yaml' || shape === 'text' || shape === 'code' || shape === 'prose') {
     const prose = shape === 'prose';
     const rows = Math.min(8, Math.max(prose ? 3 : 2, orig.split('\n').length));
-    return html`${label}<div class="pk-stack"><textarea class="pk-textarea${prose ? '' : ' pk-input--mono'} sg-field-text" rows="${rows}" spellcheck="${String(prose)}"
+    return html`${label}<div class="pk-stack sg-wide"><textarea class="pk-textarea${prose ? '' : ' pk-input--mono'} sg-field-text" rows="${rows}" spellcheck="${String(prose)}"
       placeholder="${{ yaml: 'YAML', code: 'Python', prose: 'free text' }[shape] ?? 'text, {{ templates }}'}" ${attrs(common)}>
 ${orig}</textarea>
-      ${locked ? html`<span class="pk-help">Uses a YAML anchor, alias or merge: edit it in the YAML tab.</span>` : ''}</div>${fieldHelp(p)}`;
+      ${locked ? html`<span class="pk-help">Uses a YAML anchor, alias or merge: edit it in the YAML tab.</span>` : ''}</div>${fieldHelp(p, true)}`;
   }
   // (the line break after <textarea> above is dropped by the parser: a value that starts with one keeps it)
   return html`${label}<input class="pk-input pk-input--sm${shape === 'line' ? '' : ' pk-input--mono'}" ${shape === 'number' ? html`type="number"` : ''}
@@ -1784,7 +1790,7 @@ const attrs = ({ id, name, shape, orig, off }) => html`id="${id}" name="${name}"
 const CHOICES_OF = { agent: 'sgAgents', by: 'sgAgents', vars_from: 'sgAgents', tool: 'sgTools', profile: 'sgProfiles', machine: 'sgMachines' };
 const NEW_EVENT = '+new-event';  // the trigger select's "New event…": no event name has a +
 
-const fieldHelp = (p) => (p.description ? html`<span class="pk-help sg-field-help">${p.description}</span>` : '');
+const fieldHelp = (p, wide = false) => (p.description ? html`<span class="pk-help sg-field-help${wide ? ' sg-wide' : ''}">${p.description}</span>` : '');
 
 /** The catalog for a machine: its runner (by its folder) decides the tools a tool activity may call. */
 async function loadCatalog(machineId = null) {
@@ -1949,9 +1955,13 @@ function untyped(form) {
   setDirty(unsaved());
 }
 
-$('side-inspect').addEventListener('submit', async (event) => {
+$('side-inspect').addEventListener('submit', (event) => {
   event.preventDefault();
-  const form = event.target;
+  applyForm(event.target);
+});
+
+/** One inspector form applied: one edit of what it holds (or nothing, if it shows what the machine holds). */
+async function applyForm(form) {
   const button = form.querySelector('[type="submit"]');
   form.dataset.applying = '';
   await withBusy(button, async () => {
@@ -1987,6 +1997,87 @@ $('side-inspect').addEventListener('submit', async (event) => {
     }
   }).finally(() => { delete form.dataset.applying; });
   markApplies();  // withBusy freed the button it held: an Apply with nothing typed goes back to disabled
+}
+
+// ------------------------------------------------------------------ the inspector's Apply bar
+
+/** What a form with text typed stands for, as the bar names it. */
+function draftLabel(key) {
+  const named = { description: 'Description', activity: 'Activity', fields: 'Settings', machine: 'Machine settings',
+    state: 'State YAML', note: 'Note' }[key];
+  if (named) return named;
+  const t = String(key).startsWith('transition:') ? transitionOf(key.slice('transition:'.length)) : null;
+  return t ? `Transition ${t.source} → ${t.target ?? '(internal)'}` : String(key);
+}
+
+/** The inspector's forms with text typed and not applied, in the order it shows them. */
+const draftForms = () => [...$('side-inspect').querySelectorAll('form')].filter((form) => S.inspectorDrafts.has(draftKey(form)));
+
+/** The bar under the inspector: which forms hold text not applied; Apply takes them all, Discard none. */
+function drawSavebar() {
+  const forms = S.machine?.writable ? draftForms() : [];
+  $('inspectorSave').hidden = !forms.length;
+  if (!forms.length) return;
+  const names = forms.map((form) => draftLabel(draftKey(form)));
+  render($('inspectorSaveText'), html`<strong>${counted(names.length, 'change')}</strong> not applied: ${names.join(', ')}`);
+  $('inspectorSaveText').title = names.join(', ');
+  $('inspectorApply').disabled = $('inspectorDiscard').disabled = Boolean(S.applyingAll);
+}
+
+/** Every inspector form with text typed, applied in the order shown -- one edit each, so one undo step each. The first
+ * one refused or failed stops it: the rest keep their text (edit() puts it back after each redraw). */
+async function applyInspector() {
+  if (S.applyingAll || !S.machine?.writable) return;
+  let keys = draftForms().map(draftKey);
+  let setAside = [];
+  if (!keys.length) return;
+  if (keys.includes('state') && keys.length > 1) {
+    // the YAML box is the whole state as it stood: applied with the fields, one would undo the other
+    const choice = await dialog({ title: 'Apply which changes?',
+      message: 'The state\'s YAML box and its fields both have changes. The box holds the whole state as it was before them: applying both, one would undo the other.',
+      actions: [{ label: 'Cancel', value: null }, { label: 'The YAML box', value: 'yaml' }, { label: 'The fields', value: 'fields', primary: true }] });
+    if (!choice) return;
+    const dropped = choice === 'yaml' ? keys.filter((key) => key !== 'state') : ['state'];
+    // set aside as chosen (edit() would ask about it again); held, so text no redraw replaced comes back listed
+    setAside = draftForms().filter((form) => dropped.includes(draftKey(form)));
+    for (const key of dropped) S.inspectorDrafts.delete(key);
+    keys = keys.filter((key) => !dropped.includes(key));
+  }
+  // the activity last: a new kind changes which settings the state has (after, a wait's timeout), and settings typed
+  // into a form an edit redrew differently are dropped (keepTyped) -- a settings edit leaves the activity form alone
+  keys.sort((a, b) => (a === 'activity') - (b === 'activity'));
+  S.applyingAll = true;
+  drawSavebar();
+  try {
+    for (const key of keys) {
+      const form = draftForms().find((one) => draftKey(one) === key);
+      if (!form) continue;  // gone with an edit before it: edit() said so
+      await applyForm(form);
+      if (S.inspectorDrafts.has(key)) break;  // refused or failed: what is left stays listed
+    }
+  } finally {
+    S.applyingAll = false;
+    // a form set aside that is still drawn (the edit was refused, or nothing was redrawn) holds its text: listed again
+    for (const form of setAside) if (form.isConnected) S.inspectorDrafts.add(draftKey(form));
+    markApplies();
+  }
+}
+
+$('inspectorApply').addEventListener('click', () => applyInspector());
+$('inspectorDiscard').addEventListener('click', () => {
+  S.inspectorDrafts.clear();
+  drawInspector();  // the forms as the machine has them
+});
+// Enter in a field of an inspector form, Ctrl+Enter anywhere in one (a text area too): Apply, as the bar's button
+$('side-inspect').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  const form = event.target.closest?.('form');
+  if (!form || !draftKey(form)) return;
+  const field = event.target.tagName === 'INPUT' && !['checkbox', 'radio', 'button', 'submit'].includes(event.target.type);
+  const ctrl = event.ctrlKey || event.metaKey;
+  if (!ctrl && !field) return;  // Enter in a text area is a line break
+  event.preventDefault();  // in a field never the form's own submit: it would apply this form alone, past the bar
+  if (!event.shiftKey && !event.altKey) applyInspector();
 });
 
 /** The composites a state can go into, and '' for the top level: not itself, nor one inside it. */
