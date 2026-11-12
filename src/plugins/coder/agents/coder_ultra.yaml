@@ -41,6 +41,7 @@ plugins:
             - "+stategraph/stategraph_validate_machine"
             - "+stategraph/stategraph_run_workflow"
             - "+stategraph/stategraph_get_run"            # its state and result
+            - "+stategraph/stategraph_stop_workflow"      # stop one of its own that runs away
 
         hooks:
           enabled: true

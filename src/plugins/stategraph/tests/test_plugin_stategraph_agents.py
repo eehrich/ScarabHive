@@ -744,7 +744,7 @@ def test_the_configuration_check_knows_the_llm_profiles():
     config = SimpleNamespace(llm_system=SimpleNamespace(profiles={"cheap": object()}), plugins=None)
     check = make_config_check(config, runner="runner", own_instance="stategraph")
     assert check("llm_profile", "cheap", {}) is None
-    assert check("llm_profile", "gone", {}) == "LLM profile 'gone' is not configured"
+    assert check("llm_profile", "gone", {}) == "LLM profile 'gone' is not configured (known: cheap)"
 
 
 def test_the_runtime_refuses_what_sg007_refuses(tmp_path):

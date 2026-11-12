@@ -904,7 +904,9 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             return f"{name!r} is the name of another server ({final_type(name) or 'unknown type'}); name the agent"
         if what == "llm_profile":
             llm = getattr(system_config, "llm_system", None)
-            return None if name in (getattr(llm, "profiles", None) or {}) else f"LLM profile {name!r} is not configured"
+            profiles = getattr(llm, "profiles", None) or {}
+            return None if name in profiles else (f"LLM profile {name!r} is not configured "
+                                                  f"(known: {', '.join(sorted(profiles)) or 'none'})")
         if what == "profile":
             llm = getattr(system_config, "llm_system", None)
             profiles = getattr(llm, "decision_profiles", None) or {}

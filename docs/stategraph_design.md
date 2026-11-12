@@ -695,6 +695,7 @@ from an AST scan (§2.6).
 | SG111 | warning | `agent:`: the agent it offers cannot run (a `task_param` that is no param, a required param nothing passes), or another server -- or a config entry of this machine, whose settings would run -- holds its name. The machine itself runs. |
 | SG112 | warning | An event transition on a state that never waits (it has `do`, or completes at once): events are taken only while a wait or timer state is active -- put it on a composite around a wait state |
 | SG113 | warning | Machine-level `vars` read `ctx`: they render once, when the frame starts, so later changes never reach them -- put ctx values into the activity's own `vars` |
+| SG114 | warning | A template of an activity a `parallel`, or a `map` with `concurrency` above 1, runs beside others reads `run.cost` or `run.output_tokens`: its value depends on which sibling ended first, so a resume renders it differently and the run ends `diverged` -- read it in a guard (replayed as recorded) or before the composite |
 
 Every problem carries a path (`states.judge.transitions[1].guard`), the file, and the
 line when it is known.

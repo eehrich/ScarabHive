@@ -17,6 +17,7 @@ Mutation checks run (each turned the named tests red, then was restored from a c
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -809,6 +810,34 @@ async def test_get_run_says_what_the_runs_agents_cost(server):
 
     assert got["spend"] == {"cost": 0.25, "activities": 1, "tokens": {"prompt": 40, "completion": 4, "cached": 0},
                             "cost_is_estimate": False, "cost_unpriced_calls": 0}, got
+
+
+async def test_an_ended_run_read_as_a_whole_comes_brief(server):
+    """After a fan-out an ended run's answer was 139k characters, nearly all its frames' ctx and params and 30 journal
+    rows: an agent reading its workflow's result paid for them. Asked for (steps, kinds, state), they come."""
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "mock_only": True,
+                                                                   "params": {"name": "x" * 3000}, "wait": "finish"})
+    full, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "steps": 30})
+    assert full["run_status"] == "succeeded" and len(full["journal"]) > 5, "fixture: an ended run of more rows"
+    assert any("params" in frame or "ctx" in frame for frame in full["frames"]), "fixture: frames that carry them"
+
+    brief, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
+
+    assert "brief" in brief and len(brief["journal"]) <= 5, brief
+    assert all("params" not in frame and "ctx" not in frame for frame in brief["frames"]), brief["frames"]
+    assert brief["output"] == full["output"] and len(json.dumps(brief)) < len(json.dumps(full))
+
+
+async def test_a_save_naming_one_file_twice_is_refused(server):
+    """Two paths of one file: validation read the first text, the write left the second on the disk."""
+    import os
+
+    other = HELLO.replace("hello", "twin")
+    twice = ["./twin.yaml"] + (["TWIN.yaml"] if os.path.normcase("A") == os.path.normcase("a") else [])
+    for second in twice:
+        result, _ = await run_tool(server, "stategraph_save_machine", {"files": {"twin.yaml": other, second: "x: 1\n"}})
+        assert result["status"] == "error" and "one file here" in result["error"], (second, result)
+    assert server.machines.find("twin") is None, "a file was written"
 
 
 async def test_saving_a_machines_own_file_without_its_version_says_to_pass_it(server):

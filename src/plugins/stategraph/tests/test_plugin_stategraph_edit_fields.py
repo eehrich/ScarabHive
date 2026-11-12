@@ -255,3 +255,13 @@ def test_the_graph_carries_what_the_forms_show():
     assert states["read"]["do"] == {"machine": "critique"}
     assert states["done"]["output"] == {"draft": "x"} and states["done"]["yaml"]["output"].strip() == "draft: x"
     assert graph["group"] == "Writer" and graph["yaml"]["limits"].strip() == "max_steps: 9"
+
+
+def test_resume_is_set_like_any_machine_key_and_shown_as_set():
+    """The inspector offers resume (manual or auto): an edit writes it, and the graph shows it -- without, the field
+    always showed (default) and could not be taken back."""
+    text = apply_op(MACHINE, {"op": "update_machine", "fields": {"resume": "auto"}})
+    assert data(text)["resume"] == "auto"
+    assert graph_view(load_tree("m.yaml", SnapshotSources({"m.yaml": text})))["resume"] == "auto"
+    back = apply_op(text, {"op": "update_machine", "fields": {"resume": None}})
+    assert "resume" not in data(back) and graph_view(load_tree("m.yaml", SnapshotSources({"m.yaml": back})))["resume"] is None

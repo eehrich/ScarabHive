@@ -86,6 +86,8 @@ tools:
           files: {type: object, additionalProperties: {type: string}, description: "relative path -> text; the root machine is <machine_id>.yaml"}
           yaml: {type: string, description: "a single machine file instead of files"}
           machine_id: {type: string, description: "id of the root machine (default: the id in the YAML)"}
+          for_workflow: {type: boolean, default: false, description: "check yaml as run_workflow would: the agents and tools you may reach, its cap written in -- the answer names the max_output_tokens and concurrency it would run under"}
+          max_output_tokens: {type: integer, minimum: 1, description: "for_workflow: the cap you would pass run_workflow"}
         additionalProperties: false
 
   - type: function
@@ -139,13 +141,24 @@ tools:
 
   - type: function
     function:
+      name: "{{ name }}_stop_workflow"
+      description: "Stop a dynamic workflow you started with run_workflow (its finally activities still run): one that runs away, or that you no longer need. Only your own workflows."
+      parameters:
+        type: object
+        properties:
+          run_id: {type: string, description: "id from run_workflow"}
+        required: [run_id]
+        additionalProperties: false
+
+  - type: function
+    function:
       name: "{{ name }}_get_run"
-      description: "A run's status, frames (active states, context), output or error, what it waits for, and its last journal rows."
+      description: "A run's status, frames (active states, context), output or error, what it waits for, and its last journal rows. An ended run read without steps, kinds, state or after comes brief: its output or error, its frames without context, its last 5 journal rows; with a cap, output_tokens against max_output_tokens."
       parameters:
         type: object
         properties:
           run_id: {type: string, description: "id from run_machine"}
-          steps: {type: integer, minimum: 1, maximum: 500, default: 30, description: "how many journal rows to return: the last ones, or the first after `after`"}
+          steps: {type: integer, minimum: 1, maximum: 500, default: 30, description: "how many journal rows to return: the last ones, or the first after `after` (an ended run without it: 5, brief)"}
           after: {type: integer, minimum: 0, description: "the rows after this journal seq (to page forward through a long run); without it, the last ones"}
           kinds: {type: array, items: {type: string, enum: ["activity", "trace", "event", "edit", "timer", "lifecycle"]}, description: "only rows of these kinds (activity: what each activity was given and answered; trace: transitions with the guards they evaluated, pauses, finals, and asked for, the engine's step rows; lifecycle: who started, resumed, set or ended it)"}
           state: {type: string, description: "only rows of this state"}

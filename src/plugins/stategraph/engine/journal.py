@@ -1123,27 +1123,23 @@ class RunStore:
                         data=data)
 
     def run_cost(self, run_id: str) -> Optional[float]:
-        """The run's run.cost as its next resume would count it (RunContext.cost): ``meta.cost`` over its activity
-        outcomes (done, error) -- a fork's copied ones too, the rows a resume set aside not. A ``started`` row's
-        cost is not in it: an attempt in flight counts once its outcome takes it over, and one a stop cut (a
-        fail-fast join's sibling) never ends -- ``spend`` counts that money. None without activity rows (none ran,
-        or retention dropped them): ``spend`` answers then."""
+        """What the run's own activities cost, as its limits.max_cost counts it (RunContext.spent): ``meta.cost`` over
+        every activity row -- outcomes, a fork's copied ones, an attempt a stop cut (its ``started`` row), the rows
+        a resume set aside. One row per activity: an outcome takes over what its ``started`` row carried. Never the
+        runs it started. None without activity rows (none ran, or retention dropped them): ``spend`` answers then."""
         with self._lock:
             count, cost = self._db().execute(
-                "SELECT COUNT(*), TOTAL(CASE WHEN status IN ('done', 'error') THEN json_extract(data, '$.meta.cost')"
-                " END) FROM journal WHERE run_id = ? AND kind = 'activity' AND key NOT GLOB 'rewound.*'",
-                (run_id,)).fetchone()
+                "SELECT COUNT(*), TOTAL(json_extract(data, '$.meta.cost'))"
+                " FROM journal WHERE run_id = ? AND kind = 'activity'", (run_id,)).fetchone()
         return cost if count else None
 
     def run_output_tokens(self, run_id: str) -> Optional[int]:
-        """The run's run.output_tokens as its next resume would count it (RunContext.output_tokens):
-        ``meta.tokens.completion`` over the rows run_cost reads. None without activity rows."""
+        """The same for its LLM output (``meta.tokens.completion``), as limits.max_output_tokens counts it. None
+        without activity rows."""
         with self._lock:
             count, tokens = self._db().execute(
-                "SELECT COUNT(*), TOTAL(CASE WHEN status IN ('done', 'error') THEN"
-                " json_extract(data, '$.meta.tokens.completion') END)"
-                " FROM journal WHERE run_id = ? AND kind = 'activity' AND key NOT GLOB 'rewound.*'",
-                (run_id,)).fetchone()
+                "SELECT COUNT(*), TOTAL(json_extract(data, '$.meta.tokens.completion'))"
+                " FROM journal WHERE run_id = ? AND kind = 'activity'", (run_id,)).fetchone()
         return int(tokens) if count else None
 
     def spend(self, run_id: str, *, children: bool = False, _seen: Optional[set[str]] = None

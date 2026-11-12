@@ -927,3 +927,55 @@ def test_notes_are_names_to_texts(notes, says):
     assert any(says in p.message or says in (p.path or "") for p in errors(validate({"m.yaml": text}))), \
         [p.as_dict() for p in validate({"m.yaml": text}).problems]
     assert not errors(validate({"m.yaml": text.replace(notes, "  why: free text\n")}))
+
+
+@pytest.mark.parametrize("where, code", [
+    ("guard", 'ctx.found.append(1) is None'),
+    ("task", '"{{ ctx.found.pop() }}"'),
+    ("output", '"{{ ctx.seen.update({\'a\': 1}) }}"'),
+])
+def test_read_only_code_that_changes_ctx_is_an_error_before_it_runs(where, code):
+    """The engine refuses a ctx that read-only code changed only when it runs it -- in a workflow, after its agents
+    spent their tokens. A copy changed is no change."""
+    states = {
+        "guard": f"""\
+            a:
+              do: {{agent: writer, task: go}}
+              transitions:
+                - {{target: done, guard: '{code}'}}
+                - {{target: done, guard: else}}
+            done: {{type: final}}""",
+        "task": f"""\
+            a:
+              do: {{agent: writer, task: {code}}}
+              transitions: [{{target: done}}]
+            done: {{type: final}}""",
+        "output": f"""\
+            a:
+              do: {{agent: writer, task: go}}
+              transitions: [{{target: done}}]
+            done: {{type: final, output: {code}}}""",
+    }[where]
+    tree = validate(machine(states, head="context: {found: [], seen: {}}\n"))
+    assert any("changes ctx in read-only code" in p.message for p in errors(tree)), [p.message for p in tree.problems]
+
+    copied = validate(machine(states.replace("ctx.found.", "ctx.found.copy().").replace("ctx.seen.", "dict(ctx.seen)."),
+                              head="context: {found: [], seen: {}}\n"))
+    assert not any("changes ctx" in p.message for p in copied.problems), [p.message for p in copied.problems]
+
+
+@pytest.mark.parametrize("composite, warned", [
+    ('{parallel: {a: {agent: writer, task: "spent {{ run.output_tokens }}"}, b: {agent: writer, task: go}}}', True),
+    ('{map: "[1, 2]", concurrency: 2, each: {agent: writer, task: "spent {{ run.cost }}"}}', True),
+    ('{map: "[1, 2]", each: {agent: writer, task: "spent {{ run.cost }}"}}', False),  # one after another
+    ('{parallel: {a: {agent: writer, task: go}, b: {agent: writer, task: go}}}', False),
+])
+def test_a_concurrent_childs_template_reading_the_spend_is_warned(composite, warned):
+    """Read beside siblings, run.cost depends on which ended first: a resume renders it differently and diverges."""
+    tree = validate(machine(f"""\
+        a:
+          do: {composite}
+          transitions: [{{target: done}}]
+        done: {{type: final}}"""))
+    assert bool(found(tree, "SG114")) is warned, [(p.code, p.message) for p in tree.problems]
+

@@ -101,6 +101,8 @@ class ActivityRun:
         self.ending_only = frame.ending_only if ending_only is None else ending_only
         self.attempt = 1
         self.meta: dict[str, Any] = {}
+        #: what _keep_spent set aside of this activity's meta (USD, output tokens): an outcome takes it back over
+        self._aside: tuple[float, int] = (0.0, 0)
         self._detached: Optional[dict[str, Any]] = None
         self._base: Optional[dict[str, Any]] = None
 
@@ -383,6 +385,23 @@ class ActivityRun:
         attempts = spec.retry.attempts if spec.retry else 1
         if begun_row.get("failures"):  # the attempts that failed before the crash
             self.meta["failures"] = list(begun_row["failures"])
+        task = asyncio.current_task()
+        cancels = task.cancelling() if task is not None else 0
+        try:
+            return await self._attempts(kind, spec, base, inputs, timeout, first, attempts, leaf, mocked, budgeted, due)
+        except asyncio.CancelledError:
+            # cut outside an attempt -- in a retry's backoff, waiting for its turn: what the attempts before spent
+            # counts all the same. Its row says so already (the backoff's started row carries it) and is left as it
+            # is -- a halt's resume reads that row for where it stopped; only the limits learn it here. Cut inside an
+            # attempt, _keep_spent set it aside already: only the rest goes
+            if self._cancelled_by_run(task, cancels):
+                self._set_aside_rest()
+            raise
+
+    async def _attempts(self, kind: ActivityKind, spec: KindSpec, base: dict[str, Any], inputs: dict[str, Any],
+                        timeout: Optional[float], first: int, attempts: int, leaf: bool, mocked: bool,
+                        budgeted: bool, due: Any) -> Any:
+        """The attempts of a live activity (execute): retries, backoff, its turn, its outcome journaled."""
         begun = time.monotonic()
         failure: Optional[ActivityError] = None
         for attempt in range(first, max(attempts, first) + 1):
@@ -472,6 +491,7 @@ class ActivityRun:
             if self.run.divergence is not None:  # a replay below it diverged and something caught that (a call's
                 raise ReplayDivergence(self.run.divergence)  # except, a join's cleanup): it ends the run all the same
             if self.stopped and (failure is not None or not leaf):  # the run ended while it ran (a composite's
+                self._keep_spent(base, attempt, inputs)  # no outcome: what it spent stays in its started row
                 self.run.stop_here()    # children replayed into their ends, a leaf
             if failure is None:                                     # failed with it): not its outcome (§3.10)
                 self.meta["duration_s"] = 0.0 if mocked else round(time.monotonic() - begun, 3)
@@ -526,11 +546,12 @@ class ActivityRun:
         run.cost / run.output_tokens before its outcome is journaled -- reached limits.max_cost or
         limits.max_output_tokens; None below both, or without either."""
         limits = self.run.machine.spec.limits
-        spent = self.run.cost + self.run.cost_of(self.meta)
+        cost, tokens = self.run.spent  # set aside too: what a stop cut, what a rewind set aside (cost_aside)
+        spent = cost + self.run.cost_of(self.meta)
         if limits.max_cost is not None and spent >= limits.max_cost:
             return ActivityError("budget_exceeded", f"{self.path}: the run has spent {spent:.4f} USD, "
                                  f"limits.max_cost is {limits.max_cost:g}")
-        produced = self.run.output_tokens + self.run.output_tokens_of(self.meta)
+        produced = tokens + self.run.output_tokens_of(self.meta)
         if limits.max_output_tokens is not None and produced >= limits.max_output_tokens:
             return ActivityError("budget_exceeded", f"{self.path}: the run has produced {produced} output tokens, "
                                  f"limits.max_output_tokens is {limits.max_output_tokens}")
@@ -562,6 +583,15 @@ class ActivityRun:
             self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._carried()})
         except (Exception, asyncio.CancelledError):  # a lost run refuses every write: the cut cost goes uncounted
             logger.debug("stategraph: run %s: the spend of the cut %s not kept", self.run.id, self.path, exc_info=True)
+            return
+        self._set_aside_rest()  # no outcome carries it: the limits count it now (a resume: from this row)
+
+    def _set_aside_rest(self) -> None:
+        """Set aside what this activity's meta spent and is not set aside yet: a cut seen twice (inside its attempt,
+        then around them) counts once; an outcome later takes it back over (_journal)."""
+        cost, tokens = self.run.cost_of(self.meta), self.run.output_tokens_of(self.meta)
+        self.run.move_aside(cost - self._aside[0], tokens - self._aside[1])
+        self._aside = (cost, tokens)
 
     def _cancelled_by_run(self, task: Optional["asyncio.Task[Any]"], cancels: int) -> bool:
         """Whether a CancelledError out of an attempt is the run's (§5.8): this task is being cancelled (a
@@ -669,6 +699,9 @@ class ActivityRun:
         if status in ("done", "error"):
             self.run.note_outcome(self.key, status, data)
             self.run.add_cost(data)
+            if self._aside != (0.0, 0):  # an outcome after a cut after all (a finally the cancel bound cut): its row
+                self.run.move_aside(-self._aside[0], -self._aside[1])  # carries the spend, counted above -- once
+                self._aside = (0.0, 0)
 
 
 class _ThreadedTool(collections.abc.Coroutine):

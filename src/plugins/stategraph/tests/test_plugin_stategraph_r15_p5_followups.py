@@ -454,9 +454,12 @@ async def test_feat6_a_forks_budget_counts_its_copied_steps_running_and_ended_al
     assert harness.store.spend(fork) is None  # what it spent itself: nothing (the source spent it)
 
 
-async def test_feat6_a_budget_leaves_out_what_a_resume_set_aside(harness):
+async def test_feat6_a_budget_counts_what_a_resume_set_aside(harness):
+    """What a resume set aside was spent: limits.max_cost counts it (a rewind does not refill the budget), and the
+    budget shown is what the limit counts. run.cost, which expressions read, leaves it out
+    (test_plugin_stategraph_limits_set_aside)."""
     store = harness.store
     seed_run(store, "r", {"m.yaml": LIMITED}, owner="o", lease=-1, status="interrupted")
     store.record("r", "activity", "s0", status="done", data={"meta": {"cost": 0.25}})
     store.record("r", "activity", "rewound.1/s1", status="done", data={"meta": {"cost": 1.0}})
-    assert harness.manager().budget("r") == (4.0, 0.25)
+    assert harness.manager().budget("r") == (4.0, 1.25)

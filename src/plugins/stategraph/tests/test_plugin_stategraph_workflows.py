@@ -17,7 +17,7 @@ from agent_system.llm.models import ChatMessage
 from plugins.stategraph.engine.backend import make_config_check
 from plugins.stategraph.server import StateGraphServer
 from plugins.stategraph.service import ServiceError
-from plugins.stategraph.tests.stategraph_testkit import FakeBackend, tool_config
+from plugins.stategraph.tests.stategraph_testkit import FakeBackend, held, tool_config, until
 from plugins.stategraph.workflows import (WaitingResults, WorkflowSettings, agent_places, inline_problems,
                                           settings_of, with_terms)
 
@@ -193,6 +193,39 @@ async def test_a_workflow_naming_an_agent_its_author_cannot_start_never_runs(ser
                                             user_id="ann", caller="lead")
     assert refused.value.status == 422 and "lead could not start it" in refused.value.message
     assert made == [] and server.run_store.list_runs() == []
+
+
+async def test_the_catalog_for_a_workflow_offers_its_subset_its_profiles_and_its_terms(server):
+    """A workflow's author learned the cap's ceiling and the profiles it may name only from a refused start, and was
+    offered activities a workflow may not use."""
+    from plugins.stategraph.server import WORKFLOW_KINDS
+
+    plain = await server.catalog({})
+    assert {"call", "acquire"} <= {k["key"] for k in plain["kinds"]} and "workflow_limits" not in plain, "fixture"
+
+    found = await server.catalog({"for_workflow": True, "_agent_name": "lead"})
+
+    keys = {k["key"] for k in found["kinds"]}
+    assert keys and keys <= WORKFLOW_KINDS, keys
+    assert found["workflow_limits"]["max_output_tokens_ceiling"] == SETTINGS["max_output_tokens_ceiling"], found
+    configured = getattr(server.system_config.llm_system, "profiles", None) or {}
+    assert found["llm_profiles"] == sorted(configured), found["llm_profiles"]
+    unknown = await server.validate_machine({"yaml": REVIEW.replace('task: "find"', 'task: "find", llm_profile: nope'),
+                                             "for_workflow": True, "_agent_name": "lead"})
+    assert any("nope" in p["message"] and "(known:" in p["message"] for p in unknown["problems"]), unknown
+
+
+async def test_validating_for_a_workflow_finds_what_starting_it_would_refuse(server):
+    """validate_machine said valid, run_workflow then refused it: the author's reach was not checked."""
+    beyond = REVIEW.replace("agent: skeptic", "agent: root_agent")
+    plain = await server.validate_machine({"yaml": beyond})
+    assert plain["valid"] is True, "fixture: valid as a saved machine"
+
+    checked = await server.validate_machine({"yaml": beyond, "for_workflow": True, "_agent_name": "lead"})
+    assert checked["valid"] is False and any(p["code"] == "SG007" for p in checked["problems"]), checked
+    fine = await server.validate_machine({"yaml": REVIEW, "for_workflow": True, "_agent_name": "lead",
+                                          "max_output_tokens": 1000.0})
+    assert fine["valid"] is True and (fine["max_output_tokens"], fine["concurrency"]) == (1000, 3), fine
 
 
 @pytest.mark.parametrize("change,status,says", [
@@ -407,6 +440,47 @@ async def test_a_workflow_resumed_after_its_caller_read_it_rings_again_when_it_e
     await asyncio.sleep(0)
 
     assert woken == [True, True], "the second end found its result already delivered: nobody rings, nothing comes"
+
+
+@pytest.mark.parametrize("wake", [True, False])
+async def test_a_workflow_a_restart_interrupted_is_resumed_by_itself_when_its_end_wakes_somebody(server, tmp_path,
+                                                                                                 monkeypatch, wake):
+    """Its caller was told it may end its turn and is woken: interrupted and left so, nobody would ever ring. One
+    nobody is woken for stays interrupted: resumed, it would spend up to its cap for nobody."""
+    import time
+
+    from plugins.stategraph.schedules import Scheduler
+
+    async def armed(user_id, session_id):
+        return ""
+    monkeypatch.setattr(server.service, "_wake_armed", armed)
+    gate = asyncio.Event()
+    fake_backends(server, {"find": held(gate)})
+    started = await server.service.start_workflow(REVIEW, user_id="ann", caller="lead", caller_session="s1",
+                                                  wake=wake)
+    run_id = started["run_id"]
+    await until(lambda: server.run_store.has_row(run_id, "activity", "s0"), what="the find agent in flight")
+    await server.run_manager.shutdown()  # the process goes down with the run in flight
+    assert server.run_store.get_run(run_id)["status"] == "interrupted", "fixture: the run did not stop interrupted"
+
+    after = StateGraphServer("stategraph", system(), tool_config(tmp_path, workflows=dict(SETTINGS)))
+    try:
+        fake_backends(after, {"find": "a finding", "verify": "refuted"})
+        assert (run_id in await Scheduler(after, after.schedules).resume_interrupted(time.time())) is wake
+    finally:
+        await after.stop_plugin()
+
+
+def test_the_terms_keep_a_resume_the_workflow_sets_itself():
+    from types import SimpleNamespace
+
+    from plugins.stategraph.model.loader import parse_yaml
+
+    settings = settings_of(SimpleNamespace(workflows=dict(SETTINGS)))
+    assert parse_yaml(with_terms(REVIEW, settings, None, resume_auto=True)[0])["resume"] == "auto"
+    assert "resume" not in parse_yaml(with_terms(REVIEW, settings, None)[0])
+    manual = REVIEW.replace("initial: find", "resume: manual\ninitial: find")
+    assert parse_yaml(with_terms(manual, settings, None, resume_auto=True)[0])["resume"] == "manual"
 
 
 async def test_a_run_without_the_workflow_column_gets_no_end_hook(server, monkeypatch):
@@ -827,6 +901,9 @@ async def test_a_guard_reads_the_output_tokens_so_far_and_prompt_tokens_do_not_c
         row = await settled(server, started["run_id"])
         assert row["output"] == branch, (completion, row.get("error"))
         assert server.run_manager.output_tokens(row["id"]) == (2000, completion)  # the default cap, written in
+        # and its reader sees it: get_run names what the run produced against its cap
+        read = await server.get_run({"run_id": row["id"], "_user_id": "ann"})
+        assert (read["output_tokens"], read["max_output_tokens"]) == (completion, 2000), read
 
 
 async def test_the_result_turn_names_the_output_tokens_the_run_produced(server):
@@ -975,3 +1052,20 @@ async def test_a_decision_by_an_agent_takes_a_place_too(tmp_path):
         await harness.close()
     assert [r["status"] for r in rows] == ["succeeded"] * 2, [r.get("error") for r in rows]
     assert peak == 1, peak
+
+
+async def test_a_workflows_caller_stops_it_and_nothing_else(server):
+    """coder_ultra had control_run to stop a runaway workflow -- and with it resume, fork and set on every run its
+    user may see. stop_workflow ends the caller's own workflow, nothing more."""
+    gate = asyncio.Event()
+    fake_backends(server, {"find": held(gate)})
+    started = await server.service.start_workflow(REVIEW, user_id="ann", caller="lead", wake=False)
+    run_id = started["run_id"]
+    await until(lambda: server.run_store.has_row(run_id, "activity", "s0"), what="the find agent in flight")
+
+    other = await server.stop_workflow({"run_id": run_id, "_user_id": "ann", "_agent_name": "someone_else"})
+    assert other["status"] == "error" and "no workflow you started" in other["error"], other
+    assert server.run_store.get_run(run_id)["status"] == "running"
+
+    stopped = await server.stop_workflow({"run_id": run_id, "_user_id": "ann", "_agent_name": "lead"})
+    assert stopped["stopped"] is True and stopped["run_status"] == "cancelled", stopped

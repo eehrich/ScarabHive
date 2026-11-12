@@ -100,6 +100,8 @@ def failed_transiently(error: Any) -> bool:
 #: the panel lists them, a mock's $visits counts their visits -- and never replayed or forked: a resume's journal load
 #: skips them but for that count, and no lookup of a fork matches a key under it.
 REWOUND = "rewound."
+#: A composite's attempt right after its key: ``a<n>/`` the n-th, nothing the first (activity._ATTEMPT).
+_ATTEMPT_BELOW = re.compile(r"a(\d+)/")
 
 
 class NotRewindable(ValueError):
@@ -429,6 +431,11 @@ class RunContext:
         self.cost = 0.0
         #: run.output_tokens: the same for their LLM output (meta.tokens.completion); limits.max_output_tokens bounds it
         self.output_tokens = 0
+        #: what no outcome row carries, for the limits only (and what the run is shown to have spent): an attempt a stop
+        #: cut (a fail-fast or join: first sibling, an until, a timeout above it) and the rows a resume set aside
+        #: (REWOUND). Not in run.cost / run.output_tokens: expressions read those, and a replay must see what live saw
+        self.cost_aside = 0.0
+        self.output_tokens_aside = 0
         #: the original exception behind the error that ended the run (a call's own code raised it), in this process
         #: only: never journaled -- an in-process caller of the run gets it back (FEAT-12)
         self.exception: Optional[BaseException] = None
@@ -483,6 +490,21 @@ class RunContext:
             self.cost += self.cost_of(meta)
             self.output_tokens += self.output_tokens_of(meta)
 
+    def set_aside(self, meta: Optional[dict[str, Any]]) -> None:
+        """Count toward the limits what an activity's ``meta`` spent that no outcome will carry (cost_aside)."""
+        self.move_aside(self.cost_of(meta), self.output_tokens_of(meta))
+
+    def move_aside(self, cost: float, tokens: int) -> None:
+        """Add to cost_aside / output_tokens_aside -- a negative amount: an outcome took over what was set aside."""
+        self.cost_aside += cost
+        self.output_tokens_aside += tokens
+
+    @property
+    def spent(self) -> tuple[float, int]:
+        """(USD, output tokens) the run has spent against limits.max_cost / limits.max_output_tokens: its outcomes and
+        what was set aside -- not yet what an attempt in flight spends (_over_budget adds its own)."""
+        return self.cost + self.cost_aside, self.output_tokens + self.output_tokens_aside
+
     def count_recorded(self, key: str) -> None:
         """run.cost: add what the recorded activity at ``key`` -- and, a composite, every activity below it -- cost,
         as it counted live (its replay, or a join that ends on its recorded error without replaying it)."""
@@ -513,7 +535,9 @@ class RunContext:
                 # a mocked activity's retries took one each
                 uses = int((data.get("meta") or {}).get("attempts") or 1) if kind == "activity" else 1
                 self.mock_uses[mocked] = self.mock_uses.get(mocked, 0) + uses
-            if key.startswith(REWOUND):  # nothing else of a set-aside row counts: not even a join's joined row
+            if key.startswith(REWOUND):  # nothing else of a set-aside row counts: not even a join's joined row --
+                if kind == "activity":  # but what it spent does, against the limits: a rewind does not refill them
+                    self.set_aside(data.get("meta"))
                 continue
             self.journal_rows += 1
             if kind == "activity":
@@ -572,6 +596,29 @@ class RunContext:
                     self.fork_point = int(data["at"])
                 elif row["status"] == "request_seq":
                     self._request_seq = int(data.get("n") or 0)
+
+        # a started row that never runs again: a stop cut it -- its spend counts against the limits all the same
+        for key, row in self.started.items():
+            if self._cut(key):
+                self.set_aside((row.get("data") or {}).get("meta"))
+
+    def _cut(self, key: str) -> bool:
+        """Whether the ``started`` activity at ``key`` never runs again: a composite above it has its outcome (a
+        fail-fast or join: first sibling, an until -- as ended_without_outcome reads it), or one above it is on a
+        later attempt than the one the row ran in (``<composite>/b.x`` ran in attempt 1, ``<composite>/a<n>/b.x`` in
+        n): its retry cut it. One in flight at a crash runs again on resume: its outcome takes over what its row
+        carried."""
+        for at in (i for i, char in enumerate(key) if char == "/"):
+            above = key[:at]
+            if above in self.recorded:
+                return True
+            running = self.started.get(above)
+            if running is not None:
+                attempt = int(((running.get("data") or {}).get("attempt")) or 1)
+                ran_in = _ATTEMPT_BELOW.match(key, at + 1)
+                if (int(ran_in.group(1)) if ran_in else 1) < attempt:
+                    return True
+        return False
 
     def _advance(self, key: str) -> None:
         for prefix, step in key_steps(key):
@@ -1963,7 +2010,7 @@ class RunManager:
         own run.output_tokens, as ``budget`` answers for USD."""
         live = self.live.get(run_id)
         if live is not None:
-            return live.ctx.machine.spec.limits.max_output_tokens, live.ctx.output_tokens
+            return live.ctx.machine.spec.limits.max_output_tokens, live.ctx.spent[1]
         used = self.store.run_output_tokens(run_id)
         if used is None:  # no journal rows (retention kept only what it spent)
             used = int(((self.store.spend(run_id) or {}).get("tokens") or {}).get("completion", 0))
@@ -1975,7 +2022,7 @@ class RunManager:
         fork's copied rows count, as its guard counts them; never the runs it started) (FEAT-6). The limit is read once per run: a definition never changes."""
         live = self.live.get(run_id)
         if live is not None:
-            return live.ctx.machine.spec.limits.max_cost, round(live.ctx.cost, 6)
+            return live.ctx.machine.spec.limits.max_cost, round(live.ctx.spent[0], 6)
         cost = self.store.run_cost(run_id)
         if cost is None:  # no journal rows (retention kept only what it spent)
             cost = (self.store.spend(run_id) or {}).get("cost") or 0.0

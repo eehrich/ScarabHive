@@ -66,6 +66,19 @@ def _other_request(row: dict[str, Any], machine_id: str, params: Optional[dict[s
     return ", ".join(differs)
 
 
+
+def _one_file_twice(files: Any) -> Optional[tuple[str, str]]:
+    """Two paths of a save that name one file on this system (``m.yaml`` and ``./m.yaml``; on Windows ``M.yaml``
+    too), or None."""
+    seen: dict[str, str] = {}
+    for rel in files or {}:
+        key = os.path.normcase(os.path.normpath(str(rel)))
+        if key in seen:
+            return seen[key], str(rel)
+        seen[key] = str(rel)
+    return None
+
+
 class ServiceError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -413,6 +426,9 @@ class StateGraphService:
 
     def save_machine(self, machine_id: Optional[str], files: dict[str, str],
                      expected_versions: Optional[dict[str, str]] = None, force: bool = False) -> dict[str, Any]:
+        twice = _one_file_twice(files)
+        if twice:  # validation would read one text and the write leave the other on the disk
+            raise ServiceError(422, f"{twice[0]} and {twice[1]} are one file here: send it once")
         machine_id, files, tree = self._tree_from(files, None, machine_id)
         tree = self._validate(tree)
         errors = [p for p in tree.problems if p.level == "error"]
@@ -558,6 +574,51 @@ class StateGraphService:
         run's snapshot. It runs with the instance's runner, under the limits written into its text
         (workflows.with_terms), and may reach no further than ``caller`` (make_config_check). With ``wake`` the
         caller's session is woken when it ends, and its result handed into the caller's next call."""
+        if params is not None and not isinstance(params, dict):
+            raise ServiceError(422, f"params must be an object, not {type(params).__name__}")
+        # before the terms: only a run whose end wakes somebody is resumed by itself after a restart (with_terms)
+        armed = await self._wake_armed(user_id, caller_session) if wake else "not asked for"
+        settings, machine_id, text, cap, concurrency = self._workflow_terms(yaml, max_output_tokens, caller,
+                                                                            resume_auto=not armed)
+        try:  # seconds for a large machine: off the loop (API-2)
+            tree, runnable = await asyncio.to_thread(self._workflow_tree, machine_id, text, caller, True)
+        except PermissionError as exc:  # no writable machine root to load it beside
+            raise ServiceError(403, str(exc)) from None
+        errors = [p for p in tree.problems if p.level == "error"]
+        if errors:
+            raise ServiceError(422, f"{len(errors)} error(s): " + "; ".join(
+                f"{p.code} {p.path} {p.message}" for p in errors[:5]))
+        nesting = await self._nesting(user_id, caller_session)
+        workflow = {"caller": caller, "session": caller_session, "request": caller_request,
+                    "wake": bool(wake) and not armed, "max_concurrent_agents": settings.max_concurrent_agents}
+        try:
+            run_id = await self.runs.start(runnable, params=params or {}, backend_factory=self.backend_factory(),
+                                           user_id=user_id, nesting=nesting, runner=self.server.runner_agent,
+                                           workflow=workflow)
+        except (ValueError, CompileError) as exc:
+            raise ServiceError(422, str(exc)) from None
+        self._note(run_id, "started", who=user_id, why="start_workflow", machine=machine_id, caller=caller)
+        return {"run_id": run_id, "machine_id": machine_id, "max_output_tokens": cap, "concurrency": concurrency,
+                "wake": "armed" if workflow["wake"] else f"not armed: {armed}"}
+
+    async def validate_workflow(self, yaml: Any, *, max_output_tokens: Optional[int] = None,
+                                caller: Optional[str] = None) -> dict[str, Any]:
+        """What start_workflow checks of the text, without starting it: its problems as it would run -- its terms
+        written in, its reach bounded by ``caller`` -- and those terms. A refusal before the text is read as a machine
+        (no settings, no caller, an id of a saved machine, a cap above the ceiling) raises as start_workflow's does.
+        The params a run gets are checked when it starts."""
+        _, machine_id, text, cap, concurrency = self._workflow_terms(yaml, max_output_tokens, caller)
+        try:
+            tree, _ = await asyncio.to_thread(self._workflow_tree, machine_id, text, caller, False)
+        except PermissionError as exc:
+            raise ServiceError(403, str(exc)) from None
+        return {"machine_id": machine_id, "problems": self._problems(tree), "max_output_tokens": cap,
+                "concurrency": concurrency}
+
+    def _workflow_terms(self, yaml: Any, max_output_tokens: Optional[int], caller: Optional[str],
+                        resume_auto: bool = False) -> tuple[Any, str, str, int, int]:
+        """The instance's workflow settings, the workflow's id, its text with the terms written in, its cap and its
+        concurrency -- or the ServiceError that refuses it before it is read as a machine."""
         from .model.loader import parse_yaml
         from .model.spec import check_name
         from .workflows import inline_problems, settings_of, with_terms
@@ -571,8 +632,6 @@ class StateGraphService:
                                     "made this call")
         if not isinstance(yaml, str) or not yaml.strip():
             raise ServiceError(422, "yaml: the machine's text is required")
-        if params is not None and not isinstance(params, dict):
-            raise ServiceError(422, f"params must be an object, not {type(params).__name__}")
         try:
             data = parse_yaml(yaml)
         except Exception as exc:
@@ -590,36 +649,18 @@ class StateGraphService:
             # and its runner would all be the saved machine's
             raise ServiceError(409, f"id {machine_id!r} names a saved machine; give the workflow an id of its own")
         try:
-            text, cap, concurrency = with_terms(yaml, settings, max_output_tokens)
+            text, cap, concurrency = with_terms(yaml, settings, max_output_tokens, resume_auto)
         except ValueError as exc:
             raise ServiceError(422, str(exc)) from None
+        return settings, machine_id, text, cap, concurrency
 
-        def checked() -> tuple[MachineTree, MachineTree]:
-            tree = validate_tree(self.store.load_files({f"{machine_id}.yaml": text}, machine_id=machine_id),
-                                 self.config_check(caller=caller))
-            return tree, load_snapshot(tree.snapshot())
-
-        try:
-            tree, runnable = await asyncio.to_thread(checked)  # seconds for a large machine: off the loop (API-2)
-        except PermissionError as exc:  # no writable machine root to load it beside
-            raise ServiceError(403, str(exc)) from None
-        errors = [p for p in tree.problems if p.level == "error"]
-        if errors:
-            raise ServiceError(422, f"{len(errors)} error(s): " + "; ".join(
-                f"{p.code} {p.path} {p.message}" for p in errors[:5]))
-        nesting = await self._nesting(user_id, caller_session)
-        armed = await self._wake_armed(user_id, caller_session) if wake else "not asked for"
-        workflow = {"caller": caller, "session": caller_session, "request": caller_request,
-                    "wake": bool(wake) and not armed, "max_concurrent_agents": settings.max_concurrent_agents}
-        try:
-            run_id = await self.runs.start(runnable, params=params or {}, backend_factory=self.backend_factory(),
-                                           user_id=user_id, nesting=nesting, runner=self.server.runner_agent,
-                                           workflow=workflow)
-        except (ValueError, CompileError) as exc:
-            raise ServiceError(422, str(exc)) from None
-        self._note(run_id, "started", who=user_id, why="start_workflow", machine=machine_id, caller=caller)
-        return {"run_id": run_id, "machine_id": machine_id, "max_output_tokens": cap, "concurrency": concurrency,
-                "wake": "armed" if workflow["wake"] else f"not armed: {armed}"}
+    def _workflow_tree(self, machine_id: str, text: str, caller: Optional[str],
+                       runnable: bool) -> tuple[MachineTree, Optional[MachineTree]]:
+        """The workflow's text validated as it runs (its reach bounded by ``caller``), and -- ``runnable`` -- the
+        tree its run loads from its snapshot."""
+        tree = validate_tree(self.store.load_files({f"{machine_id}.yaml": text}, machine_id=machine_id),
+                             self.config_check(caller=caller))
+        return tree, load_snapshot(tree.snapshot()) if runnable else None
 
     async def _wake_armed(self, user_id: Optional[str], session_id: Optional[str]) -> str:
         """"" when the caller's session can be woken at the end; else why not -- the caller then polls. What
@@ -1315,6 +1356,20 @@ class StateGraphService:
         else:
             rows = self.run_store.page(run_id, after=after, limit=limit, kinds=kinds, state=state)
         return self._marked(run_id, row["status"], rows)
+
+    async def stop_workflow(self, run_id: str, *, user_id: Optional[str] = None,
+                            caller: Optional[str] = None) -> dict[str, Any]:
+        """Terminate a dynamic workflow its caller started -- nothing else: not another agent's workflow, not a
+        saved machine's run (control_run does all of that, for whoever may control runs)."""
+        row = self._run(run_id, user_id)
+        workflow = self.run_store.workflow_of(run_id) or {}
+        if not caller or workflow.get("caller") != caller:
+            raise ServiceError(403, f"run {run_id} is no workflow you started: stop_workflow ends only your own")
+        if row.get("status") in TERMINAL_STATUSES:
+            return {"run_id": run_id, "run_status": row["status"], "stopped": False}
+        await self._terminate(run_id, user_id)
+        await self._await_end(run_id, TERMINATE_WAIT)  # its finally activities run first
+        return {"run_id": run_id, "run_status": (self.run_store.get_run(run_id) or {}).get("status"), "stopped": True}
 
     async def control_run(self, run_id: str, action: str, *, user_id: Optional[str] = None, steps: int = 50,
                           **kwargs: Any) -> dict[str, Any]:

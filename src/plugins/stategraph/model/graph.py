@@ -50,7 +50,7 @@ def graph_view(tree: MachineTree) -> dict[str, Any]:
                        for name, event in _mapping(doc.get("events")).items()}
     graph["context"] = to_plain(_mapping(doc.get("context")))
     graph["notes"] = [{"name": str(name), "text": _text(text) or ""} for name, text in _mapping(doc.get("notes")).items()]
-    for key in ("group", "python", "vars_from"):
+    for key in ("group", "python", "vars_from", "resume"):  # resume: the inspector shows and sets it
         graph[key] = _text(doc.get(key))
     graph["yaml"], graph["locked"] = _texts({key: doc[key] for key in MACHINE_OBJECTS if key in doc})
     if "notes" in doc and _tied(doc["notes"]):  # shared through an anchor or a merge: edited in the YAML tab

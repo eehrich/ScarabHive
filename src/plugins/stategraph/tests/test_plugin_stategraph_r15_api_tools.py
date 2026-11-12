@@ -80,7 +80,8 @@ async def test_get_run_of_a_huge_ctx_keeps_its_journal_and_small_keys(server):
     started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "big", "mock_only": False})
     assert started["run_status"] == "succeeded", started
 
-    got, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
+    # steps: an ended run read without it comes brief, its frames without ctx (test_an_ended_run_..._comes_brief)
+    got, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "steps": 30})
 
     assert size(got) <= server_module.ANSWER_CHARS, size(got)
     ctx = got["frames"][0]["ctx"]

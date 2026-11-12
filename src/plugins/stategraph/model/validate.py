@@ -421,6 +421,10 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
                                      "run.state hold the names of its states", path)
     for slip in use.misuse:
         fc.problem("error", "SG004", slip, path)
+    if mode == "eval":  # read-only code: the engine refuses a ctx it changed, at run time -- after agents ran
+        for call in _ctx_mutations(source):
+            fc.problem("error", "SG004", f"{call}(...) changes ctx in read-only code (guards, templates, conditions): "
+                                         "change it in an effect", path)
     for impure in use.impure:
         fc.problem("warning", "SG106", f"impure code: {impure} -- guards, actions and templates must be "
                                        "deterministic (replay re-runs them); read external state in an activity",
@@ -428,6 +432,30 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
     for field_name in use.ctx_reads:
         fc.ctx_reads.setdefault(field_name, path)
     fc.ctx_writes.update(use.ctx_writes)
+
+
+#: Methods that change the list, dict or set they are called on.
+_MUTATING = frozenset({"append", "extend", "insert", "pop", "popitem", "remove", "clear", "sort", "reverse", "update",
+                       "setdefault", "add", "discard", "difference_update", "intersection_update",
+                       "symmetric_difference_update"})
+
+
+def _ctx_mutations(source: str) -> list[str]:
+    """The calls in an expression that change a value under ctx (``ctx.found.append``, ``ctx["a"].pop``)."""
+    try:
+        tree = ast.parse(source.strip(), mode="eval")
+    except (SyntaxError, ValueError):
+        return []
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _MUTATING:
+            root = node.func.value
+            # not through a call: ctx.found.copy().append(...) changes a copy (the engine still refuses the rest)
+            while isinstance(root, (ast.Attribute, ast.Subscript)):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id == "ctx":
+                found.append(ast.unparse(node.func))
+    return found
 
 
 def _check_template(fc: _FileContext, value: Any, path: list[Any], bound: Iterable[str], extra: set[str]) -> None:
@@ -563,6 +591,12 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
         for label, child in (raw.get(key) or {}).items():
             _check_activity(fc, child, path + [key, label], child_extra)
 
+    concurrent = kind.key == "parallel" or (kind.key == "map" and raw.get("concurrency") not in (None, 1))
+    if concurrent and any(_reads_spend(raw.get(key)) for key in (*kind.nested_one, *kind.nested_map)):
+        fc.problem("warning", "SG114", f"an activity this {kind.key} runs beside others reads run.cost or "
+                                       "run.output_tokens in a template: the value depends on which of them ended "
+                                       "first, so a resume renders it differently and ends diverged -- read it in a "
+                                       "guard (replayed as recorded), or before the " + kind.key, path)
     alias = kind.submachine(spec)
     if alias is not None:
         _check_submachine(fc, alias, getattr(spec, "params", {}) or {}, path)
@@ -578,6 +612,22 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
                                                "the interrupted activity a second time; mark that activity "
                                                "idempotent: true if running it again is safe",
                            path + ["retry", "errors"])
+
+
+#: run.cost / run.output_tokens read in a text: what SG114 looks for in the templates of concurrent children.
+_READS_SPEND = re.compile(r"\brun\s*\.\s*(?:cost|output_tokens)\b")
+
+
+def _reads_spend(value: Any) -> bool:
+    """Whether a text anywhere in ``value`` (an activity's raw spec, its children's) reads run.cost or
+    run.output_tokens."""
+    if isinstance(value, str):
+        return bool(_READS_SPEND.search(value))
+    if isinstance(value, dict):
+        return any(_reads_spend(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_reads_spend(item) for item in value)
+    return False
 
 
 #: Expressions whose value is no list: a map over one would run once per character, key or set member.

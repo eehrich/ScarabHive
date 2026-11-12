@@ -45,11 +45,17 @@ MAX_WAIT = 3600.0  # seconds a tool call may wait for its run
 ROW_CHARS = 2000
 OUTPUT_CHARS = 20000
 ANSWER_CHARS = 200000  # a whole tool answer: many short texts add up too
+#: The journal rows get_run gives of an ended run read without steps, kinds, state or after: how it ended. Its frames
+#: come without ctx and params then -- after a fan-out over 25 items those were 139k characters of a 140k answer.
+ENDED_STEPS = 5
 FILE_CHARS = 30000  # get_machine: a file of the tree larger than this is left out unless asked for by name
 #: The hook that hands a workflow's result to its caller (schema.yaml).
 #: The two hooks that hand a dynamic workflow's result to its caller: append it, and mark it delivered.
 DELIVERY_HOOKS = ("deliver_workflow_results", "confirm_workflow_results")
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run", "list_runs"})
+#: The activities a dynamic workflow is written with (skill stategraph-workflows, "The subset"): no call or callback
+#: (code and endpoints of their own), no acquire or release (the installation's semaphores).
+WORKFLOW_KINDS = frozenset({"agent", "tool", "decide", "emit", "machine", "parallel", "map"})
 #: The parameters control_run takes (schema.yaml); the framework's own start with "_".
 CONTROL_PARAMS = frozenset({"run_id", "action", "steps", "mocks", "state", "machine", "at_step", "definition",
                             "breakpoints", "watchpoints", "expr", "path", "pause"})
@@ -368,10 +374,29 @@ class StateGraphServer(SchemaBasedToolServer):
                 if check is not None:
                     found["agents"] = [a for a in found["agents"] if check("agent", a["name"], {}) is None]
                     found["tools"] = [t for t in found["tools"] if check("tool", t["name"], {}) is None]
+                found["kinds"] = [k for k in found["kinds"] if k["key"] in WORKFLOW_KINDS]
+                # what an agent activity's llm_profile may name, and the terms a workflow runs under -- seen before
+                # a start is refused for them
+                llm = getattr(self.system_config, "llm_system", None)
+                found["llm_profiles"] = sorted(getattr(llm, "profiles", None) or {})
+                found["workflow_limits"] = self._workflow_limits()
             return found
         return await self._run_tool(params, "catalog", body,
                                     lambda r: f"catalog: {len(r['kinds'])} kinds, {len(r['agents'])} agents, "
                                               f"{len(r['tools'])} tools")
+
+    def _workflow_limits(self) -> dict[str, Any]:
+        """The instance's workflows: settings, as a workflow's author needs them; why not, when it has none."""
+        from .workflows import settings_of
+
+        try:
+            settings = settings_of(self.server_config)
+        except ValueError as exc:
+            return {"off": str(exc)}
+        return {"default_max_output_tokens": settings.default_max_output_tokens,
+                "max_output_tokens_ceiling": settings.max_output_tokens_ceiling,
+                "concurrency": settings.max_concurrency or settings.default_concurrency,
+                "default_concurrency": settings.default_concurrency}
 
     def _catalog(self, agent_pattern: str = "*", machine_id: Optional[str] = None) -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
@@ -486,6 +511,15 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def validate_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
+            if params.get("for_workflow"):  # as run_workflow checks it: its terms written in, the author's reach
+                if params.get("files") is not None:
+                    raise ServiceError(422, "for_workflow takes the workflow as yaml: it is one text, no files")
+                cap = params.get("max_output_tokens")
+                result = await self.service.validate_workflow(
+                    params.get("yaml"), max_output_tokens=int(cap) if isinstance(cap, float) and cap.is_integer() else cap,
+                    caller=params.get("_agent_name") or getattr(params.get("_agent"), "name", None))
+                result["valid"] = not any(p["level"] == "error" for p in result["problems"])
+                return result
             result = await asyncio.to_thread(self.service.validate, files=_object(params, "files"),
                                              yaml=params.get("yaml"), machine_id=params.get("machine_id"))
             result.pop("graph", None)
@@ -580,6 +614,15 @@ class StateGraphServer(SchemaBasedToolServer):
                                     lambda r: f"workflow {r['machine_id']} started: run {r['run_id']}, "
                                               f"max {r['max_output_tokens']} output tokens, wake {r['wake'][:40]}")
 
+    async def stop_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
+        async def body() -> dict[str, Any]:
+            return await self.service.stop_workflow(
+                _need(params, "run_id"), user_id=params.get("_user_id"),
+                caller=params.get("_agent_name") or getattr(params.get("_agent"), "name", None))
+        return await self._run_tool(params, "stop_workflow", body,
+                                    lambda r: f"workflow run {r['run_id']}: {r['run_status']}"
+                                              + ("" if r["stopped"] else " (had ended)"))
+
     async def _wait(self, run_id: str, max_wait: float, token: Any, *, terminate: bool = True) -> dict[str, Any]:
         """Wait for a run to leave running. A cancelled caller stops waiting; one that started the run (terminate)
         takes the run with it -- a reader (get_run) does not: it may not control a run it only sees."""
@@ -630,11 +673,24 @@ class StateGraphServer(SchemaBasedToolServer):
             if not self._admin_reader(params):  # before the budget measures it: what the reader gets
                 row = _run_for_reader(row)
             view = row.get("view") or {}
+            frames, journal = view.get("frames", []), row.get("journal", [])
+            brief = row.get("status") in TERMINAL_STATUSES and all(
+                params.get(key) is None for key in ("steps", "kinds", "state", "after"))
+            if brief:  # an ended run read as a whole: its output and how it ended, not every frame's ctx
+                frames = [{key: value for key, value in frame.items() if key not in ("ctx", "params")}
+                          for frame in frames]
+                journal = journal[-ENDED_STEPS:]
             answer = _bounded({**_summary(row, full_output=full_output), "run_id": row["id"], **_identity(row),
-                               "frames": _capped(view.get("frames", []), ROW_CHARS),
+                               **({"brief": f"ended: its frames without ctx and params, its last {ENDED_STEPS} "
+                                            "journal rows -- steps, kinds or state read more"} if brief else {}),
+                               # what it produced against its cap, as limits.max_output_tokens counts it
+                               **({"output_tokens": row.get("output_tokens"),
+                                   "max_output_tokens": row["max_output_tokens"]}
+                                  if row.get("max_output_tokens") is not None else {}),
+                               "frames": _capped(frames, ROW_CHARS),
                                **({"inbox": _capped(view["inbox"], ROW_CHARS)} if view.get("inbox") else {}),
                                **({"spend": row["spend"]} if row.get("spend") else {}),  # what its agents cost
-                               "journal": _once(_capped(row.get("journal", []), ROW_CHARS),
+                               "journal": _once(_capped(journal, ROW_CHARS),
                                                 _capped(row.get("error"), ROW_CHARS)),
                                "debug": _debug(row.get("debug"))},
                               keep=("output",) if full_output else (), forward=params.get("after") is not None)

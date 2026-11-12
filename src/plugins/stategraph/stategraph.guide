@@ -1072,7 +1072,10 @@ refused above the ceiling -- and a @{tt}concurrency@{utt}, are written into its
 text before it runs: they are in the run's snapshot, the panel shows them,
 a replay reads them. The cap is checked before an activity starts -- and
 again once it holds its turn -- so a run goes past it by at most what its
-agents running at once still produce. Output tokens, not USD: the same
+agents running at once still produce. What an attempt a stop cut had
+written (the branch a @{tt}join: first@{utt} let go, an item an
+@{tt}until@{utt} cut short) and what a resume set aside count too: a loop
+of races or a resume after a failure does not refill it. Output tokens, not USD: the same
 cap on every model and route, a subscription's too. Input is not
 counted -- it is mostly cached; @{tt}max_steps@{utt} and
 @{tt}timeout@{utt} bound a run that reads much and writes little.
@@ -1086,11 +1089,18 @@ outcome -- status, cost, output -- to its next LLM call, once: it counts
 as delivered when a call was made with it in the history (the hook
 @{tt}confirm_workflow_results@{utt} after the call, or the next call), and
 a turn lost before that comes again. A run resumed after it ended wakes
-its caller again at its next end. The tool's
+its caller again at its next end. A run a restart interrupted is resumed
+by itself (@{tt}resume: auto@{utt} is written in with the caps): its
+caller was told it may end its turn. The tool's
 answer says whether the wake works there (a sub-agent's own session, a
 throwaway one, waking switched off: then it polls with
 @{tt}stategraph_get_run@{utt}). A @{tt}get_run@{utt} of the ended run
-counts as reading it.
+counts as reading it; read without @{tt}steps@{utt}, @{tt}kinds@{utt} or
+@{tt}state@{utt} it comes brief -- the output, how it ended, the output
+tokens against the cap, not every frame's context.
+@{tt}stategraph_validate_machine(for_workflow=true)@{utt} checks a text as
+the start will, and @{tt}stategraph_stop_workflow@{utt} stops one of the
+caller's own workflows -- nothing else.
 
 Runs of saved machines -- every other run -- meet none of this: no
 author bound, no caps written in, no wake, no hand-over.

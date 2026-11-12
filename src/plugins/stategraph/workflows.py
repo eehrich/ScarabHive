@@ -75,7 +75,8 @@ def inline_problems(data: Any) -> list[str]:
             "and no companion module" for key in NOT_INLINE if key in data]
 
 
-def with_terms(text: str, settings: WorkflowSettings, max_output_tokens: Optional[int]) -> tuple[str, int, int]:
+def with_terms(text: str, settings: WorkflowSettings, max_output_tokens: Optional[int],
+               resume_auto: bool = False) -> tuple[str, int, int]:
     """The machine's text with the limits it runs under written in, and those limits (max_output_tokens,
     concurrency).
 
@@ -83,7 +84,11 @@ def with_terms(text: str, settings: WorkflowSettings, max_output_tokens: Optiona
     above the ceiling (refused, not lowered: the caller learns its plan is too big). A limits.max_cost the machine
     sets stays, as one bound more. concurrency: the machine's, else the default, at most max_concurrency (else the
     default): the cap is checked before an activity starts, so what runs at once is what can still go past it.
-    Written into the text, the limits are in the run's snapshot: the panel shows them, a replay reads them."""
+    Written into the text, the limits are in the run's snapshot: the panel shows them, a replay reads them.
+    ``resume_auto``: ``resume: auto`` as well, unless the machine says itself -- a workflow a restart interrupts is
+    resumed by the process that runs the scheduler, and its end wakes its caller, who was told it may end its turn
+    (left interrupted, nobody would ever ring). Only then: one nobody is woken for would spend up to its cap for
+    nobody after a restart."""
     from .model.loader import parse_yaml
     from .model.yamledit import apply_op
 
@@ -106,7 +111,10 @@ def with_terms(text: str, settings: WorkflowSettings, max_output_tokens: Optiona
         concurrency = settings.default_concurrency
     concurrency = min(concurrency, settings.max_concurrency or settings.default_concurrency)
     terms = {**limits, "max_output_tokens": cap, "concurrency": concurrency}
-    return apply_op(text, {"op": "update_machine", "fields": {"limits": terms}}), cap, concurrency
+    fields: dict[str, Any] = {"limits": terms}
+    if resume_auto and not (isinstance(data, dict) and "resume" in data):
+        fields["resume"] = "auto"
+    return apply_op(text, {"op": "update_machine", "fields": fields}), cap, concurrency
 
 
 # --------------------------------------------------------------------- the places of their agents

@@ -198,13 +198,14 @@ async def spend_and_hang():
 """
 
 
-async def test_budget_after_the_run_is_the_run_cost_the_run_saw(harness):
-    """A fail-fast join cut b after it spent 0.7: its started row keeps that money (spend counts it), but no
-    outcome took it over, so run.cost never saw it -- budget() after the end says the same as the run did."""
+async def test_budget_after_the_run_counts_what_a_stop_cut(harness):
+    """A fail-fast join cut b after it spent 0.7: its started row keeps that money, no outcome took it over, so
+    run.cost -- what expressions read -- never saw it. limits.max_cost counts it (RunContext.spent), and budget()
+    says what the limit counts, live and after the end alike."""
     manager = harness.manager()
     run_id = await manager.start(runnable({"m.yaml": CUT, "m.py": HANG}))
     row = await settle(manager, run_id)
-    assert row["output"] == 0.0
+    assert row["output"] == 0.0  # run.cost as the run's own code saw it
     assert activity_rows(harness.store, run_id)["s0/b.b"]["data"]["meta"]["cost"] == 0.7
-    assert manager.budget(run_id) == (None, 0.0)
+    assert manager.budget(run_id) == (None, 0.7)
     assert (harness.store.spend(run_id) or {}).get("cost") == 0.7

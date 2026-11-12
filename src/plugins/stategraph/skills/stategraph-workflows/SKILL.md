@@ -28,13 +28,18 @@ the workflow over the list you found and pass it in as `params`.
 ## The loop
 
 1. `stategraph_catalog(for_workflow=true)` -- the agents you may use: the ones you could start
-   yourself. Use no other agent; a workflow naming one is refused.
+   yourself. Use no other agent; a workflow naming one is refused. It also names the activities a
+   workflow may use, the `llm_profiles` an agent activity may name, and `workflow_limits` (the cap's
+   default and ceiling, the concurrency).
 2. Write the machine: one self-contained YAML text, submachines under `machines:`, no `imports`,
    no `python:`. Give it an id of its own (not one of a saved machine).
-3. `stategraph_validate_machine(yaml=...)` until it reports no error.
+3. `stategraph_validate_machine(yaml=..., for_workflow=true, max_output_tokens=...)` until it reports
+   no error: it checks the text as `run_workflow` will, and names the cap and concurrency it runs under.
 4. `stategraph_run_workflow(yaml=..., params=..., max_output_tokens=...)` starts it in the background. The
    answer says whether you will be woken and whether the result then comes by itself; its `next`
-   says what to do. Otherwise read it with `stategraph_get_run(run_id, wait="finish")`.
+   says what to do. Otherwise read it with `stategraph_get_run(run_id, wait="finish")`: an ended run
+   comes brief (its output, how it ended, `output_tokens` against `max_output_tokens`). One that runs
+   away, or that you no longer need: `stategraph_stop_workflow(run_id)`.
 
 ## The subset
 
@@ -80,8 +85,9 @@ states:
   `{{ expr }}`; a value that is exactly `"{{ expr }}"` keeps its type.
 - Read `ctx.x`, `params.x`, `out["x"]`, `error.type`. Only `effect` writes `ctx`. Code is pure: no
   I/O, clock, randomness, sets.
-- `guard: else` is the last transition of its trigger. A loop needs `max_visits: n` on one of its
-  states.
+- `guard: else` is the last transition of its trigger. Give a loop `max_visits: n` on one of its
+  states: without it validation only warns (SG103), and the loop runs until `limits.max_steps` or the
+  cap stops it.
 - In `each`, the item variable (`as`) and `index` are in scope.
 
 ## Patterns

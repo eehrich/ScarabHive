@@ -48,8 +48,8 @@ TRANSITION_FIELDS = ("trigger", "target", "guard", "effect", "description")
 #: its own operations, and a machine's id is its file name.
 STATE_FIELDS = ("type", "description", "entry", "exit", "max_visits", "timeout", "after", "status", "output", "finally",
                 "do")
-MACHINE_FIELDS = ("title", "description", "group", "vars_from", "limits", "params", "events", "context", "vars",
-                  "imports", "machines", "resources", "finally", "agent")
+MACHINE_FIELDS = ("title", "description", "group", "vars_from", "limits", "resume", "params", "events", "context",
+                  "vars", "imports", "machines", "resources", "finally", "agent")
 _NAME = re.compile(NAME_PATTERN)
 #: The edits one batch may hold (a batch of 100 removes on a 1000-line machine takes about 10 s).
 MAX_BATCH = 100

@@ -45,7 +45,7 @@ def test_ultra_may_write_and_start_workflows_and_gets_their_results(config):
 
     ultra = _agent_config(config, "coder_ultra")
     for tool in ("stategraph_catalog", "stategraph_validate_machine", "stategraph_run_workflow",
-                 "stategraph_get_run"):
+                 "stategraph_get_run", "stategraph_stop_workflow"):
         assert tool_matches_patterns(tool, "stategraph", ultra.tools.allowed), tool
     assert "coder-workflows" in ultra.skills.on_demand and "stategraph-workflows" in ultra.skills.on_demand
     delivers = StateGraphServer.delivers_results(SimpleNamespace(name="stategraph"), SimpleNamespace(agent_config=ultra))

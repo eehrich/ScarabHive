@@ -37,6 +37,6 @@ its own, change only what the task needs. The format and its rules are in the sk
   testers and explorers read and may run side by side.
 - **Lenses fit the change**: a parser wants "malformed input", a cache "invalidation", an API "the callers".
   Three is enough for most changes; every lens costs a reviewer and three skeptics per finding.
-- **Bounds stay**: the build counter, `max_visits`, `limits.max_output_tokens`. A loop without them is refused or runs
-  to its cap.
+- **Bounds stay**: the build counter, `max_visits`, `limits.max_output_tokens`. A loop without them runs until
+  `limits.max_steps` or its cap stops it -- validation only warns.
 - Agents only from `stategraph_catalog(for_workflow=true)`: the ones you could start yourself.
