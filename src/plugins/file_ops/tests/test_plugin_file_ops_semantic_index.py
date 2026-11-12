@@ -420,26 +420,76 @@ async def test_two_index_passes_never_run_at_the_same_time(tmp_path, tree):
     await server.search_engine.stop()
 
 
-async def test_a_state_file_that_does_not_match_its_store_is_not_trusted(
+async def test_a_state_that_disagrees_with_its_store_is_mended_not_trusted(
     tmp_path, tree
 ):
-    """Half a written store, a store cleared by hand, a state from another
-    version: all of them look like a warm index and answer out of a corpus
-    that is not there."""
+    """Half a written store, a store cleared by hand: a state that books a
+    document the store does not hold claims coverage that is not there.
+
+    The state used to be thrown away whole, and the first pass then cleared the
+    store and began again from nothing. A build that checkpoints meets this
+    after every process that dies between a batch and its state write -- on the
+    coder tree that was every process. So under the pass lock the file whose
+    documents are not all stored is dropped (and indexed again), the documents
+    nobody books are deleted, and what the store does hold stays booked.
+    """
+    from agent_system.utils.vector_store import compute_embeddings
+
     server = build_server(tmp_path, tree)
-    await server.search_engine.rebuild_index(incremental=False)
-    state = server.search_engine._state_path
+    engine = server.search_engine
+    await engine.rebuild_index(incremental=False)
+    state = engine._state_path
     payload = json.loads(state.read_text(encoding="utf-8"))
     payload["files"][str(tree / "auth.py")]["ids"].append("tree/ghost.py#1")
+    # A checkpoint, as a build that died leaves it. The missing document and
+    # the unbooked one below cancel out in a count: only the ids tell.
+    payload["complete"] = False
     state.write_text(json.dumps(payload), encoding="utf-8")
-    await server.search_engine.stop()
+    # Stored after the last checkpoint, by a process that died before the next.
+    engine._vector_store.add(collection=engine._collection_name, ids=["tree/unbooked.py#1"],
+                             documents=["def unbooked(): pass"],
+                             embeddings=compute_embeddings(["def unbooked(): pass"]),
+                             metadatas=[{"file_path": str(tree / "unbooked.py")}])
+    await engine.stop()
 
-    second = build_server(tmp_path, tree)
-    second.search_engine._init_vector_store()
+    second = build_server(tmp_path, tree).search_engine
+    second._init_vector_store()
+    second._load_state(mend=True)
 
-    assert second.search_engine.file_mtimes == {}, \
-        "a state that disagrees with the store must be dropped, not used"
-    await second.search_engine.stop()
+    assert tree / "auth.py" not in second.file_mtimes, \
+        "a file whose documents are not all in the store was trusted"
+    assert set(second.file_mtimes) == {tree / "tea.py", tree / "README.md"}, \
+        "the files the store does hold were thrown away with the state"
+    assert "tree/unbooked.py#1" not in second._vector_store.list_ids(second._collection_name), \
+        "a document nobody books stayed in the store"
+    assert second._vector_store.count(second._collection_name) == \
+        sum(len(ids) for ids in second.file_symbol_ids.values()), \
+        "store and bookkeeping still disagree"
+    assert not second._index_built, "a mended index is not a finished one"
+    await second.stop()
+
+
+async def test_opening_the_store_mends_nothing(tmp_path, tree):
+    """Without the pass lock another process may be half way through a pass:
+    its newest documents look unbooked until its next checkpoint, and the load
+    when a store opens deleted them."""
+    from agent_system.utils.vector_store import compute_embeddings
+
+    server = build_server(tmp_path, tree)
+    engine = server.search_engine
+    await engine.rebuild_index(incremental=False)
+    engine._vector_store.add(collection=engine._collection_name, ids=["tree/fresh.py#1"],
+                             documents=["def fresh(): pass"],
+                             embeddings=compute_embeddings(["def fresh(): pass"]),
+                             metadatas=[{"file_path": str(tree / "fresh.py")}])
+    await engine.stop()
+
+    second = build_server(tmp_path, tree).search_engine
+    second._init_vector_store()
+
+    assert "tree/fresh.py#1" in second._vector_store.list_ids(second._collection_name)
+    assert len(second.file_mtimes) == 3 and not second._index_built
+    await second.stop()
 
 
 async def test_a_store_of_another_document_format_is_rebuilt(tmp_path, tree):

@@ -217,8 +217,14 @@ notes saying what that means for an empty answer.
 @node search "Finding files and text"
 @{h1}Finding files and text
 
-Both tools walk all allowed folders on demand -- no index, nothing to wait
-for. Folders that lie inside each other are walked once.
+Both tools search all allowed folders on demand -- no index, nothing to
+wait for. They run ripgrep when one is found -- on PATH, in
+@{tt}data/cache/bin@{utt}, or fetched once from its official release and
+checked against a pinned SHA-256 -- and walk the folders in Python
+otherwise. Both answer alike, sorted by file and line; on a tree of 45.000
+files ripgrep takes about a second where the walk takes twenty
+(@{tt}engine@{utt} in the answer says which ran). Folders that lie inside
+each other are searched once.
 
 @{h2}search_files
 
@@ -234,6 +240,8 @@ hooks/*.py | a path below any folder called hooks; * stays within one folder
 src/**/*.py | ** spans any number of folders, none included
 test_?.py | ? is one character
 [ab].txt | one of the listed characters
+[!a]*.txt | any character but the listed ones
+*.{ts,tsx} | one of the alternatives
 @{body}
 
 Patterns ignore case. Backslashes, a leading @{tt}./@{utt} and a leading
@@ -245,7 +253,7 @@ understood.
 
 @{table}
 Parameter | Default | Meaning
-query | -- | the text, or with is_regex a Python regular expression
+query | -- | the text, or with is_regex a regular expression
 is_regex | false | treat query as a regular expression
 case_sensitive | false | tell upper and lower case apart
 include_pattern | -- | only files matching this glob
@@ -257,11 +265,19 @@ include_ignored | false | also what the filters hide
 Each match: @{tt}file_path@{utt}, @{tt}line_number@{utt} (from 1, as
 read_file counts), @{tt}line_content@{utt}, @{tt}context_before@{utt},
 @{tt}context_after@{utt}. Also @{tt}total_matches@{utt},
-@{tt}total_files@{utt} (files actually read), @{tt}truncated@{utt},
+@{tt}total_files@{utt} (the files searched -- with an include pattern, the
+files it names), @{tt}truncated@{utt},
 @{tt}skipped@{utt}. Files over @{tt}max_file_size_for_indexing_kb@{utt}
 (1024 KB) and binary files (decided by their first 4 KB, not their name)
-are skipped and counted in the notes. A broken regular expression answers
-@{tt}RegexError@{utt}.
+are skipped and counted in the notes -- through ripgrep only the binary
+files that held a match are counted, and the size note is the walk's
+alone. A line longer than 2000 characters is cut and marked. A broken
+regular expression answers @{tt}RegexError@{utt}. The expression is read as
+Python reads it: one ripgrep cannot read (look-around, back references) or
+reads differently (@{tt}\\<@{utt}, @{tt}\\>@{utt}, @{tt}[[:@{utt}) is
+answered by the Python walk, and every line ripgrep reports is checked
+against Python's reading. A file with old Mac line ends (CR alone) is split
+into lines by the walk only.
 
 @{h2}What is skipped
 
@@ -269,12 +285,18 @@ are skipped and counted in the notes. A broken regular expression answers
 @{tt}node_modules@{utt}, @{tt}.venv@{utt}, @{tt}*.pyc@{utt},
 @{tt}*.min.js@{utt}, @{tt}*.min.css@{utt}, @{tt}*.map@{utt} -- or the
 instance's @{tt}search.exclude_patterns@{utt}, which replace them.
-@{bullet}What each allowed folder's @{tt}.gitignore@{utt} and
-@{tt}.ignore@{utt} hide (needs the @{tt}pathspec@{utt} package).
-@{bullet}Names starting with a dot, unless @{tt}search.search_hidden@{utt}.
+@{bullet}What @{tt}.gitignore@{utt}, @{tt}.ignore@{utt} and
+@{tt}.rgignore@{utt} hide -- in every folder, not only an allowed one. As in
+ripgrep, @{tt}.rgignore@{utt} outranks @{tt}.ignore@{utt}, which outranks
+@{tt}.gitignore@{utt}, and within each the deepest rule decides, a
+@{tt}!negation@{utt} included (the walk needs the @{tt}pathspec@{utt}
+package for them).
+@{bullet}Names starting with a dot and, on Windows, files and folders with
+the hidden attribute -- unless @{tt}search.search_hidden@{utt}.
 
 @{tt}include_ignored: true@{utt} lifts all of them except @{tt}.git@{utt}
--- on a large tree that walk takes minutes. An allowed folder that lies
+-- seconds through ripgrep, minutes for the Python walk on a large tree.
+An allowed folder that lies
 inside another one is never hidden by the outer one's filters. When a
 search finds nothing while filters were on, its notes say so: "not found"
 and "hidden" are different answers.
@@ -305,20 +327,27 @@ Each hit is a symbol -- a Python function or class, a Markdown heading, or
 a short window of other text -- with @{tt}file_path@{utt},
 @{tt}line@{utt}, @{tt}symbol@{utt}, @{tt}similarity_score@{utt} (1 is the
 same meaning), @{tt}distance@{utt}, @{tt}filename@{utt},
-@{tt}size_bytes@{utt} and @{tt}extension@{utt}. With a filter the search
-looks ten times deeper (at most 200) before filtering, and says when none
-of those matched it.
+@{tt}size_bytes@{utt} and @{tt}extension@{utt}. A file with the same
+content as the hit is named in @{tt}same_content@{utt} (the first three)
+and @{tt}same_content_count@{utt}. With a filter the search looks ten times
+deeper (at most 200) before filtering -- a copy whose path matches counts --
+and says when none of those matched it.
 
 @{h2}The index
 
 The first semantic search of an instance starts building the index in the
-background and answers @{tt}IndexNotReady@{utt} until it is done -- it never
-waits for it. An instance that builds the index answers from it only once a
-whole pass has finished, never "nothing found" from half an index. An
-instance that only reads a shared index (@{tt}enable_indexing: false@{utt},
-like @{tt}coder_fs_ro@{utt}) cannot know that: it answers as soon as the
-store holds anything, so while the owner's first build runs its hits cover
-only part of the tree. After
+background and never waits for it. Until the first files are stored it
+answers @{tt}IndexNotReady@{utt}; from then on it answers from what is
+stored, with @{tt}index_complete: false@{utt} and a note saying how far the
+build is, until a whole pass has finished. A build stores and books its
+documents batch by batch and writes its state every 30 seconds, so a
+process that ends does not take the work with it: the next one carries on
+where it stopped. Files with the same content -- nine checkouts of one
+repository, say -- are embedded once; the shallowest is the original, and
+when it changes or goes one of its copies takes its place. A file larger
+than @{tt}max_file_size_for_indexing_kb@{utt} is left out. An instance that
+only reads a shared index (@{tt}enable_indexing: false@{utt}, like
+@{tt}coder_fs_ro@{utt}) answers as soon as the store holds anything. After
 that, the index is refreshed every @{tt}auto_reindex_interval@{utt} seconds
 (300), and a search picks up what changed since, at most every 30 seconds,
 without waiting for it. The embeddings are made locally; nothing leaves the
@@ -538,6 +567,8 @@ Under @{tt}search:@{utt}
 @{table}
 Key | Default | Meaning
 exclude_patterns | .git, __pycache__, node_modules, .venv, *.pyc, *.min.js, *.min.css, *.map | globs every walk skips; a list here replaces them
+ripgrep_path | -- | the ripgrep to search with; off: always walk in Python
+ripgrep_download | true | fetch ripgrep once when none is found (FILE_OPS_RIPGREP_DOWNLOAD=0 also stops it)
 search_hidden | false | also search dotfiles
 max_file_size_for_indexing_kb | 1024 | larger files are not indexed and not searched by grep
 enable_semantic_search | false | the semantic_search tool works

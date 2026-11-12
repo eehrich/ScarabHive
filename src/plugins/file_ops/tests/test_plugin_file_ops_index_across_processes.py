@@ -90,12 +90,13 @@ async def test_a_pass_starts_from_the_state_on_disk(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(engine, "_run_index_pass", nothing)
-    monkeypatch.setattr(engine, "_load_state", lambda: loads.append(True))
+    monkeypatch.setattr(engine, "_load_state", lambda mend=False: loads.append(mend))
 
     await engine.rebuild_index(incremental=True)
     await engine.rebuild_index(incremental=True)
 
     assert len(loads) == 2, "a pass worked from the state it had in memory"
+    assert loads == [True, True], "the load under the pass lock is the one that may mend"
 
 
 @pytest.mark.asyncio

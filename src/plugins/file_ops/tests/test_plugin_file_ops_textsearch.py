@@ -163,11 +163,11 @@ class TestWalkPrunes:
         assert spec is not None, "pathspec missing — this test measures nothing"
 
         without = [p.name for p in textsearch.walk_files(
-            tmp_path, [], ignore_spec=spec)]
+            tmp_path, [], respect_ignore=True)]
         assert "dodge.html" not in without      # the rule works...
 
         with_protection = [p.name for p in textsearch.walk_files(
-            tmp_path, [], ignore_spec=spec, protected=[workspace])]
+            tmp_path, [], respect_ignore=True, protected=[workspace])]
         assert "dodge.html" in with_protection  # ...but not over a real root
 
     def test_hidden_files_are_skipped_by_default(self, tmp_path):
@@ -441,3 +441,314 @@ class TestReviewRoundThree:
         (tmp_path / "a.txt").write_text("needle")
         result = textsearch.grep([tmp_path], "needle", include_ignored=True)
         assert {Path(m["file_path"]).name for m in result["matches"]} == {"a.txt"}
+
+
+# --- 12.11.2026: ripgrep in front, the walker behind it ---------------------
+#
+# Every test of this module runs once per engine (see conftest). The ones
+# below pin what made the two answer differently while they were built.
+
+class TestBothEnginesAnswerAlike:
+    def test_a_nested_gitignore_applies_below_its_directory(self, tmp_path, search_engine):
+        """Only the root's ignore file used to count: a checkout below the root
+        brought its build output and its own ignored data into every search."""
+        checkout = tmp_path / "work" / "checkout"
+        (checkout / "out").mkdir(parents=True)
+        (checkout / ".gitignore").write_text("out/\n*.log\n")
+        (checkout / "out" / "built.js").write_text("needle")
+        (checkout / "run.log").write_text("needle")
+        (checkout / "code.py").write_text("needle")
+        (tmp_path / "top.log").write_text("needle")   # the rule is the checkout's, not the root's
+
+        hits = {Path(m["file_path"]).name for m in textsearch.grep([tmp_path], "needle")["matches"]}
+
+        assert hits == {"code.py", "top.log"}
+
+    def test_the_deepest_ignore_file_decides(self, tmp_path, search_engine):
+        """git's rule: a ``!keep.log`` below lets through what ``*.log`` above hides."""
+        (tmp_path / "sub").mkdir()
+        (tmp_path / ".gitignore").write_text("*.log\n")
+        (tmp_path / "sub" / ".gitignore").write_text("!keep.log\n")
+        (tmp_path / "sub" / "keep.log").write_text("needle")
+        (tmp_path / "sub" / "drop.log").write_text("needle")
+
+        found = {Path(f).name for f in textsearch.find_files([tmp_path], "*.log")["files"]}
+
+        assert found == {"keep.log"}
+
+    def test_an_include_pattern_does_not_bring_ignored_files_back(self, tmp_path, search_engine):
+        """Measured on ripgrep: a positive --glob is a whitelist that overrides
+        the ignore files and the hidden-file rule, so "*" found a gitignored log
+        and .gitignore itself."""
+        (tmp_path / ".gitignore").write_text("*.log\n")
+        (tmp_path / "run.log").write_text("needle")
+        (tmp_path / "code.py").write_text("needle")
+
+        grep_hits = {Path(m["file_path"]).name for m in
+                     textsearch.grep([tmp_path], "needle", include_pattern="*")["matches"]}
+        files = {Path(f).name for f in textsearch.find_files([tmp_path], "*")["files"]}
+
+        assert grep_hits == {"code.py"}
+        assert files == {"code.py"}
+
+    def test_braces_and_negated_classes_are_globs(self, tmp_path, search_engine):
+        """``*.{ts,tsx}`` -- opencode's own example -- matched nothing at all."""
+        for name in ("a.ts", "b.tsx", "c.js", "data.txt", "note.txt"):
+            (tmp_path / name).write_text("x")
+
+        braces = {Path(f).name for f in textsearch.find_files([tmp_path], "*.{ts,tsx}")["files"]}
+        negated = {Path(f).name for f in textsearch.find_files([tmp_path], "[!d]*.txt")["files"]}
+
+        assert braces == {"a.ts", "b.tsx"}
+        assert negated == {"note.txt"}
+
+    def test_a_pattern_only_python_reads_is_still_answered(self, tmp_path, search_engine):
+        """ripgrep's regex dialect has no look-behind. It answered with an error
+        once, and a search that errors must not read as "0 matches"."""
+        (tmp_path / "a.py").write_text("price = 5\ncost = 5\n")
+
+        result = textsearch.grep([tmp_path], r"(?<=price = )5", is_regex=True)
+
+        assert [m["line_number"] for m in result["matches"]] == [1]
+        assert result["engine"] == "python"
+
+    def test_hits_come_sorted_by_file_and_line(self, tmp_path, search_engine):
+        """ripgrep searches in parallel and hands files over in any order, and
+        the walker yields a directory's files before its subdirectories, the
+        last of those first. Neither order is the path order."""
+        for rel in ("z.txt", "a/n.txt", "b/n.txt", "c/n.txt"):
+            (tmp_path / rel).parent.mkdir(exist_ok=True)
+            (tmp_path / rel).write_text("needle\nx\nneedle\n")
+
+        result = textsearch.grep([tmp_path], "needle")
+
+        assert [(Path(m["file_path"]).relative_to(tmp_path).as_posix(), m["line_number"])
+                for m in result["matches"]] == [
+            ("a/n.txt", 1), ("a/n.txt", 3), ("b/n.txt", 1), ("b/n.txt", 3),
+            ("c/n.txt", 1), ("c/n.txt", 3), ("z.txt", 1), ("z.txt", 3)]
+
+    def test_context_is_the_lines_around_each_hit(self, tmp_path, search_engine):
+        (tmp_path / "a.txt").write_text("one\ntwo\nneedle\nfour\nfive\nneedle\n")
+
+        result = textsearch.grep([tmp_path], "needle", context_lines=1)
+
+        assert [(m["context_before"], m["context_after"]) for m in result["matches"]] == [
+            (["two"], ["four"]), (["five"], [])]
+
+    def test_a_minified_line_is_cut(self, tmp_path, search_engine):
+        """One hit on a one-megabyte line used to be that megabyte in the context."""
+        (tmp_path / "bundle.js").write_text("x" * 50_000 + "needle" + "y" * 50_000 + "\n")
+
+        line = textsearch.grep([tmp_path], "needle")["matches"][0]["line_content"]
+
+        assert len(line) <= textsearch.MAX_LINE_CHARS + 20
+        assert line.endswith("[line cut]")
+
+    def test_a_line_that_is_not_utf8_is_decoded_like_read_text(self, tmp_path, search_engine):
+        (tmp_path / "latin.txt").write_bytes(b"needle caf\xe9 here\n")
+
+        line = textsearch.grep([tmp_path], "needle")["matches"][0]["line_content"]
+
+        assert line == "needle caf here"
+
+    def test_a_secret_beside_the_code_is_never_a_hit(self, tmp_path, search_engine, monkeypatch):
+        secret = tmp_path / "local.env"
+        secret.write_text("needle=1")
+        (tmp_path / "code.py").write_text("needle")
+        monkeypatch.setattr(textsearch, "is_secret", lambda path: Path(path).name == "local.env")
+
+        hits = {Path(m["file_path"]).name for m in textsearch.grep([tmp_path], "needle")["matches"]}
+
+        assert hits == {"code.py"}
+
+
+class TestReviewRoundOfTheEngines:
+    """12.11.2026: what the review of the two engines found, each probed on both."""
+
+    def test_a_line_end_anchor_matches_a_crlf_file(self, tmp_path, search_engine):
+        """Without --crlf ripgrep saw the \\r, and ``pass$`` found nothing in the
+        176 CRLF files of src/."""
+        (tmp_path / "win.py").write_bytes(b"def f():\r\n    pass\r\n")
+
+        result = textsearch.grep([tmp_path], r"pass$", is_regex=True)
+
+        assert [m["line_number"] for m in result["matches"]] == [2]
+
+    def test_a_nul_late_in_a_text_file_keeps_the_line_numbers(self, tmp_path, search_engine):
+        """--binary turned a NUL into a line break and moved every later line."""
+        body = b"x" * 5000 + b"\n" + b"a\x00b\n" + b"c\n" + b"needle\n"
+        (tmp_path / "late.txt").write_bytes(body)
+
+        result = textsearch.grep([tmp_path], "needle")
+
+        assert [m["line_number"] for m in result["matches"]] == [4]
+
+    def test_a_bom_is_not_part_of_the_first_line(self, tmp_path, search_engine):
+        (tmp_path / "bom.txt").write_bytes(b"\xef\xbb\xbfneedle\n")
+
+        result = textsearch.grep([tmp_path], r"^needle", is_regex=True)
+
+        assert [m["line_content"] for m in result["matches"]] == ["needle"]
+
+    def test_syntax_the_dialects_read_differently_follows_python(self, tmp_path, search_engine):
+        r"""``\<`` is a word start to ripgrep and a literal "<" to Python: ``\<-``
+        is an arrow to Python and can never match in ripgrep, since "-" starts
+        no word."""
+        (tmp_path / "a.r").write_text("x <- 1\ny = 2\n")
+
+        result = textsearch.grep([tmp_path], r"\<-", is_regex=True)
+
+        assert [m["line_number"] for m in result["matches"]] == [1]
+
+    def test_ripgrep_never_reports_a_line_python_would_not_match(self, tmp_path, search_engine):
+        """ripgrep's --ignore-case folds the long s onto s; Python's lower()
+        keeps it. Every line ripgrep reports is held against Python's reading."""
+        (tmp_path / "a.txt").write_text("the sun\nthe ſun\n")
+
+        result = textsearch.grep([tmp_path], "sun")
+
+        assert [m["line_number"] for m in result["matches"]] == [1]
+
+    def test_a_configured_root_that_is_not_there_does_not_slow_the_rest(self, tmp_path, search_engine):
+        """A missing sub-root failed ripgrep's cwd, and the whole search fell back."""
+        (tmp_path / ".gitignore").write_text("data/\n")
+        (tmp_path / "code.py").write_text("needle")
+        missing = tmp_path / "data" / "workspace"
+
+        result = textsearch.grep([tmp_path, missing], "needle")
+
+        assert [Path(m["file_path"]).name for m in result["matches"]] == ["code.py"]
+        assert result["engine"] == search_engine
+
+    def test_a_private_folder_is_excluded_only_where_it_is(self, tmp_path, search_engine, monkeypatch):
+        """The exclude glob for a private folder was not anchored: with the scope
+        its parent, every folder of that name at any depth went with it."""
+        data = tmp_path
+        (data / "sessions").mkdir()
+        (data / "sessions" / "s.json").write_text("needle")
+        (data / "app" / "Sessions").mkdir(parents=True)
+        (data / "app" / "Sessions" / "handler.py").write_text("needle")
+        monkeypatch.setattr(textsearch, "private_places",
+                            lambda: (tmp_path / "config", tmp_path / "users.db",
+                                     (data / "sessions",)))
+        private = data / "sessions"
+        monkeypatch.setattr(textsearch, "is_secret",
+                            lambda path: Path(path) == private or private in Path(path).parents)
+
+        hits = {Path(m["file_path"]).name for m in textsearch.grep([data], "needle")["matches"]}
+
+        assert hits == {"handler.py"}
+
+    def test_an_ignore_file_outranks_a_gitignore_below_it(self, tmp_path, search_engine):
+        """ripgrep's precedence: every .ignore before every .gitignore."""
+        (tmp_path / "sub").mkdir()
+        (tmp_path / ".ignore").write_text("*.log\n")
+        (tmp_path / "sub" / ".gitignore").write_text("!keep.log\n")
+        (tmp_path / "sub" / "keep.log").write_text("needle")
+
+        assert textsearch.find_files([tmp_path], "*.log")["files"] == []
+
+    @pytest.mark.skipif(os.name != "nt", reason="the hidden attribute is Windows'")
+    def test_the_windows_hidden_attribute_hides(self, tmp_path, search_engine):
+        import subprocess
+
+        (tmp_path / "secret_dir").mkdir()
+        (tmp_path / "secret_dir" / "a.txt").write_text("needle")
+        (tmp_path / "plain.txt").write_text("needle")
+        subprocess.run(["attrib", "+h", str(tmp_path / "secret_dir")], check=True)
+
+        hits = {Path(m["file_path"]).name for m in textsearch.grep([tmp_path], "needle")["matches"]}
+
+        assert hits == {"plain.txt"}
+
+    def test_files_searched_counts_what_the_include_names(self, tmp_path, search_engine):
+        """ripgrep reads the tree, and "searched 21 files" was the whole tree for
+        an include that named one."""
+        for index in range(20):
+            (tmp_path / f"other_{index}.txt").write_text("x")
+        (tmp_path / "chapter.md").write_text("needle")
+
+        result = textsearch.grep([tmp_path], "needle", include_pattern="*.md")
+
+        assert result["total_matches"] == 1 and result["total_files"] == 1
+
+    def test_the_answer_names_ignore_files_wherever_they_were(self, tmp_path, search_engine):
+        """Only a root-level ignore file counted, while nested ones apply too."""
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / ".gitignore").write_text("*.log\n")
+        (tmp_path / "sub" / "a.log").write_text("needle")
+
+        result = textsearch.grep([tmp_path], "needle")
+
+        assert result["total_matches"] == 0
+        assert ".gitignore" in " ".join(result["skipped"]["filters_active"])
+
+
+class TestTheFixRoundAgainstItself:
+    """12.11.2026: what the review of the review's fixes found."""
+
+    def test_the_size_ceiling_holds_for_an_include_pattern(self, tmp_path, search_engine):
+        """ripgrep applies --max-filesize to what it walks, not to a file it is
+        given by name -- and an include pattern names its files."""
+        (tmp_path / "big.log").write_text("needle\n" + "x" * 5000)
+        (tmp_path / "small.log").write_text("needle\n")
+
+        result = textsearch.grep([tmp_path], "needle", include_pattern="*.log",
+                                 max_filesize_bytes=100)
+
+        assert [Path(m["file_path"]).name for m in result["matches"]] == ["small.log"]
+        assert any("too large" in note for note in result["skipped"]["notes"])
+
+    def test_an_include_search_survives_a_missing_first_root(self, tmp_path, search_engine):
+        """The shallowest root came first and was the cwd of every run: missing,
+        it sent every include search to the walker."""
+        real = tmp_path / "deep" / "real"
+        real.mkdir(parents=True)
+        (real / "a.md").write_text("needle")
+
+        result = textsearch.grep([tmp_path / "gone", real], "needle", include_pattern="*.md")
+
+        assert [Path(m["file_path"]).name for m in result["matches"]] == ["a.md"]
+        assert result["engine"] == search_engine
+
+    @pytest.mark.parametrize("query", [r"[_[:alnum:]]", r"[a-z--[b]]", r"[a-z&&[^aeiou]]"])
+    def test_a_class_ripgrep_reads_as_a_set_follows_python(self, tmp_path, search_engine, query):
+        """Nested classes and set operations are plain characters to Python:
+        ripgrep read them narrower and missed lines without a word."""
+        import re
+        import warnings
+
+        (tmp_path / "a.txt").write_text("a]\n:]\n&]\nb]\n")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)   # Python's "possible nested set"
+            expected = [index + 1 for index, line in enumerate(["a]", ":]", "&]", "b]"])
+                        if re.search(query, line, re.IGNORECASE)]
+            result = textsearch.grep([tmp_path], query, is_regex=True)
+
+        assert expected, "Python matches nothing here -- this proves nothing"
+        assert [m["line_number"] for m in result["matches"]] == expected
+
+    def test_a_ripgrep_that_changed_after_the_first_search_is_not_run(
+            self, tmp_path, search_engine, monkeypatch):
+        from plugins.file_ops import ripgrep
+
+        (tmp_path / "a.txt").write_text("needle")
+        monkeypatch.setattr(ripgrep, "still_trusted", lambda binary: False)
+
+        result = textsearch.grep([tmp_path], "needle")
+        files = textsearch.find_files([tmp_path], "*.txt")
+
+        assert result["engine"] == "python" and files["engine"] == "python"
+        assert result["total_matches"] == 1
+
+    @pytest.mark.skipif(os.name != "nt", reason="the hidden attribute is Windows'")
+    def test_a_flat_listing_hides_what_the_attribute_hides(self, tmp_path, search_engine):
+        import subprocess
+
+        (tmp_path / "hidden.txt").write_text("x")
+        (tmp_path / "plain.txt").write_text("x")
+        subprocess.run(["attrib", "+h", str(tmp_path / "hidden.txt")], check=True)
+
+        listing = textsearch.list_directory(tmp_path)
+
+        assert [Path(f).name for f in listing["files"]] == ["plain.txt"]

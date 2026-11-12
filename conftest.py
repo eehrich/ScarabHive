@@ -258,6 +258,12 @@ class _PopenForceUtf8:
 # Keep subprocess wrapper installed
 subprocess.Popen = _PopenForceUtf8
 
+# --- No ripgrep download ------------------------------------------------------
+# file_ops fetches ripgrep once when none is found (plugins/file_ops/ripgrep.py).
+# A test must not reach the network for it: the suite uses a ripgrep on PATH or
+# one fetched earlier, and the walker otherwise.
+os.environ["FILE_OPS_RIPGREP_DOWNLOAD"] = "0"
+
 # --- Test-only LLM factory stub ---------------------------------------------
 # During bootstrap the code may call `registry.build_client()` to construct LLM
 # clients which can create real HTTP/async clients and open sockets. To prevent

@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import aiofiles
 from filelock import FileLock
@@ -35,7 +37,7 @@ from agent_system.utils.vector_store import (
     compute_embeddings,
 )
 
-from . import symbols, textsearch
+from . import ripgrep, symbols, textsearch
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,25 @@ _PASS_LOCK_NAME = ".file_ops_index_pass.lock"
 #: How long a FULL rebuild waits for another process's pass. A full pass over
 #: this repository measured 423 s; twice that is a pass that is stuck.
 _FULL_PASS_WAIT = 900.0
+#: Files stat'ed, read and cut into documents per worker-thread call.
+_PREPARE_BATCH = 200
+#: How often a pass writes its checkpoint. The state of the coder tree is
+#: megabytes of JSON, so not after every batch.
+_STATE_SAVE_SECONDS = 30.0
+#: How long the background indexer waits after a pass that failed.
+_RETRY_SECONDS = 60.0
+
+
+@dataclass
+class _PendingFile:
+    """A file read and cut into documents, waiting for its batch to be stored."""
+
+    path: Path
+    mtime: float
+    digest: str
+    ids: List[str] = field(default_factory=list)
+    texts: List[str] = field(default_factory=list)
+    metadatas: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _relative_to(path: Path, root: Path) -> Path:
@@ -81,6 +102,13 @@ class FileSearchEngine:
         #: old ones out. A file is many documents now (see :mod:`symbols`), and
         #: its id is no longer derivable from its path alone.
         self.file_symbol_ids: Dict[Path, List[str]] = {}
+        #: The content hash of each file, and the files booked as aliases of
+        #: another file with the same content (see _run_index_pass).
+        self.file_hashes: Dict[Path, str] = {}
+        self.file_aliases: Set[Path] = set()
+        #: (files done, files walked) while a pass runs, for the answer a
+        #: search gives meanwhile.
+        self._progress: Optional[Tuple[int, int]] = None
 
         # Indexing control
         self._indexing_task: Optional[asyncio.Task] = None
@@ -93,10 +121,10 @@ class FileSearchEngine:
         self._state_path: Optional[Path] = None
         #: Set by stop(), read by the worker thread that shutdown cannot cancel
         self._closing = False
-        #: True once a pass has finished or a state file was read back. NOT
+        #: True once a pass has finished or a COMPLETE state was read back. NOT
         #: `count() > 0`: the first batch of a full build lands long before the
-        #: tree is covered. NOT `bool(file_mtimes)` either -- a tree with
-        #: nothing indexable would then read as "still building" forever.
+        #: tree is covered. While it is False and the bookkeeping holds files,
+        #: a search answers from them and says the index is still being built.
         self._index_built = False
         #: Why the background indexer's last pass failed. Read only while no
         #: index is built: a build that failed every time (no embedding model,
@@ -179,21 +207,22 @@ class FileSearchEngine:
         # needs the incremental pass, and a first run after a restart used to
         # wipe the warm index and then answer nothing for minutes while it
         # built the same vectors again.
+        #
+        # Every pass asks for an INCREMENTAL one, the first too: the pass turns
+        # into a full one by itself when the state it loads under the pass lock
+        # books nothing. Asking for a full one on the first run threw away a
+        # build that had died half way in this very process -- the retry a
+        # minute later cleared the collection the checkpoints had kept.
         if self.config.get("enable_semantic_search", True):
             try:
                 self._init_vector_store()
             except VectorStoreError as e:
                 logger.error(f"FILE_OPS: no vector store, indexing stops: {e}")
                 return
-        first_run = not self.file_mtimes
 
         while True:
             try:
-                if first_run:
-                    await self.rebuild_index(incremental=False)  # Full rebuild on first run
-                    first_run = False
-                else:
-                    await self.rebuild_index(incremental=True)  # Incremental updates after that
+                await self.rebuild_index(incremental=True)
 
                 # Wait for next cycle
                 # The configured name is `auto_reindex_interval` — schema,
@@ -208,7 +237,7 @@ class FileSearchEngine:
             except Exception as e:
                 logger.error(f"Indexing error: {e}", exc_info=True)
                 self._index_error = f"{type(e).__name__}: {e}"[:300]
-                await asyncio.sleep(60)  # Retry after 1 minute
+                await asyncio.sleep(_RETRY_SECONDS)
 
     async def rebuild_index(self, status_callback=None, incremental=True):
         """Run one index pass, and never two at the same time.
@@ -255,7 +284,9 @@ class FileSearchEngine:
                 if pass_lock is not None:
                     # Another process may have indexed since this one read the
                     # state -- start from what is on disk, not from memory.
-                    await asyncio.to_thread(self._load_state)
+                    # Under the pass lock, so this is where a disagreeing state
+                    # may be mended (see _load_state).
+                    await asyncio.to_thread(self._load_state, True)
                 await self._run_index_pass(status_callback, incremental)
             finally:
                 if pass_lock is not None:
@@ -286,287 +317,330 @@ class FileSearchEngine:
         return FileLock(str(persist_path / _PASS_LOCK_NAME), thread_local=False)
 
     async def _run_index_pass(self, status_callback=None, incremental=True):
-        """Full or incremental rebuild of the SEMANTIC index.
+        """Full or incremental pass over the SEMANTIC index.
 
-        What is tracked besides the vectors is one mtime per file, which is
-        what makes the incremental pass incremental. The word and filename
-        indexes that used to be built here are gone: since glob and grep walk
-        the disk directly nobody read them, and keeping them current was the
-        expensive part — every changed file scanned every word list.
+        What is tracked besides the vectors is one mtime and one content hash
+        per file, which is what makes the incremental pass incremental and lets
+        identical files share their documents.
 
         The walk is the same pruning walk the text search uses, with the same
-        excludes and the same .gitignore handling. Two walkers meant two
-        readings of "which files exist", and the old one still descended into
-        every excluded directory.
+        excludes and the same ignore files. Two walkers meant two readings of
+        "which files exist", and the old one still descended into every
+        excluded directory.
+
+        WHY IT CHECKPOINTS. Measured on 12.11.2026 on the coder tree: 44.563
+        indexable files, 735.841 documents -- about 100 minutes of embedding.
+        The pass used to hold every document in memory and write the
+        bookkeeping once, at its very end. No process lived that long, every
+        restart began again from nothing, and the index stayed "being built"
+        for good (its state file was from 18.09.). Now each batch is embedded,
+        stored and booked as it fills, the state is written every
+        ``_STATE_SAVE_SECONDS``, and the next process carries on where this
+        one stopped (see _load_state for the store and the state disagreeing).
+
+        WHY IDENTICAL FILES ARE INDEXED ONCE. 88 % of those documents were
+        nine checkouts of the same repository under data/workspace. Indexed
+        nine times, every question found the same function nine times over and
+        the build took nine times as long. A file whose content an indexed file
+        already has is booked as an alias of it: no documents of its own, and a
+        hit on the original names it (``same_content``). Files are walked
+        shallowest first, so the original is the one nearest a root. When an
+        original changes or goes, one of its aliases is indexed in its place.
 
         Args:
             status_callback: Optional callback function for progress updates
             incremental: If True, only update modified files (default). If False, full rebuild.
         """
         logger.info("=" * 60)
-        if incremental and self.file_mtimes:
-            logger.info("FILE_OPS: Starting incremental index update...")
-        else:
-            logger.info("FILE_OPS: Starting full index rebuild...")
+        full = not (incremental and self.file_mtimes)
+        logger.info("FILE_OPS: Starting %s...",
+                    "full index rebuild" if full else "incremental index update")
         logger.info("=" * 60)
         start_time = time.time()
-
         if status_callback:
-            if incremental and self.file_mtimes:
-                await status_callback("Starting incremental index update...")
-            else:
-                await status_callback("Starting full index rebuild...")
+            await status_callback("Starting full index rebuild..." if full
+                                  else "Starting incremental index update...")
 
-        # For incremental: keep what is known, only update changed files
-        if incremental and self.file_mtimes:
-            new_mtimes = self.file_mtimes.copy()
-            new_symbol_ids = {p: list(ids) for p, ids in self.file_symbol_ids.items()}
-        else:
-            new_mtimes: Dict[Path, float] = {}
-            new_symbol_ids: Dict[Path, List[str]] = {}
-
-        files_indexed = 0
-        files_updated = 0
-        files_removed = 0
-
-        # Semantic search via VectorStore
         semantic_enabled = self.config.get("enable_semantic_search", True)
-        if semantic_enabled and not incremental:
-            # Only clear for full rebuild
-            logger.info("FILE_OPS: Initializing VectorStore for semantic search...")
-            if status_callback:
-                await status_callback("Initializing VectorStore for semantic search...")
+        if semantic_enabled:
             self._init_vector_store()
-            # Clear existing semantic index (delete all documents)
-            if self._vector_store:
-                # An index that cannot even be counted is unreadable — persisted
-                # by an older chromadb, say ('PersistentData' object has no
-                # attribute 'max_seq_id'). Dropping and recreating it IS the
-                # recovery. What must not happen is carrying on regardless: the
-                # rebuild then writes into a broken collection, and semantic
-                # search answers "found nothing" instead of "index is broken".
-                try:
-                    count = self._vector_store.count(self._collection_name)
-                except Exception as e:
-                    logger.warning(
-                        f"FILE_OPS: semantic index '{self._collection_name}' is unreadable "
-                        f"({e}) — recreating it")
-                    count = None
+        if full:
+            self.file_mtimes, self.file_symbol_ids = {}, {}
+            self.file_hashes, self.file_aliases = {}, set()
+            if semantic_enabled and self._vector_store:
+                await self._clear_collection(status_callback)
+        store_ready = bool(semantic_enabled and self._vector_store)
 
-                if count is None or count > 0:
-                    if count:
-                        logger.info(f"FILE_OPS: Clearing {count} existing documents from index...")
-                        if status_callback:
-                            await status_callback(f"Clearing {count} existing documents from index...")
-                    self._vector_store.delete_collection(self._collection_name)
-                    self._vector_store.get_or_create_collection(self._collection_name)
-                    try:
-                        self._vector_store.count(self._collection_name)
-                    except Exception as e:
-                        raise VectorStoreError(
-                            f"semantic index '{self._collection_name}' is unreadable and could "
-                            f"not be recreated: {e}") from e
-                    logger.info("FILE_OPS: Cleared existing documents from VectorStore")
-        elif semantic_enabled and incremental:
-            # For incremental: just init, don't clear
-            self._init_vector_store()
+        paths = await asyncio.to_thread(self._walk_for_index)
+        seen = {path for path, _ in paths}
+        self._progress = (0, len(paths))
+        max_size = int(self.config.get("max_file_size_for_indexing_kb", 1024)) * 1024
 
-        max_size_kb = self.config.get("max_file_size_for_indexing_kb", 1024)
-        max_size = max_size_kb * 1024
+        pending: List[_PendingFile] = []
+        to_delete: List[str] = []
+        pending_docs = 0
+        updated = removed = 0
+        last_save = time.time()
+        known: Dict[str, Path] = {}   # content hash -> the file whose documents it has
 
-        # Collect file data for batch VectorStore insertion
-        chroma_docs = []
-        chroma_ids = []
-        chroma_metadatas = []
-        chroma_ids_to_delete = []  # For incremental updates
+        def forget(path: Path) -> None:
+            """Take *path* out of the bookkeeping; its documents go with the next flush."""
+            to_delete.extend(self.file_symbol_ids.pop(path, []))
+            self.file_mtimes.pop(path, None)
+            digest = self.file_hashes.pop(path, None)
+            self.file_aliases.discard(path)
+            if digest and known.get(digest) == path:
+                del known[digest]
 
-        # Track seen files for incremental cleanup
-        seen_files: Set[Path] = set()
+        async def flush() -> None:
+            nonlocal pending_docs, last_save
+            if store_ready and to_delete:
+                # Before the adds: a changed file's new documents reuse the
+                # ids of its old ones ("path#line").
+                await asyncio.to_thread(self._vector_store.delete,
+                                        self._collection_name, list(to_delete))
+            to_delete.clear()
+            if store_ready:
+                ids = [doc_id for item in pending for doc_id in item.ids]
+                texts = [text for item in pending for text in item.texts]
+                metadatas = [meta for item in pending for meta in item.metadatas]
+                # No try/except: a batch that fails (model not loadable, store
+                # error, disk full) used to be logged and booked as written --
+                # and no later pass looked at those files again.
+                for i in range(0, len(ids), EMBED_BATCH_SIZE):
+                    await asyncio.to_thread(self._add_embedded, ids[i:i + EMBED_BATCH_SIZE],
+                                            texts[i:i + EMBED_BATCH_SIZE],
+                                            metadatas[i:i + EMBED_BATCH_SIZE])
+            if self._closing:
+                # _add_embedded wrote nothing once stop() began: booking these
+                # would claim documents the store does not hold.
+                return
+            # Booked only now that the documents are in the store.
+            for item in pending:
+                self.file_mtimes[item.path] = item.mtime
+                self.file_symbol_ids[item.path] = item.ids
+                self.file_hashes[item.path] = item.digest
+            pending.clear()
+            pending_docs = 0
+            if store_ready and time.time() - last_save >= _STATE_SAVE_SECONDS:
+                await asyncio.to_thread(self._save_state, False)
+                last_save = time.time()
 
-        # Progress tracking
-        last_progress_time = time.time()
-        progress_interval = 2.0  # Update every 2 seconds
+        def originals() -> Dict[str, Path]:
+            return {digest: path for path, digest in self.file_hashes.items()
+                    if digest and path not in self.file_aliases}
 
-        options = self._search_backend_options()
-        configured = [Path(d).resolve() for d in self.allowed_dirs]
-        for base_dir in textsearch.deduplicate_roots(self.allowed_dirs):
-            if not base_dir.exists():
-                continue
-
-            walk = textsearch.walk_files(
-                base_dir, options["excludes"],
-                include_hidden=options["include_hidden"],
-                ignore_spec=textsearch.gitignore_spec(base_dir),
-                protected=textsearch.sub_roots(base_dir, configured))
-            for file_path in walk:
-                seen_files.add(file_path)
-
-                # Skip large files
-                try:
-                    stat = file_path.stat()
-                    size = stat.st_size
-                    if size > max_size:
-                        # It may have been indexed while it was smaller. Just
-                        # skipping it here left its old documents in the store
-                        # AND its mtime in the bookkeeping, so nothing ever
-                        # touched it again: the index kept answering with code
-                        # that had since been rewritten. Growing past the
-                        # ceiling means leaving the index, not freezing in it.
-                        if file_path in new_mtimes:
-                            new_mtimes.pop(file_path)
-                            if semantic_enabled and self._vector_store:
-                                chroma_ids_to_delete.extend(
-                                    new_symbol_ids.pop(file_path, []))
-                        continue
-
-                    current_mtime = stat.st_mtime
-
-                    # For incremental: skip unchanged files
-                    if incremental and file_path in new_mtimes:
-                        if new_mtimes[file_path] == current_mtime:
-                            files_indexed += 1
-                            continue
-                        files_updated += 1
-                        if semantic_enabled and self._vector_store:
-                            chroma_ids_to_delete.extend(
-                                new_symbol_ids.pop(file_path, []))
-
-                    if self._is_text_file(file_path):
-                        new_mtimes[file_path] = current_mtime
-
-                        # Content is read only for the vectors: without
-                        # semantic search there is nothing to put it into.
-                        if semantic_enabled and self._vector_store:
-                            content = await self._read_content(file_path)
-                            if content:
-                                # One document per symbol, not per file: the
-                                # model reads 256 tokens, so a whole file would
-                                # be indexed by its head alone (see `symbols`).
-                                ids_here = []
-                                # The path relative to its root: the part a
-                                # question can name (see `symbols`).
-                                for doc in symbols.documents(
-                                        _relative_to(file_path, base_dir), content):
-                                    doc_id = f"{file_path}#{doc.line}"
-                                    ids_here.append(doc_id)
-                                    chroma_docs.append(doc.text)
-                                    chroma_ids.append(doc_id)
-                                    chroma_metadatas.append({
-                                        "file_path": str(file_path),
-                                        "filename": file_path.name,
-                                        "extension": file_path.suffix,
-                                        "size_bytes": str(size),
-                                        "mtime": str(current_mtime),
-                                        "line": str(doc.line),
-                                        "symbol": doc.label,
-                                    })
-                                new_symbol_ids[file_path] = ids_here
-
-                    files_indexed += 1
-
-                    # Hand the loop back now and then. An incremental pass over
-                    # an unchanged tree awaits nothing at all -- measured live
-                    # on 18.09.2026 it held the event loop for 8.3 s while it
-                    # stat'ed 3.648 files, and everything else this process
-                    # serves waited that long.
-                    if files_indexed % 200 == 0:
-                        await asyncio.sleep(0)
-
-                    # Periodic progress updates
-                    current_time = time.time()
-                    if (current_time - last_progress_time) >= progress_interval:
-                        if incremental:
-                            logger.info(f"FILE_OPS: Indexing progress: {files_indexed} files checked, {files_updated} updated, {len(chroma_docs)} symbols for semantic search...")
-                        else:
-                            logger.info(f"FILE_OPS: Indexing progress: {files_indexed} files, {len(chroma_docs)} symbols for semantic search...")
-                        if status_callback:
-                            await status_callback(f"Indexed {files_indexed} files, {len(chroma_docs)} symbols for semantic search...")
-                        last_progress_time = current_time
-
-                except (OSError, PermissionError) as e:
-                    logger.debug(f"Skipping file {file_path}: {e}")
+        known.update(originals())
+        done = 0
+        for offset in range(0, len(paths), _PREPARE_BATCH):
+            if self._closing:
+                return
+            chunk = paths[offset:offset + _PREPARE_BATCH]
+            prepared = await asyncio.to_thread(
+                self._prepare_for_index, chunk, max_size, store_ready)
+            for (path, base_dir), (kind, mtime, digest, item) in zip(chunk, prepared):
+                done += 1
+                if kind == "same":
                     continue
-
-        # For incremental: forget files that are gone
-        if incremental:
-            deleted_files = set(new_mtimes.keys()) - seen_files
-            if deleted_files:
-                files_removed = len(deleted_files)
-                logger.info(f"FILE_OPS: Removing {files_removed} deleted files from index...")
-                for file_path in deleted_files:
-                    del new_mtimes[file_path]
-                    if semantic_enabled and self._vector_store:
-                        chroma_ids_to_delete.extend(
-                            new_symbol_ids.pop(file_path, []))
-
-        # Delete old VectorStore entries for updated/deleted files.
-        #
-        # A failure here ends the pass. Carrying on used to log a warning and
-        # then commit the new bookkeeping -- which no longer lists those ids,
-        # so the documents stayed in the store with nobody left to delete them
-        # and the search kept answering with functions that had been renamed
-        # away. Ending without committing leaves the OLD bookkeeping in place,
-        # and the next pass tries the same deletion again.
-        if semantic_enabled and chroma_ids_to_delete and self._vector_store:
-            logger.info(f"FILE_OPS: Removing {len(chroma_ids_to_delete)} updated/deleted files from VectorStore...")
-            await asyncio.to_thread(self._vector_store.delete,
-                                    self._collection_name, chroma_ids_to_delete)
-
-        # Batch insert into VectorStore (with chunking to avoid batch size limits)
-        if semantic_enabled and chroma_docs and self._vector_store:
-            logger.info(f"FILE_OPS: Creating embeddings for {len(chroma_docs)} symbols...")
-            logger.info("FILE_OPS: This may take several minutes depending on file count and GPU availability")
+                if kind in ("gone", "large", "binary"):
+                    # Growing past the ceiling means leaving the index, not
+                    # freezing in it: just skipping the file left its old
+                    # documents in the store and its mtime in the bookkeeping,
+                    # and the index kept answering with rewritten code.
+                    if path in self.file_mtimes:
+                        forget(path)
+                        updated += 1
+                    continue
+                old_digest = self.file_hashes.get(path)
+                if path in self.file_mtimes:
+                    if old_digest == digest and digest:
+                        # Touched, not changed: the documents stand.
+                        self.file_mtimes[path] = mtime
+                        continue
+                    if (digest and not old_digest and self.file_mtimes[path] == mtime
+                            and path not in self.file_aliases
+                            and known.get(digest, path) == path):
+                        # Booked before hashes were kept, and unchanged: its
+                        # documents stand, and its hash is learned.
+                        self.file_hashes[path] = digest
+                        known[digest] = path
+                        continue
+                    updated += 1
+                    forget(path)
+                original = known.get(digest)
+                if digest and original is not None and original != path:
+                    self.file_mtimes[path] = mtime
+                    self.file_symbol_ids[path] = []
+                    self.file_hashes[path] = digest
+                    self.file_aliases.add(path)
+                    continue
+                if digest:
+                    known[digest] = path
+                pending.append(item)
+                pending_docs += len(item.ids)
+                if pending_docs >= EMBED_BATCH_SIZE:
+                    await flush()
+            self._progress = (done, len(paths))
             if status_callback:
-                await status_callback(f"Creating embeddings for {len(chroma_docs)} symbols (this may take a while)...")
-            # No try/except around this either, and for the same reason: a
-            # batch that fails (model not loadable, store error, disk full)
-            # used to be logged and then booked as if it had been written --
-            # the state claimed documents that were never stored, and because
-            # the mtimes were committed too, no later pass ever looked at those
-            # files again. The running process answered "nothing found" for
-            # them until it was restarted.
-            embedding_start = time.time()
+                await status_callback(f"Indexed {done} of {len(paths)} files...")
 
-            # The vectors are computed HERE, in batches, and handed over
-            # ready-made. Letting the store embed document by document was
-            # measured at 26 ms each -- 22 minutes for this repository's
-            # 51.730 documents, against seven when they go through one batched
-            # encode. The work runs in a worker thread: it is minutes of CPU,
-            # and on the event loop every other tool call of this server would
-            # wait for it.
-            for i in range(0, len(chroma_docs), EMBED_BATCH_SIZE):
-                batch_end = min(i + EMBED_BATCH_SIZE, len(chroma_docs))
-                logger.info(f"FILE_OPS: Processing embedding batch {i//EMBED_BATCH_SIZE + 1} ({i+1}-{batch_end} of {len(chroma_docs)})")
+        for path in [p for p in self.file_mtimes if p not in seen]:
+            forget(path)
+            removed += 1
+        await flush()
 
-                await asyncio.to_thread(
-                    self._add_embedded,
-                    chroma_ids[i:batch_end],
-                    chroma_docs[i:batch_end],
-                    chroma_metadatas[i:batch_end],
-                )
+        # Aliases whose original changed or went -- in this pass, or in one
+        # that died before its original was stored -- have no documents: the
+        # shallowest of each is indexed in its place.
+        known = originals()
+        heirs: Dict[str, Path] = {}
+        for path, digest in self.file_hashes.items():
+            if path in self.file_aliases and digest not in known:
+                best = heirs.get(digest)
+                if best is None or (len(path.parts), str(path)) < (len(best.parts), str(best)):
+                    heirs[digest] = path
+        base_of = dict(paths)
+        queue = sorted(heirs.items(), key=lambda item: str(item[1]))
+        for offset in range(0, len(queue), _PREPARE_BATCH):
+            if self._closing:
+                return
+            chunk = queue[offset:offset + _PREPARE_BATCH]
+            prepared = await asyncio.to_thread(
+                self._prepare_for_index,
+                [(heir, base_of.get(heir, heir.parent)) for _, heir in chunk],
+                max_size, store_ready, True)
+            for (digest, heir), (kind, _, new_digest, item) in zip(chunk, prepared):
+                self.file_aliases.discard(heir)
+                if kind == "read" and new_digest == digest:
+                    pending.append(item)
+                    pending_docs += len(item.ids)
+                else:
+                    forget(heir)   # changed meanwhile: the next pass takes it as new
+            if pending_docs >= EMBED_BATCH_SIZE:
+                await flush()
+        await flush()
 
-            embedding_time = time.time() - embedding_start
-            logger.info(f"FILE_OPS: Created embeddings for {len(chroma_docs)} symbols in {embedding_time:.2f}s")
-
-        # The caller holds `_index_lock` for the whole pass, so this swap is
-        # already exclusive. Taking it again here would deadlock: asyncio.Lock
-        # is not reentrant.
-        self.file_mtimes = new_mtimes
-        self.file_symbol_ids = new_symbol_ids
+        if self._closing:
+            return
+        # The caller holds `_index_lock` for the whole pass, so the bookkeeping
+        # is changed by nobody else meanwhile.
         self._index_built = True
-        if semantic_enabled and self._vector_store:
-            self._save_state()
+        self._index_error = None
+        self._progress = None
+        if store_ready:
+            await asyncio.to_thread(self._save_state, True)
 
-        elapsed = time.time() - start_time
-        if incremental and self.file_mtimes:
-            final_msg = f"FILE_OPS: Incremental update complete! Checked {files_indexed} files, updated {files_updated}, removed {files_removed} in {elapsed:.2f}s"
-        else:
-            final_msg = f"FILE_OPS: Full index rebuild complete! Indexed {files_indexed} files in {elapsed:.2f}s"
+        final_msg = (f"FILE_OPS: index pass complete: {len(paths)} files walked, "
+                     f"{updated} updated, {removed} removed, "
+                     f"{len(self.file_aliases)} identical to another, "
+                     f"in {time.time() - start_time:.2f}s")
         logger.info("=" * 60)
         logger.info(final_msg)
         logger.info("=" * 60)
         if status_callback:
             await status_callback(final_msg)
+
+    async def _clear_collection(self, status_callback=None) -> None:
+        """Empty the collection before a full rebuild."""
+        # An index that cannot even be counted is unreadable — persisted by an
+        # older chromadb, say ('PersistentData' object has no attribute
+        # 'max_seq_id'). Dropping and recreating it IS the recovery. What must
+        # not happen is carrying on regardless: the rebuild then writes into a
+        # broken collection, and semantic search answers "found nothing"
+        # instead of "index is broken".
+        try:
+            count = self._vector_store.count(self._collection_name)
+        except Exception as e:
+            logger.warning(
+                f"FILE_OPS: semantic index '{self._collection_name}' is unreadable "
+                f"({e}) — recreating it")
+            count = None
+        if count is None or count > 0:
+            if count:
+                logger.info(f"FILE_OPS: Clearing {count} existing documents from index...")
+                if status_callback:
+                    await status_callback(f"Clearing {count} existing documents from index...")
+            self._vector_store.delete_collection(self._collection_name)
+            self._vector_store.get_or_create_collection(self._collection_name)
+            try:
+                self._vector_store.count(self._collection_name)
+            except Exception as e:
+                raise VectorStoreError(
+                    f"semantic index '{self._collection_name}' is unreadable and could "
+                    f"not be recreated: {e}") from e
+            logger.info("FILE_OPS: Cleared existing documents from VectorStore")
+
+    def _walk_for_index(self) -> List[Tuple[Path, Path]]:
+        """(file, the root it was found under), shallowest first. Blocking: a worker thread runs it."""
+        options = self._search_backend_options()
+        configured = [Path(d).resolve() for d in self.allowed_dirs]
+        found: List[Tuple[Path, Path]] = []
+        for base_dir in textsearch.deduplicate_roots(self.allowed_dirs):
+            if not base_dir.exists():
+                continue
+            for path in textsearch.walk_files(
+                    base_dir, options["excludes"],
+                    include_hidden=options["include_hidden"],
+                    respect_ignore=True,
+                    protected=textsearch.sub_roots(base_dir, configured)):
+                found.append((path, base_dir))
+        found.sort(key=lambda item: (len(item[0].parts), str(item[0])))
+        return found
+
+    def _prepare_for_index(self, chunk: List[Tuple[Path, Path]], max_size: int,
+                           embed: bool, force: bool = False
+                           ) -> List[Tuple[str, float, str, Optional["_PendingFile"]]]:
+        """Stat, read and cut a batch of files into documents -- off the event loop.
+
+        Returns ``(kind, mtime, content hash, documents)`` per file, kind one
+        of same / gone / large / binary / read. *force* reads a file whose
+        mtime is booked (an alias taking an original's place).
+        """
+        out: List[Tuple[str, float, str, Optional[_PendingFile]]] = []
+        for path, base_dir in chunk:
+            try:
+                stat = path.stat()
+            except OSError:
+                out.append(("gone", 0.0, "", None))
+                continue
+            if stat.st_size > max_size:
+                out.append(("large", stat.st_mtime, "", None))
+                continue
+            # A booked file without a hash (a state from before they were
+            # kept) is read once more: identical files are found by it.
+            if (not force and self.file_mtimes.get(path) == stat.st_mtime
+                    and self.file_hashes.get(path)):
+                out.append(("same", stat.st_mtime, "", None))
+                continue
+            if not self._is_text_file(path):
+                out.append(("binary", stat.st_mtime, "", None))
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                out.append(("gone", 0.0, "", None))
+                continue
+            digest = hashlib.sha1(content.encode("utf-8", "ignore"), usedforsecurity=False).hexdigest()
+            item = _PendingFile(path, stat.st_mtime, digest)
+            if embed and content:
+                # One document per symbol, not per file: the model reads 256
+                # tokens, so a whole file would be indexed by its head alone
+                # (see `symbols`). The path relative to its root: the part a
+                # question can name.
+                for doc in symbols.documents(_relative_to(path, base_dir), content):
+                    item.ids.append(f"{path}#{doc.line}")
+                    item.texts.append(doc.text)
+                    item.metadatas.append({
+                        "file_path": str(path),
+                        "filename": path.name,
+                        "extension": path.suffix,
+                        "size_bytes": str(stat.st_size),
+                        "mtime": str(stat.st_mtime),
+                        "line": str(doc.line),
+                        "symbol": doc.label,
+                    })
+            out.append(("read", stat.st_mtime, digest, item))
+        return out
 
     def _add_embedded(self, ids: List[str], documents: List[str],
                       metadatas: List[Dict[str, Any]]) -> None:
@@ -577,7 +651,7 @@ class FileSearchEngine:
         # Checked here because this runs in a thread that shutdown cannot
         # interrupt: without it a late batch reopens the store that stop() has
         # just closed.
-        if not self._vector_store or self._closing:
+        if not ids or not self._vector_store or self._closing:
             return
         self._vector_store.add(
             collection=self._collection_name,
@@ -587,15 +661,31 @@ class FileSearchEngine:
             metadatas=metadatas,
         )
 
-    def _load_state(self) -> None:
+    def _load_state(self, mend: bool = False) -> None:
         """Read back which files are already in the store, and as what.
 
         Without this every restart of the API was a full rebuild: the vectors
         survived on disk, the knowledge of what they cover did not, so the
         first semantic search paid for the whole tree again (measured on this
-        repository: 51.730 documents, 423 s). The store and the state are
-        written together and validated against each other below — a state file
-        that does not match its collection is thrown away, never trusted.
+        repository: 51.730 documents, 423 s).
+
+        A state that disagrees with its store is MENDED, not thrown away. It
+        used to be thrown away, and the first pass then cleared the store and
+        began again from nothing -- which is what an index that checkpoints
+        meets after every process that dies between a batch and the next state
+        write. Mending keeps the promise the old check kept: the bookkeeping
+        claims nothing that is not in the store. A file with a document the
+        store lacks is dropped (its other documents too) and indexed again by
+        the next pass; documents nobody books are deleted. Only an instance
+        that builds may mend -- a reader of a shared index must not write it,
+        and keeps the old answer: nothing trusted.
+
+        And only with *mend*, which the pass sets while it holds the pass lock.
+        Without the lock -- the load when the store opens -- another process
+        may be in the middle of a pass whose last checkpoint is up to 30 s old:
+        its newest documents look unbooked, and deleting them is the one thing
+        a mend must not do. That load uses the state as it stands, marked
+        unfinished; the next pass mends it.
         """
         if not (self._vector_store and self._state_path
                 and self._state_path.is_file()):
@@ -603,19 +693,10 @@ class FileSearchEngine:
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
             files = raw["files"]
-            stored = sum(len(entry["ids"]) for entry in files.values())
+            booked = {doc_id for entry in files.values() for doc_id in entry["ids"]}
             count = self._vector_store.count(self._collection_name)
         except Exception as e:
             logger.warning(f"FILE_OPS: index state unreadable ({e}) — rebuilding")
-            return
-
-        # A store that was cleared, half-written or built by another version
-        # answers with a different count. Rebuilding is cheap; answering out of
-        # an index that does not hold what we think it holds is not.
-        if count != stored:
-            logger.info(
-                f"FILE_OPS: index state says {stored} documents, the store holds "
-                f"{count} — rebuilding")
             return
         # Documents of another format would sit next to the new ones: only
         # the files that change are re-embedded, and the ranking would compare
@@ -625,24 +706,70 @@ class FileSearchEngine:
                         f"now {symbols.DOCUMENT_FORMAT} — rebuilding")
             return
 
+        complete = bool(raw.get("complete", True))  # states before checkpoints were written at the end
+        if count != len(booked) and not self.config.get("enable_indexing", True):
+            logger.info(f"FILE_OPS: index state books {len(booked)} documents, the store "
+                        f"holds {count} — not trusted by this reader")
+            return
+        if count != len(booked) and not mend:
+            complete = False
+        elif mend and (count != len(booked) or not complete):
+            # The ids, not only their number, once a build died or the counts
+            # differ: a document missing and one unbooked cancel out in a count.
+            try:
+                present = set(self._vector_store.list_ids(self._collection_name))
+                if count and not present:
+                    # list_ids answers [] when it cannot read: mending
+                    # from that would drop every file and rebuild it all.
+                    raise VectorStoreError("the store's ids could not be listed")
+                dropped = [p for p, entry in files.items()
+                           if any(doc_id not in present for doc_id in entry["ids"])]
+                stray = present - booked
+                for path in dropped:
+                    stray.update(doc_id for doc_id in files.pop(path)["ids"]
+                                 if doc_id in present)
+                stray_ids = sorted(stray)
+                for i in range(0, len(stray_ids), EMBED_BATCH_SIZE):
+                    self._vector_store.delete(self._collection_name,
+                                              stray_ids[i:i + EMBED_BATCH_SIZE])
+            except Exception as e:
+                logger.warning(f"FILE_OPS: index state could not be mended ({e}) — used "
+                               "as it stands, mended at the next pass")
+                complete = False
+            else:
+                logger.info(f"FILE_OPS: index state mended — {len(dropped)} files to index "
+                            f"again, {len(stray)} documents nobody books deleted")
+                complete = complete and not dropped
+
         self.file_mtimes = {Path(p): entry["mtime"] for p, entry in files.items()}
         self.file_symbol_ids = {Path(p): entry["ids"] for p, entry in files.items()}
-        self._index_built = True
+        self.file_hashes = {Path(p): entry.get("hash", "") for p, entry in files.items()}
+        self.file_aliases = {Path(p) for p, entry in files.items() if entry.get("alias")}
+        self._index_built = complete
         logger.info(f"FILE_OPS: index state loaded — {len(files)} files, "
-                    f"{stored} documents, no rebuild needed")
+                    f"{sum(len(e['ids']) for e in files.values())} documents"
+                    f"{'' if complete else ', a build still to finish'}")
 
-    def _save_state(self) -> None:
-        """Persist mtimes and document ids next to the vectors."""
+    def _save_state(self, complete: bool = True) -> None:
+        """Persist mtimes, hashes and document ids next to the vectors.
+
+        *complete* is False for the checkpoints a pass writes on its way: a
+        process that reads such a state answers, and says the index is still
+        being built.
+        """
         if not self._vector_store or not self._state_path:
             return
         try:
             payload = {
                 "collection": self._collection_name,
                 "format": symbols.DOCUMENT_FORMAT,
+                "complete": complete,
                 "files": {
                     str(path): {"mtime": mtime,
-                                "ids": self.file_symbol_ids.get(path, [])}
-                    for path, mtime in self.file_mtimes.items()
+                                "ids": self.file_symbol_ids.get(path, []),
+                                "hash": self.file_hashes.get(path, ""),
+                                **({"alias": True} if path in self.file_aliases else {})}
+                    for path, mtime in list(self.file_mtimes.items())
                 },
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -708,6 +835,8 @@ class FileSearchEngine:
                     self._last_incremental_update = current_time
             except Exception as e:
                 logger.warning(f"FILE_OPS: Incremental update failed: {e}")
+                # It may be the pass that carries an unfinished build on.
+                self._index_error = f"{type(e).__name__}: {e}"[:300]
 
     def _search_backend_options(self) -> Dict[str, Any]:
         """Configuration both index-free searches share.
@@ -721,6 +850,16 @@ class FileSearchEngine:
                               or textsearch.DEFAULT_EXCLUDES),
             "include_hidden": bool(self.config.get("search_hidden", False)),
         }
+
+    def _with_ripgrep(self, search, *args, **kwargs):
+        """Run *search* with the ripgrep this instance is configured for.
+
+        Called in the worker thread, not before it: finding ripgrep may mean
+        downloading it once, and that must not hold the event loop.
+        """
+        return search(*args, rg=ripgrep.locate(self.config.get("ripgrep_path"),
+                                               bool(self.config.get("ripgrep_download", True))),
+                      **kwargs)
 
     def _max_search_filesize_bytes(self) -> int:
         """Ceiling for files the CONTENT search opens.
@@ -744,7 +883,8 @@ class FileSearchEngine:
         The index is NOT consulted here, and that is the fix: this call used to
         await a full index build, and measured on this repository with the
         coder configuration it had not returned after 150 seconds. The same
-        glob answers in 1.6 seconds when nobody indexes first. What the index
+        glob answers in 1.6 seconds when nobody indexes first -- and in a
+        fifth of a second through ripgrep (see textsearch). What the index
         still serves is semantic search, which needs a corpus.
 
         Args:
@@ -766,7 +906,7 @@ class FileSearchEngine:
             # I/O, and with include_ignored it runs for seconds — every other
             # tool call of this server would wait that long.
             return await asyncio.to_thread(
-                textsearch.find_files,
+                self._with_ripgrep, textsearch.find_files,
                 self.allowed_dirs, pattern,
                 max_results=max_results,
                 include_ignored=include_ignored,
@@ -795,10 +935,8 @@ class FileSearchEngine:
         Search file contents — without touching the index.
 
         Index-free for the same reason as :meth:`search_files`: the wait for a
-        fresh index was the cost, not the search. The candidate-file shortcut
-        that the word index used to provide is gone with it; the pruning walk
-        reads the files directly and is faster than assembling the index that
-        would have narrowed them.
+        fresh index was the cost, not the search. ripgrep reads the files when
+        one is found, the pruning walk when not (see textsearch).
 
         Args:
             query: Search query (literal or regex)
@@ -815,7 +953,7 @@ class FileSearchEngine:
         """
         try:
             return await asyncio.to_thread(   # see search_files: not on the loop
-                textsearch.grep,
+                self._with_ripgrep, textsearch.grep,
                 self.allowed_dirs, query,
                 is_regex=is_regex,
                 case_sensitive=case_sensitive,
@@ -898,12 +1036,15 @@ class FileSearchEngine:
             # ~30 s, so from then on the store is non-empty while 96 % of the
             # tree is still missing, and every search in those minutes answered
             # confidently out of whatever happened to be walked first. An
-            # instance that builds knows better -- its bookkeeping is filled
-            # only when a pass has completed (or was read back from disk). One
-            # that only reads has nothing but the count.
+            # instance that builds knows better: its bookkeeping names exactly
+            # the files whose documents are stored. It answers from those as
+            # soon as there are any, and says that the rest is still missing
+            # (`index_complete`) -- refusing until the end was the other half
+            # of the failure: on the coder tree the end never came. One that
+            # only reads has nothing but the count.
             builds = bool(self.config.get("enable_indexing", True))
             if builds:
-                ready = self._index_built
+                ready = self._index_built or bool(self.file_mtimes)
             else:
                 # count() takes the store's lock, which the indexing thread
                 # holds for a whole 2000-document batch -- on the event loop
@@ -918,7 +1059,9 @@ class FileSearchEngine:
                               "It is retried every minute, but it will not finish "
                               "while that cause stays. Use grep_search.")
                 elif builds and self.config.get("index_on_startup", True):
-                    detail = ("The semantic index is being built in the background. "
+                    progress = (f" ({self._progress[0]} of {self._progress[1]} files read)"
+                                if self._progress else "")
+                    detail = (f"The semantic index is being built in the background{progress}. "
                               "Use grep_search now and try again in a minute.")
                 elif builds:
                     # index_on_startup: false means nothing ever starts it.
@@ -985,13 +1128,13 @@ class FileSearchEngine:
                 results = await asyncio.to_thread(run_query)
 
             if not results["ids"] or len(results["ids"]) == 0:
-                return {
+                return self._mark_partial({
                     "status": "success",
                     "query": query,
                     "results": [],
                     "count": 0,
                     "message": "No files found"
-                }
+                })
 
             # Format results - VectorStore returns list-of-lists for batch query interface
             # Extract first batch since we only query once
@@ -1005,25 +1148,45 @@ class FileSearchEngine:
             distances = raw_distances[0] if raw_distances and isinstance(raw_distances[0], list) else raw_distances
             
             matches = []
+            # Files with the same content as a hit: they have no documents of
+            # their own (see _run_index_pass), so a hit names them.
+            twins: Dict[str, List[str]] = {}
+            if self.file_aliases:
+                by_digest: Dict[str, List[str]] = {}
+                for alias in self.file_aliases:
+                    by_digest.setdefault(self.file_hashes.get(alias, ""), []).append(str(alias))
+                for original, digest in self.file_hashes.items():
+                    if original not in self.file_aliases and digest in by_digest:
+                        twins[str(original)] = sorted(by_digest[digest])
+
+            gone = 0
             for i in range(len(ids)):
                 metadata = metadatas[i] if i < len(metadatas) else {}
                 # The id carries the line ("path#42"); the path itself comes
                 # from the metadata, so a filter still matches on the file.
                 file_path = metadata.get("file_path") or str(ids[i]).rsplit("#", 1)[0]
                 distance = distances[i] if i < len(distances) else 0.0
-
-                # Filter by pattern if specified.
+                # The hit is reported at the first of its places that the
+                # filter wants and that still exists: a document can outlive
+                # its file by one pass, and a filter may name a copy.
                 #
-                # Against the file NAME as well as the whole path: the stored
-                # path is absolute, so "test_*.py" -- the obvious way to ask
-                # for tests -- matched nothing at all and the tool answered
-                # with an empty result instead of saying the pattern was the
-                # problem. "*.py" worked only because fnmatch lets * cross
-                # separators.
-                if filter_pattern:
-                    if not (fnmatch.fnmatch(file_path, filter_pattern)
-                            or fnmatch.fnmatch(Path(file_path).name, filter_pattern)):
-                        continue
+                # The filter is held against the file NAME as well as the whole
+                # path: the stored path is absolute, so "test_*.py" -- the
+                # obvious way to ask for tests -- matched nothing at all and
+                # the tool answered with an empty result instead of saying the
+                # pattern was the problem. "*.py" worked only because fnmatch
+                # lets * cross separators.
+                places = [file_path] + twins.get(file_path, [])
+                place = next((candidate for candidate in places
+                              if (not filter_pattern
+                                  or fnmatch.fnmatch(candidate, filter_pattern)
+                                  or fnmatch.fnmatch(Path(candidate).name, filter_pattern))
+                              and Path(candidate).is_file()), None)
+                if place is None:
+                    gone += not any(Path(candidate).is_file() for candidate in places)
+                    continue
+                others = [candidate for candidate in places if candidate != place]
+                file_path = place
 
                 # Calculate similarity score from distance
                 # ChromaDB uses squared L2 distance (0 = identical, larger = less similar)
@@ -1042,7 +1205,9 @@ class FileSearchEngine:
                     "similarity_score": round(similarity, 4),
                     "distance": round(distance, 4),  # Include raw distance for debugging
                     "size_bytes": int(metadata.get("size_bytes", 0)),
-                    "extension": metadata.get("extension", "")
+                    "extension": metadata.get("extension", ""),
+                    **({"same_content": others[:3], "same_content_count": len(others)}
+                       if others else {}),
                 })
 
             # Sort by similarity score (highest first), then cut to what was
@@ -1055,23 +1220,25 @@ class FileSearchEngine:
                 # "Nothing matched the filter" is a different answer from
                 # "nothing is close to your question", and an agent that is
                 # told the first will not conclude the second.
-                return {
+                gone_note = (f" {gone} of them are in files that are gone; the index "
+                             "drops them on its next pass." if gone else "")
+                return self._mark_partial({
                     "status": "success",
                     "query": query,
                     "results": [],
                     "count": 0,
                     "message": (f"The {fetch} nearest symbols contain none whose "
-                                f"path or name matches '{filter_pattern}'. Try the "
-                                f"same query without the filter."),
-                }
+                                f"path or name matches '{filter_pattern}'.{gone_note} "
+                                f"Try the same query without the filter."),
+                })
 
-            return {
+            return self._mark_partial({
                 "status": "success",
                 "query": query,
                 "results": matches,
                 "count": len(matches),
                 "max_results": max_results
-            }
+            })
 
         except VectorStoreError as e:
             logger.error(f"VectorStore semantic search error: {e}", exc_info=True)
@@ -1087,6 +1254,40 @@ class FileSearchEngine:
                 "error": str(e),
                 "error_type": type(e).__name__
             }
+
+    def _mark_partial(self, answer: Dict[str, Any]) -> Dict[str, Any]:
+        """Say so in *answer* when the index it came from is not finished."""
+        if not self._index_built and not self.config.get("enable_indexing", True):
+            # A reader runs no pass, so nothing else would ever tell it that
+            # the owner's build has finished since it opened the store.
+            self._index_built = self._shared_build_finished()
+        if not self._index_built:
+            answer["index_complete"] = False
+            if self._index_error:
+                # "Still being built" is a promise only a build on its way keeps.
+                answer["note"] = (f"The semantic index is unfinished, and its last pass "
+                                  f"failed: {self._index_error}. It is retried; these "
+                                  "results cover only the files indexed so far. "
+                                  "grep_search searches everything.")
+            else:
+                progress = (f" ({self._progress[0]} of {self._progress[1]} files read so far)"
+                            if self._progress else "")
+                answer["note"] = (f"The semantic index is still being built{progress}: these "
+                                  "results cover only the files indexed so far. grep_search "
+                                  "searches everything.")
+        return answer
+
+    def _shared_build_finished(self) -> bool:
+        """Whether the state the owning instance wrote last says its build finished.
+
+        The head of the file is enough: ``complete`` is written before the
+        megabytes of ``files``.
+        """
+        try:
+            with open(self._state_path, "rb") as handle:
+                return b'"complete": true' in handle.read(512)
+        except (OSError, TypeError):
+            return False
 
     async def stop(self):
         """Stop background indexing task and cleanup resources."""
@@ -1126,3 +1327,5 @@ class FileSearchEngine:
                 logger.debug(f"VectorStore cleanup warning: {e}")
 
         self.file_mtimes.clear()
+        self.file_hashes.clear()
+        self.file_aliases.clear()

@@ -215,8 +215,8 @@ tools:
           - "error handling patterns" → locates try/except blocks, error classes
 
         Use it when you do NOT know the word the code uses; grep_search is
-        better whenever you do. Off unless configured, and while the index is
-        still building the answer says so instead of returning nothing.
+        better whenever you do. Off unless configured. While the index is
+        still building, the answer covers what is indexed so far and says so.
       parameters:
         type: object
         properties:
@@ -275,9 +275,9 @@ config:
     # a key out gets the fallback in search.py -- which is what the values
     # below repeat. These govern the SEMANTIC index only. It is built in the BACKGROUND,
     # started by the first semantic_search call; that call itself never waits
-    # for it. search_files and grep_search walk the disk and need no index at
-    # all — that wait was the reason a glob over a large tree did not return
-    # within 150 seconds.
+    # for it, and the build keeps what it stored when its process ends.
+    # search_files and grep_search need no index at all — that wait was the
+    # reason a glob over a large tree did not return within 150 seconds.
     enable_indexing: true
     index_on_startup: true
     # The vector collection. Defaults to file_ops_<instance>: two instances are
@@ -294,6 +294,14 @@ config:
 
     # Search dotfiles and dot-directories as well.
     search_hidden: false
+
+    # grep_search and search_files run ripgrep when one is found: on PATH, or
+    # in data/cache/bin, fetched there once from the official release and
+    # checked against a pinned SHA-256 (ripgrep.py). "off" keeps the Python
+    # walk; a path names the binary. FILE_OPS_RIPGREP_DOWNLOAD=0 stops the
+    # download for a whole process.
+    # ripgrep_path: off
+    ripgrep_download: true
 
     # Skipped by BOTH the index and the text search, and reported as skipped
     # rather than silently dropped. Matched relative to each allowed directory.

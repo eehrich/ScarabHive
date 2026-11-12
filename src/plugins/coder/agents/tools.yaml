@@ -34,7 +34,12 @@ plugins:
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
-        # grep_search and search_files walk the disk and need no index.
+        # grep_search and search_files need no index: they run ripgrep (found
+        # or fetched once, see file_ops/ripgrep.py) and walk in Python without
+        # it. Measured on 12.11.2026 on this tree -- 45.920 files, most of them
+        # checkouts other plugins keep under data/workspace -- a grep that
+        # matched nothing took 24 s in the walk and 0.8 s in ripgrep; the
+        # tool_preload grep before every turn of the coder paid that each time.
         #
         # This instance OWNS the semantic index of the coder tree; the
         # read-only twin below reads the same collection. It is the owner
@@ -45,11 +50,15 @@ plugins:
         #
         # Measured on this repository on 18.09.2026: 3.295 indexable files ->
         # 51.730 documents, 423 s for the first build (288 MB on disk), and
-        # 0.4 s for an incremental pass afterwards. The build starts with
-        # the first semantic_search on THIS instance and runs in the
-        # background; searches that arrive before it is done say so and
-        # point at grep_search instead of answering "nothing found" --
-        # including those of the read-only twin, which only reads.
+        # 0.4 s for an incremental pass afterwards. By 12.11.2026 the same
+        # tree had grown to 735.841 documents, about 100 minutes of embedding,
+        # and no process lived long enough to finish the build: the index
+        # stayed "being built" for good. Now a build keeps what it stored and
+        # the next process carries on, files with identical content are
+        # embedded once (145.008 documents left), and a search answers from
+        # what is stored meanwhile, marked index_complete: false. The build
+        # starts with the first semantic_search on THIS instance and runs in
+        # the background.
         enable_semantic_search: true
         enable_indexing: true
         index_on_startup: true

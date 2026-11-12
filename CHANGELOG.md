@@ -173,6 +173,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- file_ops: `grep_search` and `search_files` run ripgrep when one is found -- on PATH, in `data/cache/bin`, or
+  fetched there once from the official release and checked against a pinned SHA-256 (`search.ripgrep_path`,
+  `search.ripgrep_download`, `FILE_OPS_RIPGREP_DOWNLOAD=0`) -- and walk in Python otherwise. Both answer alike, hits
+  sorted by file and line. Measured on a tree of 45.920 files: a grep that matched nothing took 24 s in the walk and
+  0.8 s in ripgrep. A pattern ripgrep's dialect cannot read (look-around, back references) is answered by the walk.
+- file_ops: the semantic index keeps what it stored when its process ends -- it books and checkpoints batch by
+  batch, and the next process carries on. Files with identical content are embedded once and named by the hit
+  (`same_content`); a search answers from what is indexed while the build runs, marked `index_complete: false`.
+  On the tree above the build was 735.841 documents (about 100 minutes) and never finished; it is 145.008 now.
 - Skills take their arguments as Claude Code does: `$0` and `$ARGUMENTS[0]` are the first argument, `$1` and
   `$ARGUMENTS[1]` the second (both `1` forms were the first before, and `$0` stayed as written), `$name` names a
   position declared in the `arguments` frontmatter, an index without an argument stays as written (a price like
@@ -204,6 +213,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- file_ops: the ignore files of every folder apply to the searches and the index, not only the root's -- the deepest
+  rule decides, as in git, and `.rgignore` counts too. `*.{ts,tsx}` and `[!a]*` are globs; they were taken
+  literally. A line longer than 2000 characters is cut in a grep answer. A grep through the walk reads each file
+  once and matches its excludes in one expression (24 s to 14 s on that tree).
 - A 200 without choices (Chat Completions) or without output (Responses) is no answer: it is retried and then reaches
   the fallback chain as a server error. It became an empty answer before, which the loop finally took as the final
   one.
