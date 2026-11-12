@@ -1705,6 +1705,9 @@ class CodingCliServer(SchemaBasedToolServer):
                 record["claude_session"] = found["session"]
             if isinstance(found["model"], str) and found["model"]:
                 record["model"] = found["model"]
+            # Whether the model answered: a run killed before its result reports no tokens, and may have worked
+            # for an hour (llm_coding_cli does not ask it again after a wait for the network)
+            record["model_answered"] = bool(found["answered"])
             # A success result wins over a stop that came too late: a killed
             # run never gets as far as one.
             if result and not result.get("is_error") and result.get("subtype") == "success":
@@ -1771,14 +1774,16 @@ class CodingCliServer(SchemaBasedToolServer):
         agy reports a resumed conversation whole: tokens, turns and duration of every run before it in, measured on
         a server (11.11.2026) to the token -- and every reader summed the earlier runs once more. Subtracted is the
         highest total known for the conversation (its id, not the prior run: a run may resume one that is not the
-        conversation's last), kept in conversations/<id>.json; a run that brought no counts (killed, cut, 0 tokens
-        with the network gone) lowers nothing there. The CLI's own counts stay in the record as ``conversation``.
+        conversation's last), kept in conversations/<id>.json by run; a run that brought no counts (killed, cut, 0
+        tokens with the network gone) lowers nothing there. By run: a finalize taken over (its process died before
+        the record was saved) subtracts what the others brought, not its own total once more. The CLI's own counts
+        stay in the record as ``conversation``.
         """
         whole = {"usage": record.get("usage"), "turns": record.get("turns"), "duration_s": record.get("duration_s")}
         record["conversation"] = whole
         session = str(record.get("claude_session") or "")
         kept = self._root() / "conversations" / f"{session}.json" if _SESSION.fullmatch(session) else None
-        before = self._conversation_before(record, kept)
+        before, runs = self._conversation_before(record, kept)
         if isinstance(whole["usage"], dict):
             seen = before.get("usage") if isinstance(before.get("usage"), dict) else {}
             record["usage"] = {k: max(0, v - int(seen.get(k) or 0)) for k, v in whole["usage"].items()}
@@ -1788,17 +1793,23 @@ class CodingCliServer(SchemaBasedToolServer):
         if kept is not None:
             try:
                 kept.parent.mkdir(parents=True, exist_ok=True)
-                _replace(kept, json.dumps(_highest(before, whole)))
+                _replace(kept, json.dumps({"runs": {**runs, str(record.get("run_id") or ""): whole}}))
             except OSError:
                 logger.warning("coding_cli: the conversation total of run %s was not kept", record.get("run_id"))
 
-    def _conversation_before(self, record: dict, kept: Optional[Path]) -> dict:
-        """The highest total known for the record's conversation before it: its file, or -- a conversation from before
-        the file -- the runs it resumed one after the other, whose counts were the CLI's then."""
+    def _conversation_before(self, record: dict, kept: Optional[Path]) -> tuple[dict, dict]:
+        """(the highest total known for the record's conversation before it, the totals its file keeps by run): the
+        file's, the record's own left out -- or, a conversation from before the file, the runs it resumed one after
+        the other in that conversation, whose counts were the CLI's then."""
         try:
             if kept is not None and kept.is_file():
                 known = json.loads(kept.read_text(encoding="utf-8"))
-                return known if isinstance(known, dict) else {}
+                if isinstance(known, dict):
+                    # A file of one total, written before it was kept by run: what the runs before brought
+                    runs = known["runs"] if isinstance(known.get("runs"), dict) else {"": known}
+                    runs = {key: total for key, total in runs.items() if isinstance(total, dict)}
+                    mine = str(record.get("run_id") or "")
+                    return _highest(*(total for key, total in runs.items() if key != mine)), runs
         except (OSError, ValueError):
             pass
         before: dict = {}
@@ -1806,11 +1817,15 @@ class CodingCliServer(SchemaBasedToolServer):
         while prior_id and prior_id not in seen:
             seen.add(prior_id)
             prior = self._load(prior_id)
-            if not prior:
+            # One of another conversation (agy started a new one for a resume) holds none of this one's counts;
+            # a record without its id (no init event) says nothing either way
+            mine, theirs = record.get("claude_session"), (prior or {}).get("claude_session")
+            if not prior or (mine and theirs and mine != theirs):
                 break
             before = _highest(before, prior.get("conversation") or prior)
             prior_id = prior.get("prior")
-        return before
+        # Kept as the file of one total is read: the next run and a finalize taken over subtract it as well
+        return before, ({"": before} if before else {})
 
     # ── answers ──
 
@@ -1821,7 +1836,7 @@ class CodingCliServer(SchemaBasedToolServer):
         # File names, denied paths and git's or Claude Code's messages are the run's words too.
         answer = {"status": "success", **{k: record.get(k) for k in (
             "run_id", "state", "mode", "workdir", "branch", "base", "commit", "worktree", "turns",
-            "duration_s", "abo", "cost_usd", "usage", "model")}, "changes": _untrusted(changes),
+            "duration_s", "abo", "cost_usd", "usage", "model", "model_answered")}, "changes": _untrusted(changes),
             "denials": _untrusted(record.get("denials") or [])}
         hidden = record.get("hidden") or []
         if hidden:

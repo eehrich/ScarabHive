@@ -168,7 +168,9 @@ no agent run around the call | LLMServerError | moves on, no block
 
 A failed run without tokens says nothing of the network (agy with the network gone fails at once on an
 unknown model): it does not count as a provider that got the request, so a link before or after it decides
-whether the step waits for the network. A run that counted tokens, an answer cut or empty, did reach its model.
+whether the step waits for the network. A run that counted tokens, an answer cut or empty, did reach its model --
+so did one stopped before its result (its time limit), which counts none, when its stream shows the model
+answering (coding_cli's @{tt}model_answered@{utt}): asked again after a wait, its work would run twice.
 
 Each of them logs one line naming the provider, the instance and why; a
 mismatched cli logs it as an error. Antigravity reports no subscription

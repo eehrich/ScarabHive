@@ -497,10 +497,15 @@ def tool_line(name: str, args: Any, root: Path) -> str:
 
 def outcome(stream: Iterable[dict]) -> dict:
     """The parts of a finished stream the plugin keeps (M-CC-1, M-CC-2)."""
-    found: dict[str, Any] = {"session": None, "result": None, "rate_limit": None, "model": None}
+    found: dict[str, Any] = {"session": None, "result": None, "rate_limit": None, "model": None, "answered": False}
     for event in stream:
         kind = event.get("type")
-        if kind == "system" and event.get("subtype") == "init":
+        if kind == "assistant":
+            # The model answered at least once: what a run killed before its result shows of having reached it.
+            # Claude Code's own words (an API error, the session limit) come as "<synthetic>".
+            message = event.get("message")
+            found["answered"] |= isinstance(message, dict) and message.get("model") != "<synthetic>"
+        elif kind == "system" and event.get("subtype") == "init":
             found["session"] = event.get("session_id")
             found["model"] = event.get("model")     # the run's model (a helper model may answer parts of it)
         elif kind == "rate_limit_event" and isinstance(event.get("rate_limit_info"), dict):

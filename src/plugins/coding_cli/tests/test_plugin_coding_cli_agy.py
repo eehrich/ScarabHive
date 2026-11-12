@@ -210,6 +210,65 @@ async def test_a_conversation_from_before_looks_past_a_run_without_counts(repo, 
     assert third["usage"]["input_tokens"] == 2 * 6865
 
 
+async def test_a_finalize_taken_over_counts_the_run_once(repo, log):
+    """A process that died between keeping the conversation's total and saving the record: the finalize taken over
+    reads the CLI's counts again -- subtracting a total that held its own run left nothing."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    record = server._load(second["run_id"])
+    again = {**record, **record["conversation"]}     # as the stream gives it a second time
+    server._this_run_only(again)
+    assert again["usage"] == second["usage"] == ONE_RUN
+    assert again["turns"] == second["turns"] == 1
+
+
+async def test_the_total_found_through_the_runs_before_is_kept(repo, log):
+    """A conversation from before the file: the total the walk found must go into the file -- the run after an
+    offline one, and a finalize taken over, read only the file."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    _as_before_the_fix(server, first["run_id"], second["run_id"])
+    offline, _ = await call(server, "run_task", task="WRITE d.txt three\nOFFLINE", resume=second["run_id"])
+    third, _ = await call(server, "run_task", task="WRITE e.txt four", resume=offline["run_id"])
+    assert third["usage"] == ONE_RUN
+
+
+async def test_a_finalize_taken_over_after_a_walk_counts_the_run_once(repo, log):
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    _as_before_the_fix(server, first["run_id"])
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    record = server._load(second["run_id"])
+    again = {**record, **record["conversation"]}
+    server._this_run_only(again)
+    assert again["usage"] == second["usage"] == ONE_RUN
+
+
+async def test_a_conversation_file_of_one_total_still_counts(repo, log):
+    """The file held one total (6d1d1d071): read as what the runs before brought."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    session = server._load(first["run_id"])["claude_session"]
+    kept = server._root() / "conversations" / f"{session}.json"
+    kept.write_text(json.dumps(server._load(first["run_id"])["conversation"]), encoding="utf-8")
+    second, _ = await call(server, "run_task", task="WRITE c.txt two", resume=first["run_id"])
+    assert second["usage"] == ONE_RUN
+
+
+async def test_a_prior_of_another_conversation_lowers_nothing(repo, log):
+    """Before the file, the walk goes back through the runs this one resumed in its own conversation: one agy
+    answered in a new conversation holds none of its counts."""
+    server = make_agy(repo)
+    first, _ = await call(server, "run_task", task="WRITE b.txt one")
+    _as_before_the_fix(server, first["run_id"])
+    record = {"run_id": "r-new", "prior": first["run_id"], "claude_session": "00000000-0000-4000-8000-000000000000",
+              "usage": dict(ONE_RUN), "turns": 1, "duration_s": 3}
+    server._this_run_only(record)
+    assert (record["usage"], record["turns"], record["duration_s"]) == (ONE_RUN, 1, 3)
+
+
 async def test_claude_codes_full_window_does_not_hold_an_agy_run(repo, data_root):  # noqa: F811
     """quota.json is Claude Code's: an Antigravity instance on the same data root must not read it."""
     data_root.mkdir(parents=True)

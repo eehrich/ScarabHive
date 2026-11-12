@@ -461,6 +461,7 @@ turns, duration_s | as Claude Code reported them; on a resumed agy run its own s
 cost_usd | Claude Code's @{tt}total_cost_usd@{utt}. On the subscription a notional amount -- the measure the stream reports, nothing is billed
 usage | the run's token counts as its CLI names them, numbers only: Claude Code's @{tt}input_tokens@{utt}, @{tt}cache_read_input_tokens@{utt}, @{tt}cache_creation_input_tokens@{utt}, @{tt}output_tokens@{utt}; agy's @{tt}input_tokens@{utt} (its cache reads not among them), @{tt}cache_read_tokens@{utt}, @{tt}output_tokens@{utt}, @{tt}thinking_tokens@{utt}, @{tt}total_tokens@{utt} -- for a resumed agy run its own share, without the conversation it went on from (agy reports that whole); null when the run reported none
 model | the run's model, as the stream's init event names it (a helper model may answer parts of the run); null when it named none
+model_answered | whether the stream shows its model answering (Claude Code's own error and limit messages, @{tt}<synthetic>@{utt}, do not count): a run stopped before its result reports no tokens, and may have worked for an hour
 abo | subscription usage per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}
 changes | untrusted: @{tt}M<TAB>path@{utt} per file against base, plus @{tt}uncommitted ...@{utt} lines; at most 100 lines and a "... N more"
 denials | untrusted: tool calls Claude Code was refused, e.g. @{tt}Write /elsewhere/x.txt@{utt}; at most 20, 120 characters each

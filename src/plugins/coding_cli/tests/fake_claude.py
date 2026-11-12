@@ -97,7 +97,10 @@ def main():
         elif word == "GARBAGE":
             sys.stdout.write("this is no json\n")
             sys.stdout.flush()
-    emit({"type": "assistant", "session_id": session, "message": {"content": [{"type": "text", "text": "done\nall of it"}]}})
+    unreachable = next((line.split()[1] for line in task.splitlines() if line.startswith("UNREACHABLE ")), None)
+    if not unreachable:  # a run that never reached its API has no answer of its model
+        emit({"type": "assistant", "session_id": session, "message": {"content": [
+            {"type": "text", "text": "done\nall of it"}]}})
     if "LIMIT" in task.splitlines():
         resets = time.time() + 1800
         emit({"type": "rate_limit_event", "session_id": session, "rate_limit_info": {
@@ -111,7 +114,6 @@ def main():
               "duration_ms": 904000, "result": "You've hit your session limit · resets 1:10am (Europe/Berlin)",
               "session_id": session, "total_cost_usd": 3.51, "permission_denials": [], "usage": {}})
         return
-    unreachable = next((line.split()[1] for line in task.splitlines() if line.startswith("UNREACHABLE ")), None)
     if unreachable:
         # As measured (10.11.2026, DNS gone): about 3 min of retries, then this result and exit 1
         emit({"type": "result", "subtype": "success", "is_error": True, "api_error": "connection_failed",

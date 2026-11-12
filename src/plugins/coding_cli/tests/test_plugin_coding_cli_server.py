@@ -1275,6 +1275,27 @@ async def test_the_time_limit_stops_a_run(repo):
     assert result["state"] == "cancelled" and "time limit" in result["note"]
 
 
+async def test_a_run_stopped_before_its_result_says_whether_its_model_answered(repo):
+    """Stopped at its time limit, a run reports no tokens (they come with the result): its stream tells whether the
+    model was reached -- llm_coding_cli must not run an hour of work again after a wait for the network."""
+    server = make_server(repo)
+    server.max_run_s = 1.5
+    worked, _ = await call(server, "run_task", task="WRITE b.txt x\nSLEEP 30")
+    assert "time limit" in worked["note"] and not worked["usage"], worked
+    assert worked["model_answered"] is True
+    idle, _ = await call(server, "run_task", task="SLEEP 30")
+    assert idle["model_answered"] is False
+    unreachable, _ = await call(server, "run_task", task="UNREACHABLE ENOTFOUND")
+    assert unreachable["model_answered"] is False
+
+
+def test_claude_codes_own_words_are_no_answer_of_its_model():
+    synthetic = {"type": "assistant", "message": {"model": "<synthetic>", "content": [
+        {"type": "text", "text": "You've hit your session limit"}]}}
+    assert cli.outcome([synthetic])["answered"] is False
+    assert cli.outcome([synthetic, {"type": "assistant", "message": {"content": []}}])["answered"] is True
+
+
 async def test_a_cli_that_goes_on_after_its_result_is_ended_and_the_result_stands(repo, monkeypatch):
     monkeypatch.setattr(server_module, "RESULT_GRACE_S", 0.3)
     server = make_server(repo)

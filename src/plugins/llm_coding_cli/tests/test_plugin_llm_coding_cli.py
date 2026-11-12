@@ -403,6 +403,28 @@ class TestFallback:
         assert not isinstance(raised.value, LLMConnectionError)
         assert raised.value.reach_unknown is False
 
+    async def test_a_run_killed_after_its_model_answered_was_reached(self, instance):
+        """Stopped at its time limit, a run reports no tokens (they come with the result it never got to): its
+        stream showed the model answering -- an hour of work the chain must not ask for again after a wait for the
+        network."""
+        instance({"status": "success", "run_id": "r1", "state": "failed", "model_answered": True,
+                  "note": "stopped after the time limit of 60 min", "usage": None})
+        with pytest.raises(LLMServerError) as raised:
+            await client().chat_tools(MESSAGES, [])
+        assert raised.value.reach_unknown is False
+
+    async def test_a_run_whose_model_answered_before_its_api_went_is_no_outage(self, instance):
+        """connection_failed with no tokens counted (a result's usage can be empty after a long run): the stream
+        showed the model answering, so the network went midway -- not a wait and the same work again."""
+        instance({"status": "success", "run_id": "r1", "state": "failed", "api_error": "connection_failed",
+                  "model_answered": True, "usage": {},
+                  "result": {"untrusted": True,
+                             "content": "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"}})
+        with pytest.raises(LLMServerError) as raised:
+            await client().chat_tools(MESSAGES, [])
+        assert not isinstance(raised.value, LLMConnectionError)
+        assert raised.value.reach_unknown is False
+
     async def test_the_run_a_resume_went_on_from_counts_as_reached(self, instance):
         """The refused run worked (its tokens counted); its resume then fails without any: the call reached its
         model all the same."""

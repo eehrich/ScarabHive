@@ -402,7 +402,9 @@ class CodingCliClient(LLMClient):
             # a resumed conversation's tokens whole -- coding_cli hands on the run's own share -- and with the
             # network gone it fails before it loads one: 0 tokens on a resume too (measured 11.11.2026)
             tokens = sum(u["prompt_tokens"] + u["completion_tokens"] for u in (*earlier, _usage(answer)))
-            cause = _transport_cause(answer) if not tokens else None
+            # A run killed before its result (its time limit) counts none, but its stream shows the model answered
+            reached = tokens > 0 or answer.get("model_answered") is True
+            cause = _transport_cause(answer) if not reached else None
             if cause is not None:
                 # As an HTTP client says it: the chain waits for the network when no link of it was reached
                 # (fallback._never_reached reads the cause), instead of walking on to its end
@@ -410,7 +412,7 @@ class CodingCliClient(LLMClient):
                 raise LLMConnectionError(f"{self.provider} {self.instance}: {why}", self.provider,
                                          self.instance) from cause
             raise self._fail(f"run {answer.get('run_id') or '-'} {answer.get('state') or 'not started'}: {why}",
-                             reached=tokens > 0)
+                             reached=reached)
         if answer.get("result_cut"):
             raise self._fail(f"run {answer.get('run_id')}: the answer is longer than the instance hands on "
                              "(coding_cli max_result_chars)", reached=True)
