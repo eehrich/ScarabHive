@@ -258,6 +258,11 @@ llm_system:
         - fp8
         allow_fallbacks: false
 
+    openrouter-deepseek-flash-nostream:
+      extends: openrouter-deepseek-flash
+      capabilities:
+        streaming: false
+
     # simple nothinking version of deepseek-flash for easy tasks
     openrouter-deepseek-flash-nothinking:
       extends: openrouter-deepseek-flash        

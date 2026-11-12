@@ -445,7 +445,7 @@ llm_system:
             
     think:
       model_ref: openrouter-deepseek-latest-flash
-      description: "Advanced model for complex reasoning (batch)"
+      description: "Advanced model for complex reasoning"
       max_steps: 500
       
     chat:
@@ -454,12 +454,12 @@ llm_system:
       max_steps: 500
       
     chat-nostream:
-      model_ref: deepseek-chat-nostream
+      model_ref: openrouter-deepseek-flash-nostream
       description: "Cheap and fast model for medium tasks (no streaming)"
       max_steps: 500      
       
     code:
-      model_ref: openrouter-deepseek-flash
+      model_ref: openrouter-deepseek-latest-flash
       description: "Special LLM for coding tasks"
       max_steps: 500
 
