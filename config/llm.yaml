@@ -459,7 +459,7 @@ llm_system:
       max_steps: 500      
       
     code:
-      model_ref: openrouter-kimi-k3
+      model_ref: openrouter-deepseek-flash
       description: "Special LLM for coding tasks"
       max_steps: 500
 
