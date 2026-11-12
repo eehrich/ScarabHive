@@ -30,10 +30,14 @@
   },
   "search.exclude": {
     "data/**": true,
+    "external/**": true,
+    "tmp/**": true,
     ".claude/worktrees/**": true
   },
   "python.analysis.exclude": [
     "data",
+    "external",
+    "tmp",
     ".claude/worktrees",
     "**/node_modules",
     "**/__pycache__",
