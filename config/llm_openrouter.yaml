@@ -218,11 +218,18 @@ llm_system:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-v4-flash-latest
       provider_routing:
-        # deepinfra first (cheapest at typical cache hit rates), streamlake as
-        # twin (higher throughput). Both fp8.
+        # fp8, at least 50 tok/s, cheapest first. Measured 12.11.2026 on
+        # V4-0731 (streamed, reasoning off, 2 runs), per-M input / cache read /
+        # output: DeepInfra 0.06 / 0.015 / 0.18 at 58-70 tok/s, BaseTen
+        # 0.13 / 0.028 / 0.26 at 166-215, Parasail 0.14 / 0.05 / 0.28 at
+        # 81-113, Cohere 0.14 / 0.07 / 0.28 at 120-143. Out: StreamLake (29),
+        # SiliconFlow (18-59, 46-92 s to the first token); CoreWeave (262k
+        # context). The cheaper fp4 and undeclared endpoints drop out on fp8.
         order:
-        - deepinfra
-        - streamlake
+        - deepinfra/fp8
+        - baseten/fp8
+        - parasail/fp8
+        - cohere/fp8
         quantizations:
         - fp8
         allow_fallbacks: false
