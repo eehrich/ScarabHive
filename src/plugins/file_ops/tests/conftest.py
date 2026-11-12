@@ -22,6 +22,7 @@ _ONE_ENGINE = {
     "test_plugin_file_ops_shutdown_hook",
     "test_plugin_file_ops_ripgrep",
     "test_plugin_file_ops_index_checkpoints",
+    "test_plugin_file_ops_index_freshness",
 }
 
 

@@ -546,3 +546,28 @@ def test_every_agent_with_preload_rules_may_call_their_tools(config):
                 if tool.endswith("_semantic_search") and not search.get("enable_semantic_search"):
                     problems.append(f"{agent}: {instance} has semantic search off")
     assert not problems, problems
+
+
+async def test_the_changed_files_notice_is_registered_and_on_for_the_coder(config):
+    """Through the registration the framework runs: a hooks.overrides key that
+    matches no registered hook only logs a warning, and a builder-less
+    instance would have nothing to tell -- both look like "nothing changed"."""
+    from agent_system.hooks import load_hooks_config
+    from agent_system.hooks.plugin_registration import register_plugin_hooks
+    from agent_system.hooks.registry import HookRegistry
+    from plugins.file_ops.plugin import PLUGIN_FACTORY as FILE_OPS
+
+    server_config = get_tool_server_config("coder_fs", config)
+    server = FILE_OPS(name="coder_fs", system_config=config, server_config=server_config)
+    registry = HookRegistry()
+    registered = await register_plugin_hooks(
+        "coder_fs", server, {"hooks": server.get_schema_data()["hooks"]},
+        registry=registry, hooks_config=load_hooks_config(config))
+
+    assert "coder_fs.changed_files_notice" in registered
+    override = _agent_config(config, "coder").hooks.overrides["coder_fs.changed_files_notice"]
+    enabled = override.get("enabled") if isinstance(override, dict) else getattr(override, "enabled", None)
+    assert enabled is True
+    search = getattr(server_config, "search", None) or {}
+    assert search.get("enable_semantic_search") and search.get("enable_indexing", True), \
+        "the notice reads the journal of an index coder_fs must build"

@@ -13,6 +13,7 @@ import asyncio
 import json
 import shutil
 import time
+import weakref
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -61,6 +62,12 @@ def build_server(tmp_path: Path, tree: Path, name: str = "idx") -> FileOpsServer
         "chroma_db_path": str(tmp_path / "store"),
     }
     return FileOpsServer(name, Mock(spec=AgentSystemConfig), server_config)
+
+
+async def _no_pass(budget=None):
+    """Stands in for FileSearchEngine.freshen where a pass would decide the
+    test on timing instead of on what it checks."""
+    return None
 
 
 def booked(engine) -> int:
@@ -178,7 +185,7 @@ async def test_a_hit_on_a_file_that_is_gone_is_not_reported(tmp_path, tree):
     (tree / "tea.py").unlink()
     # No freshness pass: one would take tea.py out of the store while the
     # query runs, and the test would pass on timing instead of on the check.
-    server.search_engine._last_incremental_update = time.time()
+    server.search_engine.freshen = _no_pass
 
     answer = await server.semantic_search({"query": "steep the leaves in water",
                                            "max_results": 10})
@@ -266,6 +273,8 @@ async def test_a_reader_learns_that_the_build_has_finished(tmp_path, tree, monke
     with pytest.raises(RuntimeError):
         await owner.rebuild_index(incremental=False)
     owner._add_embedded = original
+    # Another PROCESS: in this one the reader would ask its builder directly.
+    monkeypatch.setattr(search, "_BUILDERS", weakref.WeakValueDictionary())
 
     reader_config = ToolServerConfig(type="file_ops", enabled=True)
     reader_config.allowed_directories = [str(tree)]
@@ -291,7 +300,7 @@ async def test_an_unfinished_index_whose_pass_failed_says_why(tmp_path, tree):
     await engine.rebuild_index(incremental=False)
     engine._index_built = False
     engine._index_error = "RuntimeError: embedding model not available"
-    engine._last_incremental_update = time.time()
+    engine.freshen = _no_pass
 
     answer = await server.semantic_search({"query": "end a login session"})
     filtered = await server.semantic_search({"query": "end a login session",

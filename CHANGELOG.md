@@ -182,6 +182,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   batch, and the next process carries on. Files with identical content are embedded once and named by the hit
   (`same_content`); a search answers from what is indexed while the build runs, marked `index_complete: false`.
   On the tree above the build was 735.841 documents (about 100 minutes) and never finished; it is 145.008 now.
+- file_ops: `semantic_search` no longer answers from an index that is behind the disk without saying so. It first
+  asks the disk whether anything changed since the last pass (folders, files and ignore files against stamps: 0.3 s
+  on the tree above, a walk is 3 s); if so it waits for a pass over just the changed files, up to
+  `search.index_wait_seconds` (10). Longer passes go on and the answer carries `index_fresh: false` and
+  `index_update` (files read of how many, seconds left). Binary and empty files are looked at once, not on every
+  pass (1.316 on that tree). A read-only instance asks the instance that builds its index in the same process.
+  The 30-second limit on refreshes is gone.
+- file_ops: a hook, `<instance>.changed_files_notice` (off by default, on for the coder), tells the agent before
+  the first LLM call of a turn which files were added, changed or removed since its previous turn other than by
+  its own file edits. The changes come from the index passes, which keep them for a day.
 - Skills take their arguments as Claude Code does: `$0` and `$ARGUMENTS[0]` are the first argument, `$1` and
   `$ARGUMENTS[1]` the second (both `1` forms were the first before, and `$0` stayed as written), `$name` names a
   position declared in the `arguments` frontmatter, an index without an argument stays as written (a price like

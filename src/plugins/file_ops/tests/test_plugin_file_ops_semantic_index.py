@@ -359,22 +359,21 @@ async def test_a_warm_index_is_not_wiped_by_the_first_background_pass(
     await second.search_engine.stop()
 
 
-async def test_a_search_does_not_wait_for_the_freshness_pass(tmp_path, tree):
-    """The pass that picks up changed files stats every file in the tree.
-
-    Measured live on 18.09.2026: 8.3 s over the coder tree with nothing
-    changed. Awaited inside the search, that turned a 0.05 s query into a
-    ten-second tool call whenever it fell outside the 30 s window.
+async def test_a_search_waits_no_longer_than_its_budget(tmp_path, tree):
+    """A search waits for the index to catch up with changed files -- but only
+    index_wait_seconds. A pass that takes longer (a copied-in folder takes
+    minutes) goes on, and the answer comes from the index as it stands and
+    says so.
     """
-    server = build_server(tmp_path, tree)
+    server = build_server(tmp_path, tree, index_wait_seconds=0.5)
     await server.search_engine.rebuild_index(incremental=False)
-    server.search_engine._last_incremental_update = 0  # force it to be due
+    (tree / "new.py").write_text("def brew():\n    return 'tea'\n")
 
-    # Finite, so an awaited pass fails this test on its assertion instead of
-    # hanging until the suite's timeout -- a hung test reads as broken
-    # infrastructure, not as a finding.
+    # Finite, so a search that waits for it fails this test on its assertion
+    # instead of hanging until the suite's timeout.
     async def crawl(*args, **kwargs):
         await asyncio.sleep(3)
+        return True
 
     server.search_engine.rebuild_index = crawl
     started = asyncio.get_running_loop().time()
@@ -382,7 +381,8 @@ async def test_a_search_does_not_wait_for_the_freshness_pass(tmp_path, tree):
     waited = asyncio.get_running_loop().time() - started
 
     assert result["status"] == "success" and result["results"]
-    assert waited < 1.0, f"the search waited {waited:.1f}s for the index pass"
+    assert waited < 1.5, f"the search waited {waited:.1f}s past its budget"
+    assert result["index_fresh"] is False and "grep_search" in result["note"]
     await server.search_engine.stop()
 
 

@@ -196,34 +196,6 @@ async def test_incremental_multiple_changes(file_ops_server, tmp_allowed_dir):
 
 
 @pytest.mark.asyncio
-async def test_ensure_index_fresh_throttling(file_ops_server, tmp_allowed_dir):
-    """Test that _ensure_index_fresh throttles updates."""
-    # Create test file
-    (tmp_allowed_dir / "test.py").write_text("content")
-    
-    # Build initial index
-    await file_ops_server.search_engine.rebuild_index(incremental=False)
-    
-    # Call _ensure_index_fresh multiple times quickly
-    start_time = time.time()
-    for _ in range(5):
-        await file_ops_server.search_engine._ensure_index_fresh()
-    elapsed = time.time() - start_time
-    
-    # Should be fast (throttled, not running 5 full updates)
-    assert elapsed < 1.0, f"_ensure_index_fresh not throttling properly: {elapsed:.2f}s"
-    
-    # After 30+ seconds, should actually update
-    file_ops_server.search_engine._last_incremental_update = time.time() - 31
-    (tmp_allowed_dir / "new.py").write_text("new file")
-    
-    await file_ops_server.search_engine._ensure_index_fresh()
-    
-    # New file should be indexed
-    assert len(file_ops_server.search_engine.file_mtimes) == 2
-
-
-@pytest.mark.asyncio
 async def test_search_sees_files_added_after_the_index_was_built(file_ops_server, tmp_allowed_dir):
     """A glob walks the disk, so a stale index cannot hide a new file."""
     # Create initial file
@@ -235,9 +207,6 @@ async def test_search_sees_files_added_after_the_index_was_built(file_ops_server
     # Add new file
     await asyncio.sleep(0.1)
     (tmp_allowed_dir / "file2.py").write_text("new content")
-    
-    # Mark as needing update (simulate time passing)
-    file_ops_server.search_engine._last_incremental_update = time.time() - 31
     
     result = await file_ops_server.search_engine.search_files("*.py")
     

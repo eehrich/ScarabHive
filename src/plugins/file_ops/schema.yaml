@@ -215,8 +215,10 @@ tools:
           - "error handling patterns" → locates try/except blocks, error classes
 
         Use it when you do NOT know the word the code uses; grep_search is
-        better whenever you do. Off unless configured. While the index is
-        still building, the answer covers what is indexed so far and says so.
+        better whenever you do. Off unless configured. Files that changed are
+        indexed before the answer when that takes only seconds; while the index
+        is still building or catching up, the answer covers what is indexed so
+        far and says so (index_complete / index_fresh: false, with progress).
       parameters:
         type: object
         properties:
@@ -289,6 +291,12 @@ config:
     # Off unless configured — the server defaults it to false.
     enable_semantic_search: false
     auto_reindex_interval: 300
+    # How long a semantic search waits for the index to catch up with files
+    # that changed since the last pass (seconds; 0 = answer at once). Whether
+    # anything changed is asked of the disk first (0.3 s on a 45.000-file
+    # tree); nothing changed means no wait. Not caught up in time, the answer
+    # comes from the index as it stands and says so (index_fresh: false).
+    index_wait_seconds: 10
     # Files larger than this are left out of the index, and grep skips them.
     max_file_size_for_indexing_kb: 1024
 
@@ -313,3 +321,20 @@ config:
       - '**/*.min.js'
       - '**/*.min.css'
       - '**/*.map'
+
+# Opt-in per agent (hooks.overrides "<instance>.changed_files_notice"): before
+# the first LLM call of a turn, a developer note lists the files added, changed
+# or removed in the workspace since the agent's previous turn -- not by its own
+# file edits. Needs an instance with a semantic index that it builds (the
+# changes come from the index passes). Appended, never rewritten: cache-safe.
+hooks:
+  - name: changed_files_notice
+    type: pre_llm_call
+    enabled: false
+    # Above the search's own wait (index_wait_seconds, 10 s by default): the
+    # hook may wait for the index to catch up first.
+    timeout: 20.0
+    description: "Tell the agent which workspace files changed since its previous turn"
+    # After tool_preload, whose results stand behind the turn's head first.
+    category: "prompt_injection"
+    # Per agent: max_listed (default 30) -- paths named in the note.

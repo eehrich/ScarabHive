@@ -329,6 +329,7 @@ coder_okf.okf_context_injection | on, bundle @{tt}data/okf/coder@{utt} | --
 project_instructions.inject_project_instructions | on, root @{tt}.@{utt} | on
 file_checkpoints.record_before_change, _after_change | on | on
 tool_preload.preload | on, grep and semantic search of the message | --
+coder_fs.changed_files_notice | on, files changed since the previous turn | --
 todo.inject_todo_tasks, sequential_thinking.inject_active_sessions, coder_sam.inject_sub_agent_context | off | off
 @{body}
 
@@ -382,7 +383,7 @@ read_only | coder_fs_ro only
 max_unpaginated_file_size_kb | 200 (default in code 100)
 default_line_limit | 500
 search.collection_name | file_ops_coder_tree, both
-search.enable_indexing | coder_fs only; reindex every 300 s
+search.enable_indexing | coder_fs only; reindex every 300 s, and a search catches up first (index_wait_seconds 10)
 search.exclude_patterns | .git, __pycache__, node_modules, .venv, *.pyc, *.min.js, *.min.css, *.map, dist, build
 @{body}
 

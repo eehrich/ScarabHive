@@ -17,11 +17,14 @@ the tree read.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import fnmatch
 import hashlib
 import json
 import logging
+import os
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -59,6 +62,145 @@ _PREPARE_BATCH = 200
 _STATE_SAVE_SECONDS = 30.0
 #: How long the background indexer waits after a pass that failed.
 _RETRY_SECONDS = 60.0
+#: How long a semantic search waits for the index to catch up with changed
+#: files before it answers from what is there and says so. A pass over the
+#: coder tree with a few changed files takes about four seconds (walk 2.6-3.5
+#: s, 12.11.2026); a copied-in folder takes minutes and is not waited for.
+_DEFAULT_WAIT_SECONDS = 10.0
+#: How often a waiting search looks at the pass it waits for.
+_WAIT_POLL_SECONDS = 0.1
+#: A stamp this close to the pass that took it proves nothing: a change in
+#: the same timestamp tick leaves the mtime as it was (Windows file times
+#: move in ticks of up to ~16 ms, ext4's coarse clock in jiffies). git's
+#: "racy clean" rule: such an entry counts as changed until a later pass
+#: stamps it again.
+_RACY_SECONDS = 2.0
+#: What the index remembers of the changes it found, for the agent's
+#: changed-files notice: the newest entries, none older than a day.
+_JOURNAL_LIMIT = 2000
+_JOURNAL_SECONDS = 24 * 3600.0
+
+#: The instance that builds each index in this process, by (store, collection).
+#: A reader of a shared index (``enable_indexing: false`` -- the coder's
+#: sub-agents search through one) runs no pass and could only answer from a
+#: stale index without knowing it; with its builder in the same process it
+#: asks the builder instead.
+_BUILDERS: "weakref.WeakValueDictionary[Tuple[str, str], FileSearchEngine]" = \
+    weakref.WeakValueDictionary()
+
+
+@dataclass(frozen=True)
+class _Stamps:
+    """What the tree looked like when the last COMPLETE pass ran.
+
+    A semantic search compares these with the disk before it answers: equal
+    means nothing the index covers changed, and the search answers at once
+    without walking the tree (a walk of the coder tree is 2.6-3.5 s, statting
+    every stamp 0.3-0.4 s, measured 12.11.2026).
+
+    Directories carry the structure: their mtime moves when an entry is
+    created, copied in (even with an old mtime of its own), renamed or deleted
+    -- measured on NTFS, and what POSIX requires. Each one is stamped when the
+    walk QUEUES it, before it is scanned, so a change after the stamp moves the
+    mtime and one before it is seen by the scan. Files carry their content: a
+    content edit moves only the file's own mtime. Ignore files are stamped
+    because editing one moves nothing else. Configured roots are stamped even
+    when absent (None), so one that appears later counts. The state file is
+    stamped because another process may change the index without any file
+    changing (a full rebuild after a format change empties the collection).
+
+    Known gaps, as with the pass itself: a change that keeps the mtime (a tool
+    that restores it), and the Windows hidden attribute, which moves nothing.
+    """
+
+    taken_at: float
+    #: Directories, roots and ignore files -> st_mtime_ns, None when absent.
+    entries: Dict[str, Optional[int]]
+    #: Booked and skipped files -> the mtime the pass booked them with.
+    files: Dict[Path, float]
+    #: (st_mtime_ns, st_size) of the state file once the pass had written it.
+    state: Optional[Tuple[int, int]]
+    #: Files the pass could not read: one that opens now counts as changed
+    #: (it may well keep its mtime -- a lock going away moves nothing).
+    unreadable: Tuple[Path, ...] = ()
+
+
+def content_digest(text: str) -> str:
+    """The content hash the index keeps per file -- one reading, shared with
+    the changed-files notice, which compares a file with what an own write left."""
+    return hashlib.sha1(text.encode("utf-8", "ignore"), usedforsecurity=False).hexdigest()
+
+
+def latest_per_path(findings: List[Tuple[float, str, str]]) -> List[Tuple[str, str]]:
+    """(kind, path) of journal entries, the latest one per path, oldest first."""
+    latest: Dict[str, Tuple[float, str]] = {}
+    for found, kind, path in findings:
+        if path not in latest or found >= latest[path][0]:
+            latest[path] = (found, kind)
+    return [(kind, path) for path, (found, kind)
+            in sorted(latest.items(), key=lambda item: item[1][0])]
+
+
+def _stat_ns(path: Any) -> Optional[int]:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _state_stamp(path: Optional[Path]) -> Optional[Tuple[int, int]]:
+    try:
+        info = os.stat(path) if path else None
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size) if info else None
+
+
+def _changes_since(stamps: _Stamps, state_path: Optional[Path]) -> int:
+    """How many stamps the disk no longer matches. Blocking: run it in a thread."""
+    racy = int((stamps.taken_at - _RACY_SECONDS) * 1e9)
+    changed = 0
+    for path, mtime in stamps.files.items():
+        try:
+            info = os.stat(path)
+        except OSError:
+            changed += 1
+            continue
+        if info.st_mtime != mtime or info.st_mtime_ns >= racy:
+            changed += 1
+    for path, stamp in stamps.entries.items():
+        now = _stat_ns(path)
+        if now != stamp or (stamp is not None and stamp >= racy):
+            changed += 1
+    if _state_stamp(state_path) != stamps.state:
+        changed += 1
+    changed += sum(1 for path in stamps.unreadable if textsearch.text_verdict(path) is not None)
+    return changed
+
+
+@dataclass
+class _PassProgress:
+    """Where the running pass is, for the answer a search gives meanwhile."""
+
+    seq: int
+    #: "walking" until the tree is walked and triaged, then "reading".
+    phase: str = "walking"
+    #: Files read so far, of those the triage found to need reading.
+    done: int = 0
+    total: int = 0
+    started: float = field(default_factory=time.monotonic)
+    reading_since: Optional[float] = None
+
+    def eta(self) -> Optional[float]:
+        """Seconds still to go at the rate so far; None before there is a rate."""
+        if self.phase != "reading" or self.reading_since is None:
+            return None
+        if self.done >= self.total:
+            return 0.0
+        if not self.done:
+            return None
+        elapsed = max(time.monotonic() - self.reading_since, 1e-3)
+        return (self.total - self.done) * elapsed / self.done
 
 
 @dataclass
@@ -106,9 +248,58 @@ class FileSearchEngine:
         #: another file with the same content (see _run_index_pass).
         self.file_hashes: Dict[Path, str] = {}
         self.file_aliases: Set[Path] = set()
-        #: (files done, files walked) while a pass runs, for the answer a
-        #: search gives meanwhile.
-        self._progress: Optional[Tuple[int, int]] = None
+        #: Files the walk yields that have no documents: binary, empty or too
+        #: large -> the mtime they were found with. Remembered so a pass does
+        #: not read their heads again and the freshness check does not count
+        #: them as new every time (1.316 of them on the coder tree).
+        self.file_skipped: Dict[Path, float] = {}
+        #: Files that could not be read (locked, say). NOT stamped: every pass
+        #: tries them again, and they are not reported as new each time.
+        self.file_unreadable: Set[Path] = set()
+        #: False after loading a state from before file_skipped was kept.
+        self._skipped_known = True
+        #: Whether a build of this index has EVER run to its end. Not
+        #: _index_built: every checkpoint writes "unfinished", so a pass that
+        #: is cut short leaves that behind even on an index built long ago --
+        #: and a pass after it must still report what changed.
+        self._built_once = False
+        #: Files a mend dropped from the bookkeeping -> their hash then: read
+        #: again, they are news only if their content differs.
+        self._mended: Dict[Path, str] = {}
+        #: What passes since the last complete one found: (kind, path) -> the
+        #: mtime they saw (None for a removal). Persisted: a pass that died was
+        #: perhaps told, and the next one finds the same again.
+        self._pass_found: Dict[Tuple[str, str], Optional[float]] = {}
+        #: Start of the last complete pass when they were loaded (passes run
+        #: one at a time under the pass lock): a complete pass of another
+        #: process that started later has seen all of it anew.
+        self._pass_found_at = 0.0
+        #: What the passes found changed: (wall time found, kind, path), kind
+        #: one of added / modified / removed. Persisted with the state, so the
+        #: process whose pass sees a change first is not the only one that can
+        #: tell an agent about it.
+        self._journal: List[Tuple[float, str, str]] = []
+        #: The newest finding the journal has dropped (too old, too many).
+        self._journal_trimmed_until = 0.0
+        #: When the journal was last read back under the pass lock: findings
+        #: of another process from before then are in it, later ones may not
+        #: be yet (0: never, in this process).
+        self._journal_synced_at = 0.0
+        #: Wall-clock start of the last complete pass, for the racy rule of
+        #: the triage (persisted: the next process judges the same stamps).
+        self._last_pass_started = 0.0
+        #: The disk as the last complete pass left it (see _Stamps).
+        self._stamps: Optional[_Stamps] = None
+        #: Passes started / the last one that ran to its end. A search that
+        #: finds the disk changed waits for a pass that STARTED after it came:
+        #: one already running may have walked past the change.
+        self._pass_seq = 0
+        self._completed_seq = 0
+        #: Set when the last attempt to start a pass found another PROCESS
+        #: holding the pass lock (as opposed to a pass in this one).
+        self._busy_elsewhere = False
+        #: The running pass, for the answer a search gives meanwhile.
+        self._progress: Optional[_PassProgress] = None
 
         # Indexing control
         self._indexing_task: Optional[asyncio.Task] = None
@@ -140,6 +331,19 @@ class FileSearchEngine:
         # readable for a lone instance.
         self._collection_name = str(self.config.get("collection_name")
                                     or "file_ops_semantic_index")
+        if (self.config.get("enable_semantic_search", True)
+                and self.config.get("enable_indexing", True)):
+            _BUILDERS[self._store_key()] = self
+
+    def _store_key(self) -> Tuple[str, str]:
+        return (str(self._persist_path().resolve()), self._collection_name)
+
+    def _owner(self) -> Optional["FileSearchEngine"]:
+        """The instance in this process that builds the index this one reads."""
+        if self.config.get("enable_indexing", True):
+            return None
+        owner = _BUILDERS.get(self._store_key())
+        return owner if owner is not None and owner is not self and not owner._closing else None
 
     def _ensure_indexing_started(self):
         """Start background indexing if not already started and if enabled.
@@ -151,9 +355,11 @@ class FileSearchEngine:
         agent_file_ops, coder_fs), for trees nobody had asked about yet.
 
         The consequence is worth knowing: an instance that only READS a shared
-        index (enable_indexing: false) never starts anything, so that index
-        exists once the instance that owns it has been asked a question. In the
-        coder harness the owner is coder_fs, which the main agent uses.
+        index (enable_indexing: false) starts nothing of its own, so that index
+        exists once the instance that owns it has been asked a question -- or
+        once the reader is, when the owner runs in the same process: the reader
+        then hands its searches to the owner (see _owner). In the coder harness
+        the owner is coder_fs, which the main agent uses.
 
         Semantic search is the only consumer of the index, so an instance
         without it walks the tree for nothing.
@@ -256,6 +462,7 @@ class FileSearchEngine:
         Returns whether a pass actually ran, so a caller that keeps a "last
         refreshed" stamp does not record a pass that was dropped.
         """
+        self._busy_elsewhere = False
         if incremental and self._index_lock.locked():
             logger.debug("FILE_OPS: an index pass is already running — skipping this one")
             return False
@@ -276,6 +483,7 @@ class FileSearchEngine:
                 except LockTimeout:
                     if incremental:
                         logger.debug("FILE_OPS: another process is indexing — skipping this pass")
+                        self._busy_elsewhere = True
                         return False
                     raise VectorStoreError(
                         f"another process held the index for {_FULL_PASS_WAIT:.0f}s -- "
@@ -286,9 +494,20 @@ class FileSearchEngine:
                     # state -- start from what is on disk, not from memory.
                     # Under the pass lock, so this is where a disagreeing state
                     # may be mended (see _load_state).
+                    before = (self.file_mtimes, self.file_hashes, self.file_aliases)
                     await asyncio.to_thread(self._load_state, True)
+                    if (self.file_mtimes, self.file_hashes, self.file_aliases) != before:
+                        # The bookkeeping changed without a file changing: a
+                        # mend dropped files, or another process indexed. The
+                        # stamps would still match the disk, and a pass that
+                        # dies after this point would leave a search calling
+                        # an index fresh that now lacks those files.
+                        self._stamps = None
                 await self._run_index_pass(status_callback, incremental)
             finally:
+                # A pass that died must not stand as "running" with a rate
+                # that only grows: a search would stop waiting on its ETA.
+                self._progress = None
                 if pass_lock is not None:
                     pass_lock.release()
         return True
@@ -357,6 +576,9 @@ class FileSearchEngine:
                     "full index rebuild" if full else "incremental index update")
         logger.info("=" * 60)
         start_time = time.time()
+        self._pass_seq += 1
+        seq = self._pass_seq
+        progress = self._progress = _PassProgress(seq)
         if status_callback:
             await status_callback("Starting full index rebuild..." if full
                                   else "Starting incremental index update...")
@@ -365,16 +587,57 @@ class FileSearchEngine:
         if semantic_enabled:
             self._init_vector_store()
         if full:
+            # Cleared below: nothing may call the index fresh meanwhile.
+            self._stamps = None
             self.file_mtimes, self.file_symbol_ids = {}, {}
             self.file_hashes, self.file_aliases = {}, set()
+            self.file_skipped, self.file_unreadable = {}, set()
             if semantic_enabled and self._vector_store:
                 await self._clear_collection(status_callback)
         store_ready = bool(semantic_enabled and self._vector_store)
 
-        paths = await asyncio.to_thread(self._walk_for_index)
+        entries: Dict[str, Optional[int]] = {}
+        paths = await asyncio.to_thread(self._walk_for_index, entries)
         seen = {path for path, _ in paths}
-        self._progress = (0, len(paths))
         max_size = int(self.config.get("max_file_size_for_indexing_kb", 1024)) * 1024
+        # Only what changed is read: on the coder tree that is a few dozen of
+        # 45.856 files, and the count is what a waiting search can be told.
+        todo = await asyncio.to_thread(self._triage, paths)
+        progress.total, progress.phase = len(todo), "reading"
+        progress.reading_since = time.monotonic()
+        before_skipped, before_unreadable = self.file_skipped, self.file_unreadable
+        skipped = {path: mtime for path, mtime in before_skipped.items() if path in seen}
+        unreadable: Set[Path] = set()
+
+        # A build finds everything "added" -- a full one, and as much one that
+        # carries on a first build that never finished. That is not news, and
+        # 2.000 of it would push the real changes out of the journal. NOT
+        # `_index_built`: every checkpoint writes "unfinished", so any pass cut
+        # short would have silenced the next one -- real changes included.
+        quiet = full or not self._built_once
+        # What a pass after the last complete one already found -- one that
+        # died, perhaps after it was told: found again at the same mtime, it
+        # is not news again. At any other mtime it is -- a copy can carry an
+        # OLDER one, so "not newer than when it was found" would not do.
+        found_before = dict(self._pass_found)
+
+        def note(kind: str, path: Path, mtime: Optional[float] = None) -> None:
+            # Straight into the journal, so a checkpoint keeps it: a pass that
+            # dies has booked some of what it found, and the next one will not
+            # find those again.
+            if quiet:
+                return
+            key = (kind, str(path))
+            if key in found_before and (kind == "removed" or found_before[key] == mtime):
+                return
+            # A removal ends what was found of the path before, and back again
+            # it ends the removal: a second one is news.
+            for other in ("added", "modified", "removed"):
+                self._pass_found.pop((other, str(path)), None)
+            self._pass_found[key] = mtime
+            self._journal.append((time.time(), kind, str(path)))
+            if len(self._journal) > 2 * _JOURNAL_LIMIT:
+                self._trim_journal()      # bounded even where nothing is saved
 
         pending: List[_PendingFile] = []
         to_delete: List[str] = []
@@ -432,27 +695,48 @@ class FileSearchEngine:
 
         known.update(originals())
         done = 0
-        for offset in range(0, len(paths), _PREPARE_BATCH):
+        for offset in range(0, len(todo), _PREPARE_BATCH):
             if self._closing:
                 return
-            chunk = paths[offset:offset + _PREPARE_BATCH]
+            chunk = todo[offset:offset + _PREPARE_BATCH]
+            # Forced: the triage already decided these need reading, racy
+            # ones included, whose booked mtime still matches.
             prepared = await asyncio.to_thread(
-                self._prepare_for_index, chunk, max_size, store_ready)
+                self._prepare_for_index, chunk, max_size, store_ready, True)
             for (path, base_dir), (kind, mtime, digest, item) in zip(chunk, prepared):
                 done += 1
+                booked = path in self.file_mtimes
+                was_skipped = path in before_skipped
                 if kind == "same":
                     continue
-                if kind in ("gone", "large", "binary"):
+                skipped.pop(path, None)
+                if kind in ("gone", "unreadable", "large", "binary"):
                     # Growing past the ceiling means leaving the index, not
                     # freezing in it: just skipping the file left its old
                     # documents in the store and its mtime in the bookkeeping,
                     # and the index kept answering with rewritten code.
-                    if path in self.file_mtimes:
+                    if booked:
                         forget(path)
                         updated += 1
+                    if kind == "gone":
+                        if (booked or was_skipped or path in before_unreadable
+                                or self._mended.pop(path, None) is not None):
+                            note("removed", path)
+                        continue
+                    if booked or (was_skipped and before_skipped[path] != mtime):
+                        note("modified", path, mtime)
+                    elif (not was_skipped and path not in before_unreadable
+                          and (kind == "unreadable" or self._skipped_known)):
+                        note("added", path, mtime)
+                    if kind == "unreadable":
+                        # Not stamped: a locked file is read again by every
+                        # pass, where "binary" would have left it out for good.
+                        unreadable.add(path)
+                    else:
+                        skipped[path] = mtime
                     continue
                 old_digest = self.file_hashes.get(path)
-                if path in self.file_mtimes:
+                if booked:
                     if old_digest == digest and digest:
                         # Touched, not changed: the documents stand.
                         self.file_mtimes[path] = mtime
@@ -467,6 +751,15 @@ class FileSearchEngine:
                         continue
                     updated += 1
                     forget(path)
+                    note("modified", path, mtime)
+                elif was_skipped:
+                    note("modified", path, mtime)        # binary or empty until now
+                elif path in self._mended:
+                    # Dropped by a mend, read again: news only if it changed.
+                    if self._mended.pop(path) != digest:
+                        note("modified", path, mtime)
+                elif path not in before_unreadable:
+                    note("added", path, mtime)
                 original = known.get(digest)
                 if digest and original is not None and original != path:
                     self.file_mtimes[path] = mtime
@@ -480,13 +773,19 @@ class FileSearchEngine:
                 pending_docs += len(item.ids)
                 if pending_docs >= EMBED_BATCH_SIZE:
                     await flush()
-            self._progress = (done, len(paths))
+            progress.done = done
             if status_callback:
-                await status_callback(f"Indexed {done} of {len(paths)} files...")
+                await status_callback(f"Indexed {done} of {len(todo)} changed files...")
 
         for path in [p for p in self.file_mtimes if p not in seen]:
             forget(path)
+            note("removed", path)
             removed += 1
+        # ...and those a mend dropped, which no longer count as booked.
+        for path in set(before_skipped) | before_unreadable | set(self._mended):
+            if path not in seen:
+                note("removed", path)
+                self._mended.pop(path, None)
         await flush()
 
         # Aliases whose original changed or went -- in this pass, or in one
@@ -516,6 +815,9 @@ class FileSearchEngine:
                     pending_docs += len(item.ids)
                 else:
                     forget(heir)   # changed meanwhile: the next pass takes it as new
+                    # ...and the stamps must not call the index fresh before
+                    # it does: an absent stamp on a file that exists counts.
+                    entries[str(heir)] = None
             if pending_docs >= EMBED_BATCH_SIZE:
                 await flush()
         await flush()
@@ -524,11 +826,24 @@ class FileSearchEngine:
             return
         # The caller holds `_index_lock` for the whole pass, so the bookkeeping
         # is changed by nobody else meanwhile.
-        self._index_built = True
+        self._index_built = self._built_once = True
+        self._mended = {}
+        self._pass_found = {}
         self._index_error = None
-        self._progress = None
+        self.file_skipped, self.file_unreadable = skipped, unreadable
+        self._skipped_known = True
+        self._last_pass_started = start_time
         if store_ready:
             await asyncio.to_thread(self._save_state, True)
+        # Only now, at the end of a pass that ran through: a pass that died
+        # left no stamps, so the next search runs one instead of trusting them.
+        files = dict(self.file_mtimes)
+        files.update(skipped)
+        self._stamps = _Stamps(taken_at=start_time, entries=entries, files=files,
+                               state=_state_stamp(self._state_path) if store_ready else None,
+                               unreadable=tuple(unreadable))
+        self._completed_seq = seq
+        self._progress = None
 
         final_msg = (f"FILE_OPS: index pass complete: {len(paths)} files walked, "
                      f"{updated} updated, {removed} removed, "
@@ -570,22 +885,63 @@ class FileSearchEngine:
                     f"not be recreated: {e}") from e
             logger.info("FILE_OPS: Cleared existing documents from VectorStore")
 
-    def _walk_for_index(self) -> List[Tuple[Path, Path]]:
-        """(file, the root it was found under), shallowest first. Blocking: a worker thread runs it."""
+    def _walk_for_index(self, stamps: Optional[Dict[str, Optional[int]]] = None
+                        ) -> List[Tuple[Path, Path]]:
+        """(file, the root it was found under), shallowest first. Blocking: a worker thread runs it.
+
+        With *stamps*, every directory the walk enters, every ignore file it
+        reads and every configured root -- present or not -- is stamped there
+        (see _Stamps), each before the walk looks inside.
+        """
         options = self._search_backend_options()
         configured = [Path(d).resolve() for d in self.allowed_dirs]
+        bases = textsearch.deduplicate_roots(self.allowed_dirs)
+        def record(path: Path) -> None:
+            stamps[str(path)] = _stat_ns(path)
+
+        stamp = record if stamps is not None else None
+        if stamp is not None:
+            for root in {*configured, *bases}:
+                stamp(root)
         found: List[Tuple[Path, Path]] = []
-        for base_dir in textsearch.deduplicate_roots(self.allowed_dirs):
+        for base_dir in bases:
             if not base_dir.exists():
                 continue
             for path in textsearch.walk_files(
                     base_dir, options["excludes"],
                     include_hidden=options["include_hidden"],
                     respect_ignore=True,
-                    protected=textsearch.sub_roots(base_dir, configured)):
+                    protected=textsearch.sub_roots(base_dir, configured),
+                    on_directory=stamp, on_ignore_file=stamp):
                 found.append((path, base_dir))
         found.sort(key=lambda item: (len(item[0].parts), str(item[0])))
         return found
+
+    def _triage(self, paths: List[Tuple[Path, Path]]) -> List[Tuple[Path, Path]]:
+        """The walked files a pass has to read. Blocking: a worker thread runs it.
+
+        New ones, changed ones (mtime moved, in either direction: copying over
+        a file can set an OLDER one), booked ones without a hash, unreadable
+        ones, and racy ones -- an mtime within _RACY_SECONDS of the start of
+        the pass that booked it may hide a change in the same tick.
+        """
+        racy = self._last_pass_started - _RACY_SECONDS
+        todo: List[Tuple[Path, Path]] = []
+        for path, base in paths:
+            booked = self.file_mtimes.get(path)
+            known = booked if booked is not None else self.file_skipped.get(path)
+            if (known is None or path in self.file_unreadable
+                    or (booked is not None and not self.file_hashes.get(path))):
+                todo.append((path, base))
+                continue
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                todo.append((path, base))     # gone since the walk: the pass says so
+                continue
+            if mtime != known or mtime >= racy:
+                todo.append((path, base))
+        return todo
 
     def _prepare_for_index(self, chunk: List[Tuple[Path, Path]], max_size: int,
                            embed: bool, force: bool = False
@@ -593,8 +949,9 @@ class FileSearchEngine:
         """Stat, read and cut a batch of files into documents -- off the event loop.
 
         Returns ``(kind, mtime, content hash, documents)`` per file, kind one
-        of same / gone / large / binary / read. *force* reads a file whose
-        mtime is booked (an alias taking an original's place).
+        of same / gone / unreadable / large / binary / read. *force* reads a
+        file whose mtime is booked (an alias taking an original's place, a
+        file the triage found racy).
         """
         out: List[Tuple[str, float, str, Optional[_PendingFile]]] = []
         for path, base_dir in chunk:
@@ -612,15 +969,20 @@ class FileSearchEngine:
                     and self.file_hashes.get(path)):
                 out.append(("same", stat.st_mtime, "", None))
                 continue
-            if not self._is_text_file(path):
+            verdict = textsearch.text_verdict(path)
+            if verdict is None:
+                # Locked, say. "binary" would have left it out until it changes.
+                out.append(("unreadable", stat.st_mtime, "", None))
+                continue
+            if not verdict:
                 out.append(("binary", stat.st_mtime, "", None))
                 continue
             try:
                 content = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
-                out.append(("gone", 0.0, "", None))
+                out.append(("unreadable", stat.st_mtime, "", None))
                 continue
-            digest = hashlib.sha1(content.encode("utf-8", "ignore"), usedforsecurity=False).hexdigest()
+            digest = content_digest(content)
             item = _PendingFile(path, stat.st_mtime, digest)
             if embed and content:
                 # One document per symbol, not per file: the model reads 256
@@ -690,6 +1052,7 @@ class FileSearchEngine:
         if not (self._vector_store and self._state_path
                 and self._state_path.is_file()):
             return
+        read_at = time.time()
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
             files = raw["files"]
@@ -726,8 +1089,9 @@ class FileSearchEngine:
                            if any(doc_id not in present for doc_id in entry["ids"])]
                 stray = present - booked
                 for path in dropped:
-                    stray.update(doc_id for doc_id in files.pop(path)["ids"]
-                                 if doc_id in present)
+                    entry = files.pop(path)
+                    self._mended[Path(path)] = entry.get("hash", "")
+                    stray.update(doc_id for doc_id in entry["ids"] if doc_id in present)
                 stray_ids = sorted(stray)
                 for i in range(0, len(stray_ids), EMBED_BATCH_SIZE):
                     self._vector_store.delete(self._collection_name,
@@ -745,6 +1109,53 @@ class FileSearchEngine:
         self.file_symbol_ids = {Path(p): entry["ids"] for p, entry in files.items()}
         self.file_hashes = {Path(p): entry.get("hash", "") for p, entry in files.items()}
         self.file_aliases = {Path(p) for p, entry in files.items() if entry.get("alias")}
+        self.file_skipped = {Path(p): float(m) for p, m in (raw.get("skipped") or {}).items()}
+        # A state written before skipped files were kept knows none of them:
+        # its next pass would report every binary in the tree as new.
+        self._skipped_known = "skipped" in raw
+        self.file_unreadable = {Path(p) for p in raw.get("unreadable") or ()}
+        journal = [(float(t), str(kind), str(p)) for t, kind, p in raw.get("journal") or ()]
+        if mend:
+            # Merged, not replaced: what this process found in a pass that
+            # died before its checkpoint is not on disk, and was perhaps told.
+            journal = sorted(set(journal) | set(self._journal))
+        self._journal = journal
+        self._journal_trimmed_until = float(raw.get("journal_trimmed_until") or 0.0)
+        # States from before the key: a finished one was built once.
+        self._built_once = bool(raw.get("built_once", raw.get("complete", True)))
+        # A state from before the pass start was kept: its own mtime stands in
+        # -- it was written when its pass ended. Unknown, every file would be
+        # racy and the first pass would read the whole tree again (5.5 min
+        # on the coder tree, 12.11.2026). The price: a file written twice in
+        # one tick exactly while that older pass read it slips through once.
+        started = raw.get("pass_started")
+        if started is None:
+            try:
+                started = self._state_path.stat().st_mtime
+            except OSError:
+                started = 0.0
+        self._last_pass_started = float(started or 0.0)
+        found = {(str(kind), str(p)): (None if m is None else float(m))
+                 for kind, p, m in raw.get("pass_found") or ()}
+        # What this process found and did not save counts only if no complete
+        # pass started after it -- another process's, which saw it all anew.
+        mine = self._pass_found if mend and self._pass_found_at >= self._last_pass_started else {}
+        self._pass_found = {**found, **mine}
+        kinds: Dict[str, List[str]] = {}
+        for kind, p in self._pass_found:
+            kinds.setdefault(p, []).append(kind)
+        if any(len(of) > 1 for of in kinds.values()):
+            # One kind per path: the one the (merged, time-ordered) journal found last.
+            latest = {p: kind for _, kind, p in sorted(self._journal)}
+            for p, of in kinds.items():
+                for kind in of:
+                    if len(of) > 1 and latest.get(p, kind) != kind:
+                        del self._pass_found[(kind, p)]
+        self._pass_found_at = self._last_pass_started
+        if mend:
+            # Under the pass lock no other process is half way through a pass,
+            # so everything found before this moment is in the journal now.
+            self._journal_synced_at = read_at
         self._index_built = complete
         logger.info(f"FILE_OPS: index state loaded — {len(files)} files, "
                     f"{sum(len(e['ids']) for e in files.values())} documents"
@@ -771,13 +1182,56 @@ class FileSearchEngine:
                                 **({"alias": True} if path in self.file_aliases else {})}
                     for path, mtime in list(self.file_mtimes.items())
                 },
+                "unreadable": sorted(str(path) for path in list(self.file_unreadable)),
+                "journal": self._trim_journal(),
+                "journal_trimmed_until": self._journal_trimmed_until,
+                "pass_started": self._last_pass_started,
+                "built_once": self._built_once,
+                "pass_found": [[kind, p, m] for (kind, p), m in list(self._pass_found.items())],
             }
+            if self._skipped_known:
+                # Not before: a checkpoint of the first pass on an older state
+                # would write "none skipped", and the next process would take
+                # every binary in the tree for new.
+                payload["skipped"] = {str(path): mtime
+                                      for path, mtime in list(self.file_skipped.items())}
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(payload), encoding="utf-8")
             tmp.replace(self._state_path)  # never a half-written state file
+            stamps = self._stamps
+            if stamps is not None:
+                # This process's own write: the state stamp is there to notice
+                # ANOTHER process's, and must not send every search during this
+                # pass's checkpoints looking for one.
+                self._stamps = dataclasses.replace(stamps, state=_state_stamp(self._state_path))
         except Exception as e:
             logger.warning(f"FILE_OPS: could not persist index state: {e}")
+
+    def _trim_journal(self) -> List[Tuple[float, str, str]]:
+        """The journal without what is too old or too much; returns it.
+
+        What it drops is remembered by time (``_journal_trimmed_until``), so a
+        list asked for from before then can say it is incomplete.
+        """
+        cutoff = time.time() - _JOURNAL_SECONDS
+        journal = self._journal
+        kept = [entry for entry in journal[-_JOURNAL_LIMIT:] if entry[0] >= cutoff]
+        if len(kept) < len(journal):
+            still = set(kept)
+            dropped = max(entry[0] for entry in journal if entry not in still)
+            self._journal_trimmed_until = max(self._journal_trimmed_until, dropped)
+        self._journal = kept
+        return kept
+
+    def findings_after(self, since: float) -> List[Tuple[float, str, str]]:
+        """The journal's (found, kind, path) entries found after *since* (wall clock)."""
+        return [entry for entry in list(self._journal) if entry[0] > since]
+
+    def changes_since(self, since: float) -> List[Tuple[str, str]]:
+        """(kind, path) of what the passes found changed after *since*, the
+        latest finding per path. Oldest first."""
+        return latest_per_path(self.findings_after(since))
 
     def _is_text_file(self, path: Path) -> bool:
         """Whether the file should be indexed for text search.
@@ -799,44 +1253,118 @@ class FileSearchEngine:
             logger.debug(f"Failed to read {file_path} for indexing: {e}")
             return None
 
-    async def _ensure_index_fresh(self):
-        """Pick up what changed since the last pass — never build from scratch.
+    def _wait_budget(self) -> float:
+        """``index_wait_seconds``; anything but a number >= 0 is the default."""
+        value = self.config.get("index_wait_seconds", _DEFAULT_WAIT_SECONDS)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return _DEFAULT_WAIT_SECONDS
+        return float(value)
 
-        The FIRST build belongs to the background indexer, and only there.
-        Doing it here made the first semantic search of a process pay for the
-        whole tree while the agent waited (measured on this repository: 423 s
-        for 51.730 documents). An incremental pass is a different animal: it
-        stats the tree and reads only what changed, which is a second or two —
-        and without it an agent cannot find the code it wrote a minute ago.
+    async def _fresh_pass(self) -> bool:
+        """One incremental pass for a waiting caller.
+
+        True when it ran -- a failure is recorded, not raised, and counts as
+        run: the caller must not start the same failing pass again at once.
+        False when it was refused because a pass already holds the lock.
+        """
+        try:
+            return await self.rebuild_index(incremental=True)
+        except Exception as e:
+            logger.warning(f"FILE_OPS: Incremental update failed: {e}")
+            # It may be the pass that carries an unfinished build on.
+            self._index_error = f"{type(e).__name__}: {e}"[:300]
+            return True
+
+    async def freshen(self, budget: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Bring the index up to the disk as it is NOW, waiting at most *budget* s.
+
+        Returns None when the index is current, else what an answer from it
+        has to say (the ``index_update`` of a search): how far the pass that
+        catches up has got. That pass is never cancelled -- it goes on after
+        the caller stops waiting.
+
+        Measured on 12.11.2026 on the coder tree: asking the disk whether
+        anything changed costs 0.3-0.4 s (_Stamps); a pass with a few changed
+        files about 4 s. The search used to start the pass and answer at once
+        from the old index, which looked current and was not -- the file
+        copied in a minute ago simply did not exist for semantic search.
+
+        Waiting is for a pass that STARTED after this call came: one already
+        running may have walked past the change. While the first build is not
+        finished there is nothing to wait for -- the answer says it is partial.
         """
         # A consumer, not a builder: `enable_indexing: false` is how an
-        # instance says it only READS an index another one keeps (the coder's
-        # read-write twin does this). Updating it here anyway would put two
-        # writers on one collection, which is the concurrent rebuild the
-        # sharing was meant to avoid.
-        if not self.config.get("enable_indexing", True):
-            return
+        # instance says it only READS an index another one keeps. Updating it
+        # here anyway would put two writers on one collection.
+        if not (self.config.get("enable_indexing", True)
+                and self.config.get("enable_semantic_search", True)):
+            return None
         if not self.file_mtimes:
-            return
+            # Nothing booked: the first build is the background indexer's, and
+            # only its -- a search starting it paid for the whole tree while
+            # the agent waited (423 s for 51.730 documents), and a pass started
+            # with nothing booked is a FULL one, which clears the collection.
+            return None
+        budget = self._wait_budget() if budget is None else max(0.0, budget)
+        if not self._index_built:
+            budget = 0.0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        changed: Optional[int] = None
+        stamps = self._stamps
+        if stamps is not None:
+            changed = await asyncio.to_thread(_changes_since, stamps, self._state_path)
+            if changed == 0:
+                return None
+        target = self._pass_seq + 1
+        attempt: Optional[asyncio.Task] = None
+        retry_at = 0.0
+        while self._completed_seq < target and not self._closing:
+            if attempt is not None and attempt.done():
+                if attempt.cancelled() or attempt.result():
+                    break                       # it ran and did not finish: it failed
+                attempt = None                  # refused: a pass holds the lock
+                if self._busy_elsewhere:
+                    retry_at = loop.time() + 0.5
+            if (attempt is None and not self._index_lock.locked()
+                    and loop.time() >= retry_at):
+                attempt = self._fresh_task = asyncio.create_task(self._fresh_pass())
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            progress = self._progress
+            eta = progress.eta() if progress is not None else None
+            if eta is not None and eta > remaining:
+                break
+            await asyncio.sleep(min(_WAIT_POLL_SECONDS, remaining))
+        if self._completed_seq >= target:
+            return None
+        info: Dict[str, Any] = {}
+        if changed is not None:
+            info["changed_entries"] = changed
+        progress = self._progress
+        if progress is not None and progress.phase == "reading":
+            info["files_done"], info["files_total"] = progress.done, progress.total
+            eta = progress.eta()
+            if eta is not None:
+                info["eta_seconds"] = round(eta)
+        elif progress is not None:
+            info["phase"] = "checking the workspace"
+        if self._busy_elsewhere:
+            info["another_process"] = True
+        if self._index_error:
+            info["error"] = self._index_error
+        return info
 
-        # Check if enough time has passed since last update (e.g., 30 seconds)
-        current_time = time.time()
-        last_update = getattr(self, '_last_incremental_update', 0)
-
-        # Don't update too frequently (every 30 seconds max)
-        if current_time - last_update > 30:
-            try:
-                logger.debug("FILE_OPS: Running quick incremental index update...")
-                # Only stamp a pass that RAN. A dropped one (another pass was
-                # already in flight) used to reset the clock all the same, so
-                # for the next 30 s nothing picked up what the running pass had
-                # already walked past -- the file the agent just wrote.
-                if await self.rebuild_index(incremental=True):
-                    self._last_incremental_update = current_time
-            except Exception as e:
-                logger.warning(f"FILE_OPS: Incremental update failed: {e}")
-                # It may be the pass that carries an unfinished build on.
-                self._index_error = f"{type(e).__name__}: {e}"[:300]
+    def _progress_text(self) -> str:
+        progress = self._progress
+        if progress is None:
+            return ""
+        if progress.phase != "reading":
+            return " (checking the workspace for changes)"
+        eta = progress.eta()
+        return (f" ({progress.done} of {progress.total} files read"
+                + (f", about {round(eta)} s left" if eta else "") + ")")
 
     def _search_backend_options(self) -> Dict[str, Any]:
         """Configuration both index-free searches share.
@@ -1009,6 +1537,14 @@ class FileSearchEngine:
                     "error_type": "SemanticSearchDisabled",
                 }
 
+            owner = self._owner()
+            if owner is not None:
+                # A reader runs no pass, so on its own it answered from an
+                # index it could not know to be stale. Its builder in this
+                # process can: the coder's sub-agents search through a reader.
+                return self._within_sandbox(
+                    await owner.semantic_search(query, max_results, filter_pattern))
+
             # Initialize VectorStore if needed
             if not self._vector_store_initialized:
                 self._init_vector_store()
@@ -1059,9 +1595,8 @@ class FileSearchEngine:
                               "It is retried every minute, but it will not finish "
                               "while that cause stays. Use grep_search.")
                 elif builds and self.config.get("index_on_startup", True):
-                    progress = (f" ({self._progress[0]} of {self._progress[1]} files read)"
-                                if self._progress else "")
-                    detail = (f"The semantic index is being built in the background{progress}. "
+                    detail = (f"The semantic index is being built in the background"
+                              f"{self._progress_text()}. "
                               "Use grep_search now and try again in a minute.")
                 elif builds:
                     # index_on_startup: false means nothing ever starts it.
@@ -1081,13 +1616,11 @@ class FileSearchEngine:
                 return {"status": "error", "error": detail,
                         "error_type": "IndexNotReady"}
 
-            # Kicked off, not awaited. Measured live on 18.09.2026: an
-            # incremental pass over the coder tree takes 8.3 s even when
-            # NOTHING changed, because it stats 3.648 files -- so awaiting it
-            # here made every search that landed outside the 30 s window a
-            # ten-second tool call. The pass still runs; the answer comes from
-            # the index as it stands, which is at most one pass behind.
-            self._fresh_task = asyncio.create_task(self._ensure_index_fresh())
+            # Waited for, but only as long as index_wait_seconds and only when
+            # the disk changed: asking costs 0.3 s, a pass with a few changed
+            # files about 4 s (coder tree, 12.11.2026). What is not caught up
+            # by then is said in the answer (index_fresh / index_update).
+            stale = await self.freshen()
 
             # Perform semantic search
             # The SAME embedding path the index was built with. Letting the
@@ -1134,7 +1667,7 @@ class FileSearchEngine:
                     "results": [],
                     "count": 0,
                     "message": "No files found"
-                })
+                }, stale)
 
             # Format results - VectorStore returns list-of-lists for batch query interface
             # Extract first batch since we only query once
@@ -1230,7 +1763,7 @@ class FileSearchEngine:
                     "message": (f"The {fetch} nearest symbols contain none whose "
                                 f"path or name matches '{filter_pattern}'.{gone_note} "
                                 f"Try the same query without the filter."),
-                })
+                }, stale)
 
             return self._mark_partial({
                 "status": "success",
@@ -1238,7 +1771,7 @@ class FileSearchEngine:
                 "results": matches,
                 "count": len(matches),
                 "max_results": max_results
-            })
+            }, stale)
 
         except VectorStoreError as e:
             logger.error(f"VectorStore semantic search error: {e}", exc_info=True)
@@ -1255,8 +1788,23 @@ class FileSearchEngine:
                 "error_type": type(e).__name__
             }
 
-    def _mark_partial(self, answer: Dict[str, Any]) -> Dict[str, Any]:
-        """Say so in *answer* when the index it came from is not finished."""
+    def _mark_partial(self, answer: Dict[str, Any],
+                      stale: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Say so in *answer* when the index it came from is not finished, or
+        not caught up with the disk (*stale*, from :meth:`freshen`)."""
+        if stale is not None and self._index_built:
+            answer["index_fresh"] = False
+            answer["index_update"] = stale
+            if stale.get("another_process"):
+                what = "Another process is updating the semantic index right now"
+            elif stale.get("error"):
+                what = f"The pass that updates the semantic index failed ({stale['error']})"
+            else:
+                what = f"The semantic index is catching up with changed files{self._progress_text()}"
+            answer["note"] = (f"{what}: until it has, these results may miss files that "
+                              "changed or show their old content. grep_search reads the "
+                              "files themselves.")
+            return answer
         if not self._index_built and not self.config.get("enable_indexing", True):
             # A reader runs no pass, so nothing else would ever tell it that
             # the owner's build has finished since it opened the store.
@@ -1270,11 +1818,33 @@ class FileSearchEngine:
                                   "results cover only the files indexed so far. "
                                   "grep_search searches everything.")
             else:
-                progress = (f" ({self._progress[0]} of {self._progress[1]} files read so far)"
-                            if self._progress else "")
-                answer["note"] = (f"The semantic index is still being built{progress}: these "
+                answer["note"] = (f"The semantic index is still being built{self._progress_text()}: these "
                                   "results cover only the files indexed so far. grep_search "
                                   "searches everything.")
+        return answer
+
+    def _within_sandbox(self, answer: Dict[str, Any]) -> Dict[str, Any]:
+        """*answer* from the builder, without paths outside this instance's roots.
+
+        Instances that share a collection are configured to share a tree; this
+        keeps a narrower reader from naming files it may not open even if
+        they are not.
+        """
+        roots = [Path(d).resolve() for d in self.allowed_dirs]
+
+        def inside(path: str) -> bool:
+            target = Path(path)
+            return any(target == root or root in target.parents for root in roots)
+
+        if isinstance(answer.get("results"), list):
+            kept = []
+            for hit in answer["results"]:
+                if not inside(hit.get("file_path", "")):
+                    continue
+                if "same_content" in hit:
+                    hit["same_content"] = [p for p in hit["same_content"] if inside(p)]
+                kept.append(hit)
+            answer["results"], answer["count"] = kept, len(kept)
         return answer
 
     def _shared_build_finished(self) -> bool:

@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
+import os
+import time
+from itertools import islice
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.llm.message_roles import ASSISTANT, DEVELOPER, opens_a_turn, role_of
+from agent_system.utils.fields import field_of
 from agent_system.paths import launch_dir
 from agent_system.utils.path_sandbox import is_secret, might_be_private
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.params import bool_param as _bool_param
 
 from .operations import FileOperations
-from .search import FileSearchEngine
+from .search import FileSearchEngine, content_digest, latest_per_path
 from .security import PathValidator, SecurityError, from_git_bash
 
 
@@ -86,6 +94,170 @@ def _int_param(params: Dict[str, Any], key: str, default: Any,
 
 
 logger = logging.getLogger(__name__)
+
+
+#: injected_by of the changed-files notice (on_pre_llm_call).
+_NOTICE_BY = "file_ops"
+
+
+#: Sessions whose notice state one server keeps; the oldest go first.
+_NOTICE_SESSIONS = 256
+#: Paths whose own writes one session remembers; the oldest go first, but
+#: never those of the write just made.
+_OWN_LIMIT = 500
+#: Files of a moved or renamed folder whose content is remembered.
+_OWN_TREE_FILES = 2000
+#: A finding this much older than the mtime an own write left still counts
+#: as that write's (file and wall clock may disagree a little, and FAT keeps
+#: mtimes in 2-second steps); older, it is someone else's change the write
+#: came after.
+_OWN_CLOCK_SLACK = 2.0
+
+
+@dataclass
+class _NoticeState:
+    """What the changed-files notice has told one session, and what its own
+    writes left."""
+
+    #: Findings up to here are told or the agent's own (None: not known yet).
+    since: Optional[float] = None
+    #: Findings above `since` already told (the journal may still receive
+    #: older ones from another process, so `since` cannot simply move up).
+    shown: Set[Tuple[float, str, str]] = field(default_factory=set)
+    #: _key(path) -> (the path, the content digest and mtime this
+    #: session's own write left there); digest None: its own write removed it
+    #: (a file, or a folder and all in it).
+    own: Dict[str, "_Own"] = field(default_factory=dict)
+
+
+def _key(path: Any) -> str:
+    """How own records and journal paths meet: the real path, in the case
+    the platform compares (a write resolves a symlink, the walk does not)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _file_digest(path: Path) -> Optional[str]:
+    """The index's content digest of the file at *path*; None when it cannot be read."""
+    try:
+        return content_digest(path.read_text(encoding="utf-8", errors="ignore"))
+    except OSError:
+        return None
+
+
+#: (path as written, content digest or None when removed, st_mtime_ns or None)
+_Own = Tuple[str, Optional[str], Optional[int]]
+
+
+def _own_record(path: Path, removed: bool = False) -> _Own:
+    if removed:
+        return (str(path), None, None)
+    try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        mtime = None
+    return (str(path), _file_digest(path), mtime)
+
+
+def _is_own(entry: Tuple[float, str, str], own: Dict[str, _Own]) -> bool:
+    """Whether a journal entry is accounted for by the session's own writes.
+
+    An added or changed path the session wrote is -- by name here; by content
+    in _own_divergence, which reports it again if the file no longer holds
+    what the write left (an own write and the user's edit before the next
+    pass are ONE finding, and the user's content makes it news). A removal is
+    the session's own when its write removed that path or a folder above it
+    and the path is still gone.
+    """
+    found, kind, path = entry
+    key = _key(path)
+    if kind == "removed":
+        if os.path.lexists(path):
+            return False
+        return any(record[1] is None and (key == gone or key.startswith(gone + os.sep))
+                   for gone, record in own.items())
+    # Whether the file still holds what the write left is _own_divergence's
+    # question, asked for every record: a file the user changed after the
+    # agent comes back from there as "changed", whatever the journal says.
+    # Found BEFORE the write, the change was someone else's: a partial edit
+    # of the agent's does not take back the user's elsewhere in the file.
+    record = own.get(key)
+    return (record is not None and record[1] is not None
+            and (record[2] is None or found >= record[2] / 1e9 - _OWN_CLOCK_SLACK))
+
+
+def _foreign_in(path: str, own: Dict[str, _Own]) -> bool:
+    """Whether *path*, which the session's own write removed, holds now what
+    its own writes did not put there -- its own writing into the folder
+    again, or moving it back, is not news."""
+    if not os.path.isdir(path):
+        return True
+    prefix = _key(path) + os.sep
+    ours = False
+    for found in islice(Path(path).rglob("*"), _OWN_TREE_FILES):
+        if found.is_file():
+            record = own.get(_key(found))
+            if record is None or record[1] is None:
+                return True
+            ours = True
+    # Empty: its own if it put something in there and took it away again.
+    return not ours and not any(key.startswith(prefix) for key in own)
+
+
+def _own_divergence(own: Dict[str, _Own]) -> List[Tuple[str, str]]:
+    """(kind, path) where the disk no longer holds what the session's own
+    writes left -- what the journal cannot see when the change undid itself
+    against the index: the user restoring a file the agent deleted, or taking
+    the agent's edit back, before a pass looked. A stat each; a read only when
+    the mtime moved."""
+    out: List[Tuple[str, str]] = []
+    for path, digest, mtime in own.values():
+        if digest is None:
+            if os.path.lexists(path) and _foreign_in(path, own):
+                out.append(("added", path))
+            continue
+        try:
+            now = os.stat(path).st_mtime_ns
+        except OSError:
+            out.append(("removed", path))
+            continue
+        if now != mtime and _file_digest(Path(path)) != digest:
+            out.append(("modified", path))
+    return out
+
+
+def _due_turn(messages: List[Any]) -> Optional[Tuple[int, int]]:
+    """(index of the turn head, index of the previous one) when the notice is due.
+
+    Due once per turn: the newest turn head has neither a reply of the model
+    nor a notice behind it yet. NOT "the last message is the user's":
+    tool_preload appends its results behind the head first, and its tool
+    message carries no marker. None for the first turn -- nothing the agent
+    saw can be out of date yet.
+    """
+    heads = [i for i, message in enumerate(messages) if opens_a_turn(message)]
+    if len(heads) < 2:
+        return None
+    head, previous = heads[-1], heads[-2]
+    for message in messages[head + 1:]:
+        marker = field_of(message, "injected_by")
+        if marker == _NOTICE_BY or (role_of(message) == ASSISTANT and not marker):
+            return None
+    return head, previous
+
+
+def _message_time(message: Any) -> Optional[float]:
+    """Wall-clock seconds of a message's timestamp (the loop stamps in UTC)."""
+    stamp = field_of(message, "timestamp")
+    if isinstance(stamp, str):
+        try:
+            stamp = datetime.fromisoformat(stamp)
+        except ValueError:
+            return None
+    if stamp is None or not hasattr(stamp, "timestamp"):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
 
 
 async def _end_or_error(status, result: Dict[str, Any], message: str,
@@ -193,6 +365,14 @@ class FileOpsServer(SchemaBasedToolServer):
         search_config.setdefault("collection_name", f"file_ops_{name}")
 
         self.search_engine = FileSearchEngine(self.validator.allowed_dirs, search_config)
+        #: session id -> what the changed-files notice has told it (on_pre_llm_call),
+        #: the most recently used last
+        self._notice_state: Dict[str, _NoticeState] = {}
+        #: Own writes of sessions no notice has looked after (yet): kept
+        #: aside, where only others like them push them out. The hook takes
+        #: a session's over on its first call -- tool_preload's writes in that
+        #: same call come before it.
+        self._unclaimed: Dict[str, _NoticeState] = {}
         # NOT started here. Building the index at construction looks tempting --
         # the instance that owns an index is not always the one that searches
         # it -- but measured on this machine it started four background builds
@@ -439,6 +619,8 @@ class FileOpsServer(SchemaBasedToolServer):
             create_dirs=True,
             encoding="utf-8"
         )
+        if result.get("status") == "success":
+            await self._remember_own(params, written=[safe_path])
 
         # Whether a file was there is what "replaced" says -- the request only
         # says whether it was allowed; a refusal must not close with a healthy line.
@@ -462,6 +644,8 @@ class FileOpsServer(SchemaBasedToolServer):
         self._refuse_root(safe_path, "delete")
 
         result = await self.operations.delete_path_safe(safe_path, recursive=recursive)
+        if result.get("status") == "success":
+            await self._remember_own(params, gone=[safe_path])
 
         if status and result.get("status") == "success":
             path_type = result.get("type", "path")
@@ -493,6 +677,8 @@ class FileOpsServer(SchemaBasedToolServer):
         safe_dest = self.validator.validate_path(destination, write=True)
 
         result = await self.operations.move_path_safe(safe_source, safe_dest)
+        if result.get("status") == "success":
+            await self._remember_own(params, written=[safe_dest], gone=[safe_source])
 
         if status and result.get("status") == "success":
             path_type = result.get("type", "path")
@@ -535,6 +721,8 @@ class FileOpsServer(SchemaBasedToolServer):
         self.validator.validate_path(str(new_path), write=True)
 
         result = await self.operations.rename_path_safe(safe_path, new_name)
+        if result.get("status") == "success":
+            await self._remember_own(params, written=[new_path], gone=[safe_path])
 
         if status and result.get("status") == "success":
             path_type = result.get("type", "path")
@@ -589,6 +777,7 @@ class FileOpsServer(SchemaBasedToolServer):
                 return result
 
             # Success
+            await self._remember_own(params, written=[safe_path])
             if status:
                 changes = result.get("changes", {})
                 replacements = changes.get("replacements", 0)
@@ -832,6 +1021,231 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error": str(e),
                 "error_type": type(e).__name__
             }
+
+    # ------------------------------------------------------------------
+    # Hook: which files changed since the agent's last turn (opt-in per agent)
+    # ------------------------------------------------------------------
+
+    async def on_pre_llm_call(self, context: Any) -> Any:
+        """changed_files_notice: before the first LLM call of a turn, tell the
+        agent which files in its workspace were added, changed or removed since
+        its previous turn -- by the user, another agent or a command.
+
+        Without it an agent works on from what it read earlier: a file the
+        user copied in is unknown to it, one the user edited is quoted from
+        memory. The changes come from the semantic index's passes (its journal,
+        see search.py), so the hook needs an instance that builds one.
+
+        What counts is when a pass FOUND a change, on the clock that also
+        stamps the messages. File times would not do: copying over a file can
+        give it an OLDER mtime, and edits made while the agent worked would
+        fall before its reply. Each finding is told once per session; the
+        boundary below which findings count as told moves only as far as the
+        journal is known to be complete (another process's pass reaches it
+        only when this one next reads the state). What this session's own
+        write tools did is left out while the file still holds what they left
+        (by content: an own edit and the user's before the next pass are one
+        finding, and the user's content makes it news); changes the agent made
+        through a shell are listed too.
+
+        Once per turn, appended as a developer note behind what the turn
+        already holds (tool_preload's results included): append-only, so the
+        cached prefix stays as it was.
+        """
+        from agent_system.hooks import HookResult
+        from agent_system.llm.models import ChatMessage
+
+        unchanged = HookResult(success=True, modified=False, context=context)
+        try:
+            messages = list(getattr(context, "messages", None) or [])
+            session = getattr(context, "session_id", None) or ""
+            # From the first call on, so the session's own writes are kept
+            # with the sessions a notice looks after.
+            state = self._notice_session(session)
+            turn = _due_turn(messages)
+            if turn is None:
+                return unchanged
+            head, previous = turn
+            engine = self.search_engine._owner() or self.search_engine
+            if not engine.config.get("enable_semantic_search", True):
+                return unchanged
+            if state.since is None:
+                # Not known (a new process): from the last notice's look, which
+                # it carries as its timestamp -- else from the previous turn's
+                # head, before which nothing of this session was looked at.
+                since = next((_message_time(m) for m in reversed(messages[:head])
+                              if field_of(m, "injected_by") == _NOTICE_BY), None)
+                if since is None:
+                    since = _message_time(messages[previous])
+                if since is None:
+                    return unchanged
+                state.since = since
+            if not engine._vector_store_initialized:
+                engine._init_vector_store()
+            engine._ensure_indexing_started()
+            stale = await engine.freshen()
+            now = time.time()
+
+            asked_from = state.since
+            findings = [entry for entry in engine.findings_after(asked_from)
+                        if entry not in state.shown]
+            own = dict(state.own)         # a write of the session may land meanwhile
+
+            def judge() -> Tuple[List[Tuple[float, str, str]], Dict[str, Optional[_Own]]]:
+                news = [entry for entry in findings if not _is_own(entry, own)]
+                listed = {_key(entry[2]) for entry in news}
+                news.extend((now, kind, path) for kind, path in _own_divergence(own)
+                            if _key(path) not in listed)
+                # Someone else moved a path the session wrote on: told now,
+                # what it holds now is what the agent knows of it -- a later
+                # finding of the same is not news again, a further change is.
+                # A folder it removed keeps its record (its own removals in
+                # there may still be found late); what it holds now is known
+                # from here on.
+                told: Dict[str, _Own] = {}
+                known: List[Tuple[str, _Own]] = []
+                for _, _, path in news:
+                    key = _key(path)
+                    if key not in own:
+                        continue
+                    target = Path(own[key][0])
+                    if target.is_dir():
+                        files = islice((f for f in target.rglob("*") if f.is_file()), _OWN_TREE_FILES)
+                        known.extend((_key(f), _own_record(f)) for f in files)
+                    else:
+                        told[key] = _own_record(target, removed=not os.path.lexists(target))
+                return news, told, known
+
+            news, told, known = await asyncio.to_thread(judge)
+            for key, record in told.items():
+                if state.own.get(key) is own[key]:    # else written again meanwhile: that stands
+                    state.own[key] = record
+            for key, record in known:
+                state.own.setdefault(key, record)
+            while len(state.own) > _OWN_LIMIT:
+                state.own.pop(next(iter(state.own)))
+
+            # Told (or the agent's own): not again. The boundary moves to
+            # where the journal is complete; what lies above it stays listed
+            # in `shown` until the boundary passes it.
+            since = max(asked_from, min(now, engine._journal_synced_at))
+            state.shown = {entry for entry in state.shown | set(findings) if entry[0] > since}
+            state.since = since
+
+            changes = latest_per_path(news)
+            if not changes:
+                return unchanged
+            hook_config = getattr(context, "hook_config", None) or {}
+            # Against where this look asked from, not where the boundary moved.
+            incomplete = stale is not None or engine._journal_trimmed_until > asked_from
+            text = self._changed_files_notice(changes, incomplete,
+                                              hook_config.get("max_listed", 30))
+            context.messages = messages + [ChatMessage(
+                role=DEVELOPER, content=text, injected_by=_NOTICE_BY,
+                timestamp=datetime.fromtimestamp(now, timezone.utc))]
+            return HookResult(success=True, modified=True, context=context,
+                              metadata={"changed_files": len(changes)})
+        except Exception as e:  # noqa: BLE001 - a notice must never sink the call
+            logger.warning("%s: changed-files notice skipped: %s", self.name, e, exc_info=True)
+            return unchanged
+
+    def _notice_session(self, session: str) -> _NoticeState:
+        """The notice state of *session*, made the most recently used."""
+        state = (self._notice_state.pop(session, None) or self._unclaimed.pop(session, None)
+                 or _NoticeState())
+        self._notice_state[session] = state
+        while len(self._notice_state) > _NOTICE_SESSIONS:
+            self._notice_state.pop(next(iter(self._notice_state)))
+        return state
+
+    async def _remember_own(self, params: Dict[str, Any], written=(), gone=()) -> None:
+        """What a successful write of this instance's tools left, per session:
+        the changed-files notice leaves out a finding the file still matches.
+
+        Per session, because sessions share an instance: one agent's edit is
+        news to another. Kept in memory -- after a restart the agent's last
+        edits are listed once as somebody else's. Never raises: the write it
+        follows has succeeded."""
+        session = params.get("_session_id")
+        if not session:
+            return
+
+        def digests() -> List[Tuple[str, _Own]]:
+            out = [(_key(path), _own_record(path, removed=True)) for path in gone]
+            for path in written:
+                if path.is_dir():
+                    files = list(islice((f for f in path.rglob("*") if f.is_file()),
+                                        _OWN_TREE_FILES))
+                else:
+                    files = [path]
+                out.extend((_key(f), _own_record(f)) for f in files)
+            return out
+
+        try:
+            # Read in a thread (a moved folder may hold thousands of files),
+            # applied here on the loop, where the hook reads the same dict.
+            updates = await asyncio.to_thread(digests)
+        except Exception as e:  # noqa: BLE001 - a lost record only lists the edit
+            logger.debug("%s: own write not remembered: %s", self.name, e)
+            return
+        session = str(session)
+        if session in self._notice_state:
+            own = self._notice_session(session).own
+        else:
+            aside = self._unclaimed.pop(session, None) or _NoticeState()
+            self._unclaimed[session] = aside
+            while len(self._unclaimed) > _NOTICE_SESSIONS:
+                self._unclaimed.pop(next(iter(self._unclaimed)))
+            own = aside.own
+        for key, value in updates:
+            if value[1] is None:
+                # Removed: what its own writes left below is gone with it.
+                below = key + os.sep
+                for inner in [k for k in own if k.startswith(below)]:
+                    del own[inner]
+            own.pop(key, None)
+            own[key] = value
+        fresh = {key for key, _ in updates}
+        while len(own) > _OWN_LIMIT:
+            oldest = next(iter(own))
+            if oldest in fresh:
+                break                     # the rest is this write's: all of it holds
+            own.pop(oldest)
+
+    def _changed_files_notice(self, changes: List[Tuple[str, str]],
+                              incomplete: bool, max_listed: Any) -> str:
+        try:
+            limit = max(1, int(max_listed))
+        except (TypeError, ValueError):
+            limit = 30
+        roots = sorted((Path(r) for r in self.validator.allowed_dirs),
+                       key=lambda root: len(root.parts), reverse=True)
+
+        def shown(path: str) -> str:
+            for root in roots:
+                try:
+                    return Path(path).relative_to(root).as_posix()
+                except ValueError:
+                    continue
+            return path
+
+        lines = []
+        listed = 0
+        for kind, label in (("added", "added"), ("modified", "changed"), ("removed", "removed")):
+            paths = [shown(path) for k, path in changes if k == kind][:max(0, limit - listed)]
+            if paths:
+                lines.append(f"{label}: {', '.join(paths)}")
+                listed += len(paths)
+        text = ("Files in the workspace changed since your previous turn, other than "
+                "through your own file edits (the user, another agent or a command):\n"
+                + "\n".join(lines))
+        if len(changes) > listed:
+            text += (f"\n...and {len(changes) - listed} more, not listed -- "
+                     "search_files or grep_search finds them.")
+        if incomplete:
+            text += ("\nThe workspace index is still catching up or has forgotten older "
+                     "changes, so this list may be incomplete.")
+        return text + "\nRead a file again before relying on what you saw of it earlier."
 
     async def stop_plugin(self) -> None:
         """Release the semantic index: the framework's ONE teardown hook.

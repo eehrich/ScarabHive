@@ -345,13 +345,43 @@ process that ends does not take the work with it: the next one carries on
 where it stopped. Files with the same content -- nine checkouts of one
 repository, say -- are embedded once; the shallowest is the original, and
 when it changes or goes one of its copies takes its place. A file larger
-than @{tt}max_file_size_for_indexing_kb@{utt} is left out. An instance that
-only reads a shared index (@{tt}enable_indexing: false@{utt}, like
-@{tt}coder_fs_ro@{utt}) answers as soon as the store holds anything. After
-that, the index is refreshed every @{tt}auto_reindex_interval@{utt} seconds
-(300), and a search picks up what changed since, at most every 30 seconds,
-without waiting for it. The embeddings are made locally; nothing leaves the
-machine. The index lives in @{tt}data/cache/file_ops_chromadb@{utt}, one
+than @{tt}max_file_size_for_indexing_kb@{utt} is left out; binary and empty
+files are looked at once and then left alone until they change. An instance
+that only reads a shared index (@{tt}enable_indexing: false@{utt}, like
+@{tt}coder_fs_ro@{utt}) asks the instance that builds it when that one runs
+in the same process, and otherwise answers as soon as the store holds
+anything. The embeddings are made locally; nothing leaves the machine.
+
+@{h2}Keeping up with the disk
+
+Before a search answers, it asks the disk whether anything the index covers
+changed since the last pass -- every folder, file and ignore file the pass
+saw is compared with what it was then (0.3 s on a tree of 45.000 files).
+Nothing changed: the answer comes at once. Something changed: a pass reads
+just the changed files, and the search waits for it up to
+@{tt}index_wait_seconds@{utt} (10). A pass that needs longer -- a whole
+folder copied in -- goes on, and the answer says so: @{tt}index_fresh:
+false@{utt} with @{tt}index_update@{utt} (files read of how many, seconds
+left) and a note pointing to grep_search, which reads the files themselves.
+Besides, the index is refreshed every @{tt}auto_reindex_interval@{utt}
+seconds (300) in the background.
+
+What a pass found is kept for a day (2.000 entries) in the index state:
+added, changed, removed. The hook @{tt}<instance>.changed_files_notice@{utt}
+(off unless an agent switches it on; the coder does) turns that into a note
+before the first LLM call of a turn: which files changed since the agent's
+previous turn, other than through this instance's own write tools -- copied
+in by the user, edited by another agent, written by a command. A change is
+the agent's own while the file still holds what its last write left there,
+or stays gone after it deleted or moved it away; once someone else changes
+it again, or puts back what the agent removed, it is listed -- and so is a
+change a pass found before the agent's own edit of that file. Edits the agent
+made through a shell are listed too; they cannot be told apart. Each change
+is told once per session.
+@{tt}max_listed@{utt} (30) caps the paths named. The note is appended behind
+the turn, never rewritten, so the cached prompt stays as it was.
+
+The index lives in @{tt}data/cache/file_ops_chromadb@{utt}, one
 collection per instance (@{tt}file_ops_<instance>@{utt}). Two instances on
 the same tree can share one: give both the same
 @{tt}collection_name@{utt} and set @{tt}enable_indexing: false@{utt} on the
@@ -475,6 +505,10 @@ folder is the launch folder.
 @{bullet}There is no size limit on reading or writing a file; only
 read_file's pages and grep's skipping of large files bound what an answer
 holds.
+@{bullet}What the agent wrote is remembered in the process, per session:
+after a restart its last edits are listed once in the change note.
+@{bullet}A change that keeps a file's modification time is not seen by the
+index pass, nor by the change note.
 @endnode
 
 @node setup "Setting it up"
@@ -575,6 +609,7 @@ enable_semantic_search | false | the semantic_search tool works
 enable_indexing | true | this instance builds and refreshes the index; false: it only reads one
 index_on_startup | true | the first semantic search starts the build; false: nothing ever does
 auto_reindex_interval | 300 | seconds between refreshes of the index
+index_wait_seconds | 10 | how long a search waits for the index to catch up with changed files; 0: never
 collection_name | file_ops_<instance> | the index collection; the same name shares one
 chroma_db_path | data/cache/file_ops_chromadb | where the index lives
 force_recreate_chroma_collection | false | drop the index when the store opens

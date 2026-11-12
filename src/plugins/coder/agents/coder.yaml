@@ -222,6 +222,15 @@ plugins:
                   params:
                     query: "{message}"
                     max_results: 8
+            # Which files changed in the workspace since the previous turn --
+            # copied in, edited or deleted by the user, another agent or a
+            # command, not by coder_fs's own edits. Without it the coder works
+            # on from what it read earlier. A developer note behind the turn
+            # (after tool_preload's results), only when something changed;
+            # the changes come from coder_fs's semantic index, which this
+            # instance builds.
+            coder_fs.changed_files_notice:
+              enabled: true
 
       metadata:
         author: "Enrico Ehrich"

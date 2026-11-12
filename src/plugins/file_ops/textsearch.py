@@ -493,11 +493,20 @@ def is_text_file(path: Path) -> bool:
     No list can be complete, so there is none: a NUL byte in the first few KB
     is the classic binary marker, and everything else is searchable.
     """
+    return bool(text_verdict(path))  # unreadable — nothing to search
+
+
+def text_verdict(path: Path) -> Optional[bool]:
+    """``is_text_file``, with None for a file that could not be read at all.
+
+    The index needs the difference: a binary file is left out until it changes,
+    a locked one is tried again by the next pass.
+    """
     try:
         with open(path, "rb") as handle:
             chunk = handle.read(SNIFF_BYTES)
     except OSError:
-        return False  # unreadable — nothing to search
+        return None
     if not chunk:
         return False  # empty file carries no searchable text
     return looks_like_text(chunk)
@@ -656,6 +665,7 @@ def walk_files(
     protected: Sequence[Path] = (),
     allowed: Sequence[Path] = (),
     on_directory: Optional[Callable[[Path], None]] = None,
+    on_ignore_file: Optional[Callable[[Path], None]] = None,
 ) -> Iterator[Path]:
     """Yield files under *root*, PRUNING excluded directories on the way down.
 
@@ -687,6 +697,11 @@ def walk_files(
     and ripgrep read them -- not only the root's. Only the root's used to, so
     a checkout below the root brought its build output and its own ignored
     data along.
+
+    *on_directory* is called for a directory when it is queued, i.e. BEFORE it
+    is scanned, and *on_ignore_file* for an ignore file before it is read: a
+    caller that stats them there (the semantic index's freshness stamps) sees
+    every later change as a moved mtime.
     """
     protected = set(protected)
     # (directory, the root its entries are judged against, the ignore files above it)
@@ -699,7 +714,15 @@ def walk_files(
         except (OSError, PermissionError) as exc:
             logger.debug("FILE_OPS: cannot read %s: %s", current, exc)
             continue
-        chain = _chain_for(above, current, {e.name for e in entries}) if respect_ignore else ()
+        if respect_ignore:
+            names = {e.name for e in entries}
+            if on_ignore_file is not None:
+                for name in IGNORE_FILES:
+                    if name in names:
+                        on_ignore_file(current / name)
+            chain = _chain_for(above, current, names)
+        else:
+            chain = ()
         base_prefix = _prefix(base)
         for entry in entries:
             name = entry.name
