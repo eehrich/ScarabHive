@@ -1063,6 +1063,17 @@ could start through a sub-agent manager of its own, and call only tools
 its author may call -- checked when it is validated and again before every
 activity. @{tt}stategraph_catalog(for_workflow=true)@{utt} lists exactly
 those.
+@{bullet}@{b}Not its code -- an open gap.@{ub} Its @{tt}guard@{utt},
+@{tt}effect@{utt}, @{tt}map@{utt} and @{tt}until@{utt} fields are plain
+Python with all builtins, and a @{tt}call:@{utt} activity imports any
+module it names; both run in the API process with the rights of plugin
+code, whatever tools its author has. The subset the skill teaches (no
+@{tt}call:@{utt}, no @{tt}resources@{utt}, no @{tt}callback@{utt}) is a
+convention the start does not check. What bounds this today is who may
+start a workflow (an admin, a user in @{tt}allowed_users@{utt}); the risk
+left is a prompt injection into the agent that writes one -- a web page
+or a file it read. Give @{tt}run_workflow@{utt} only to agents you would
+give a shell.
 @{bullet}@{b}One self-contained text.@{ub} No @{tt}imports@{utt}, no
 @{tt}python:@{utt}; submachines go under @{tt}machines:@{utt}. Its id may
 not name a saved machine. It runs with the instance's runner.
@@ -1567,6 +1578,8 @@ that can start such an agent through its SAM. Checked when validating and again 
 for the tool of a @{tt}tool@{utt} activity.
 @{bullet}@{tt}python:@{utt} and @{tt}imports:@{utt} resolve only inside the
 machine folders.
+@{bullet}A dynamic workflow's code is not bounded by its author's tools --
+an open gap (@{" What bounds a workflow " link workflows}).
 @{bullet}A mock-only run has no connection to agents or tools at all.
 
 @{h2}Opening the callback route
