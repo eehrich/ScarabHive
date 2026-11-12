@@ -729,6 +729,19 @@ def test_usage_of_sums_the_run_and_its_sub_requests(tmp_path):
     assert runner.usage_of("ev-1", tmp_path / "nothing")["cost"] is None
 
 
+def test_usage_of_counts_a_task_with_a_thousand_machine_runs(tmp_path):
+    """Every machine run a task started is a root of its own -- past SQLite's expression depth when they were one
+    OR each, and the error read as an unknown usage. A record two roots match counts once; one from before
+    *since* only for the task itself."""
+    data = tmp_path / "run-data"
+    machines = [f"sg{i}" for i in range(1500)]
+    _usage_db(data, [("ev-1", 0.10), ("sg7", 0.02), ("sg7_sub", 0.03), ("sg1499_x", 0.04), ("sg70", 0.5, 1.0),
+                     ("ev-1_early", 0.01, 1.0), ("ev-1_m_x", 0.05), ("other", 9.0)])
+    # ev-1_m_x is the task's (ev-1_...) and the machine run ev-1_m's: once
+    usage = runner.usage_of("ev-1", data, also=[*machines, "sg7", "ev-1", "ev-1_m"], since=100.0)
+    assert usage["calls"] == 6 and usage["cost"] == pytest.approx(0.25)
+
+
 def test_usage_of_names_what_each_agent_really_ran_on(tmp_path):
     """A fallback in an agent's chain shows: the calls of the run and its sub-requests, per agent and model."""
     import sqlite3

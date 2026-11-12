@@ -678,13 +678,20 @@ def usage_of(request_id: str, data: Optional[Path], also: Sequence[str] = (),
     try:
         # as_uri: a '#' or '%' in the path would otherwise cut the URI -- and open a stray database read-write
         with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=10) as conn:
-            # '`' sorts right after '_': the range is exactly the ids that start with "<id>_".
-            under = "(request_id = ? OR (request_id > ? AND request_id < ?))"
-            machines = [root for root in dict.fromkeys(also) if root != request_id]
-            late = "" if since is None else " AND timestamp >= ?"
-            mine = "FROM usage_snapshots WHERE " + " OR ".join([under] + [f"({under}{late})"] * len(machines))
-            ids = tuple(value for i, root in enumerate([request_id, *machines])
-                        for value in (root, root + "_", root + "`", *((since,) if i and since is not None else ())))
+            # The roots in a table of the connection's own, not one OR per root: a task's machine runs can number
+            # a thousand, past SQLite's expression depth -- and the error would read as an unknown usage.
+            conn.execute("CREATE TEMP TABLE roots (root TEXT, since REAL)")
+            conn.executemany("INSERT INTO roots VALUES (?, ?)", [(request_id, None)] + [
+                (root, since) for root in dict.fromkeys(also) if root != request_id])
+            # One index range per root, [root, root + '`'): '`' sorts right after '_', and of the ids in it the
+            # root itself and those that start with "<root>_" are the run's. rowid IN: a record matching several
+            # roots counts once.
+            mine = ("FROM usage_snapshots WHERE rowid IN (SELECT u.rowid FROM roots r JOIN usage_snapshots u "
+                    "ON u.request_id >= r.root AND u.request_id < r.root || '`' "
+                    "WHERE (u.request_id = r.root OR u.request_id > r.root || '_')"
+                    # Named only with a since: an older store has no timestamp column
+                    + ("" if since is None else " AND (r.since IS NULL OR u.timestamp >= r.since)") + ")")
+            ids = ()
             row = conn.execute("SELECT COUNT(*), SUM(cost), SUM(cost IS NULL), SUM(prompt_tokens), "
                                f"SUM(completion_tokens) {mine}", ids).fetchone()
             try:
