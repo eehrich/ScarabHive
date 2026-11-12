@@ -239,11 +239,14 @@ async def test_a_detached_run_answers_at_once_and_hands_its_answer_to_the_status
             assert running["completed"] is False and "result" not in running, running
             # a caller taking the run over counts its work from its start
             assert isinstance(running["started_at"], float) and running["started_at"] <= time.time(), running
+            assert running["completed_at"] is None, running
         finally:
             go.set()
         status = await _status_once_over(client, request_id)
 
     assert status["result"]["summary"] == "done", status
+    # when it ended: a caller that watches it (a worker polling once a minute) is given time to see it first
+    assert running["started_at"] <= status["completed_at"] <= time.time(), status
 
 
 async def test_a_detached_run_that_breaks_says_so_in_its_result(tmp_path, monkeypatch):

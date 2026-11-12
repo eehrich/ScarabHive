@@ -93,6 +93,8 @@ async def get_request_status(request_id: str, request: Request, ctx: AppContext 
             "events_buffered": len(job.events),
             # When the run began (epoch s): a caller taking it over counts its work from here
             "started_at": job.created_at,
+            # When it ended (epoch s), None while it runs: a caller that watches it can be given time to see it
+            "completed_at": job.completed_at,
         }
         if job.result is not None and job.status != JobStatus.RUNNING:
             answer["result"] = job.result   # the body POST /run would have answered with
