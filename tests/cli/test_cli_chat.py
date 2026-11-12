@@ -3538,6 +3538,38 @@ class TestWhatACtrlCStops:
 
         assert delivered == ["r1"]
 
+    def test_a_ctrl_c_inside_the_cancel_delivers_it_again(self, monkeypatch):
+        """The second Ctrl-C landed in the cancel's own step (it does its work
+        there, before its first await): the waiter ended with it, the cancel
+        half delivered, and the turn ran on until the grace ran out."""
+        import agent_system.cli_utils.chat as chat
+
+        monkeypatch.setattr(chat.turn, "_CANCEL_GRACE_S", 0.01)
+        tries, delivered = [], []
+
+        class _Agent:
+            async def cancel_request(self, request_id):
+                tries.append(request_id)
+                if len(tries) == 1:
+                    raise KeyboardInterrupt   # as the SIGINT lands in this frame
+                delivered.append(request_id)
+                return True
+
+        loop = asyncio.new_event_loop()
+        records = []
+        loop.set_task_factory(lambda lp, coro, **kw: records.append(asyncio.Task(coro, loop=lp, **kw))
+                              or records[-1])
+        try:
+            turn = loop.create_task(asyncio.sleep(10))
+            chat._cancel_turn(loop, _inject_ctx(_Agent()), turn, {"request_id": "r1"},
+                              ChatRenderer(ansi=False))
+        finally:
+            loop.close()
+
+        assert delivered == ["r1"], tries
+        assert not [t for t in records if t.done() and not t.cancelled() and t._log_traceback], \
+            "a waiter's exception was left unretrieved"
+
     def test_a_cancelled_turn_shows_what_it_cost(self, monkeypatch, capsys):
         def probe(loop, ctx, task, renderer, editor=None):
             return {"cancelled": True,

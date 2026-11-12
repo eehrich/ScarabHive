@@ -290,8 +290,9 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         # be caught explicitly or it escapes the REPL and kills the chat, the
         # opposite of the "again to force" we just promised.
         try:
-            _run_waiter(loop, asyncio.wait_for(ctx.agent.cancel_request(request_id), timeout=5),
-                        finish=True)
+            def deliver():
+                return asyncio.wait_for(ctx.agent.cancel_request(request_id), timeout=5)
+            _run_waiter(loop, deliver(), again=deliver)
         except KeyboardInterrupt:
             logger.debug("second Ctrl-C during graceful cancel")
         except Exception:
@@ -321,7 +322,7 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
             "usage": state.get("usage") or {}, **({"refused": state["refused"]} if state.get("refused") else {})}
 
 
-def _run_waiter(loop: asyncio.AbstractEventLoop, coro: Any, *, finish: bool = False) -> Any:
+def _run_waiter(loop: asyncio.AbstractEventLoop, coro: Any, *, again: Any = None) -> Any:
     """run_until_complete for a wait_for wrapper that a Ctrl-C must not leave behind.
 
     A second Ctrl-C that lands in the TURN's frames (a slow import inside a
@@ -332,18 +333,23 @@ def _run_waiter(loop: asyncio.AbstractEventLoop, coro: Any, *, finish: bool = Fa
     of a task it raised in its own step only when it created that task itself,
     so that is done here too.
 
-    ``finish``: a Ctrl-C lets the waiter run to its own timeout instead of
-    cancelling it. For the graceful cancel: cancelled before its first step,
-    the cancel never reached the agent, and the turn ran on -- calling the
-    LLM -- until the grace ran out.
+    ``again``: for the graceful cancel, which a Ctrl-C must not lose -- it
+    makes the waiter anew. The waiter runs to its own timeout instead of
+    being cancelled: cancelled before its first step, the cancel never
+    reached the agent, and the turn ran on -- calling the LLM -- until the
+    grace ran out. One the Ctrl-C landed in (its own step raised it, the
+    cancel half delivered: the agent's cancel does its work in that step) is
+    made again; a cancel is idempotent.
     """
     waiter = loop.create_task(coro)
     try:
         return loop.run_until_complete(waiter)
     except BaseException:
-        for _ in range(3 if finish else 0):
+        for _ in range(3 if again else 0):
             if waiter.done():
-                break
+                if waiter.cancelled() or not isinstance(waiter.exception(), KeyboardInterrupt):
+                    break
+                waiter = loop.create_task(again())
             try:
                 loop.run_until_complete(asyncio.gather(waiter, return_exceptions=True))
             except KeyboardInterrupt:
