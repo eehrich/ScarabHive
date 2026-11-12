@@ -133,8 +133,10 @@ def _path_candidates(word: str) -> list[tuple[str, str]]:
 
 
 def _completions_for(ctx: "_ChatContext", skill_names: Sequence[str],
-                     line: str) -> list[tuple[str, str]]:
-    """(value, hint) pairs that could continue the line being typed.
+                     line: str) -> Sequence[prompt_input.Candidate]:
+    """(value, hint) pairs that could continue the line being typed -- a
+    built-in once, under its name, with its aliases as the spellings that find
+    it (prompt_input._build_completer).
 
     The REPL knows what exists -- its commands, this agent's plugin commands,
     the skills on disk, the sessions of this user -- so the knowledge stays
@@ -146,12 +148,15 @@ def _completions_for(ctx: "_ChatContext", skill_names: Sequence[str],
     if not separator:
         if not head.startswith("/"):
             return []
+        # Plugin commands and skills carry their one spelling too: as spellings they are
+        # matched without case, as the parser runs /Compact -- argument values (paths,
+        # profile names) further down stay matched as typed.
         spellings = _plugin_spellings(ctx.plugin_commands)
-        return ([(alias, command.summary)
-                 for command in commands_for(_CLI_SURFACE) for alias in command.aliases]
-                + [(f"/{spelling}", command.summary)
+        return ([(command.aliases[0], command.summary, command.aliases)
+                 for command in commands_for(_CLI_SURFACE)]
+                + [(f"/{spelling}", command.summary, (f"/{spelling}",))
                    for spelling, command in zip(spellings, ctx.plugin_commands)]
-                + [(f"/{name}", "skill") for name in skill_names])
+                + [(f"/{name}", "skill", (f"/{name}",)) for name in skill_names])
 
     command, _payload = parse_chat_command(head)
     word = prompt_input._completion_word(line)

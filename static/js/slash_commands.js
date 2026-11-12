@@ -118,30 +118,49 @@
 
   // ------------------------------------------------------------ suggestions
 
+  // Where an entry stands, as in the terminal (prompt_input._build_completer): a
+  // spelling typed in full first, then entries whose own name starts with the
+  // word, then those only an alias reaches -- Enter takes the first, and "/res"
+  // is /resume, not /new because of its alias /reset.
+  function rank(needle, name, spellings) {
+    if (spellings.some((s) => s.toLowerCase() === needle)) return 0;
+    return name.toLowerCase().indexOf(needle) === 0 ? 1 : 2;
+  }
+
   function candidates(word) {
     const data = catalogue || EMPTY;
     const needle = word.toLowerCase();
     const out = [];
     data.commands.forEach((c) => {
-      // Match any spelling, but always offer the canonical one.
+      // Match any spelling, but always offer the canonical one -- and say which
+      // other spellings reach it, unless its usage line names them already.
       if (c.aliases.some((a) => a.toLowerCase().indexOf(needle) === 0)) {
-        out.push({ insert: c.aliases[0], label: c.display, hint: c.summary, kind: 'command' });
+        const named = c.display.split(/[\s,]+/);
+        const others = c.aliases.slice(1).filter((a) => named.indexOf(a) === -1);
+        const label = others.length
+          ? c.display + ' (' + others.map((a) => a.slice(1)).join(', ') + ')' : c.display;
+        out.push({ insert: c.aliases[0], label: label, hint: c.summary, kind: 'command',
+                   rank: rank(needle, c.aliases[0], c.aliases) });
       }
     });
     // Between the built-ins and the skills, which is the order they win in:
     // a plugin cannot shadow /help, and a skill folder cannot shadow a plugin.
     data.plugin_commands.forEach((c) => {
-      if (('/' + c.spelling).toLowerCase().indexOf(needle) === 0) {
-        out.push({ insert: '/' + c.spelling, label: c.display,
-                   hint: c.summary || '', kind: 'plugin' });
+      const spelling = '/' + c.spelling;
+      if (spelling.toLowerCase().indexOf(needle) === 0) {
+        out.push({ insert: spelling, label: c.display, hint: c.summary || '', kind: 'plugin',
+                   rank: rank(needle, spelling, [spelling]) });
       }
     });
     data.skills.forEach((s) => {
-      if (('/' + s.name).toLowerCase().indexOf(needle) === 0) {
-        out.push({ insert: '/' + s.name, label: '/' + s.name, hint: s.summary || '', kind: 'skill' });
+      const spelling = '/' + s.name;
+      if (spelling.toLowerCase().indexOf(needle) === 0) {
+        out.push({ insert: spelling, label: spelling, hint: s.summary || '', kind: 'skill',
+                   rank: rank(needle, spelling, [spelling]) });
       }
     });
-    return out;
+    // Array.prototype.sort is stable: within a rank the order above holds.
+    return out.sort((a, b) => a.rank - b.rank);
   }
 
   function ensureBox() {

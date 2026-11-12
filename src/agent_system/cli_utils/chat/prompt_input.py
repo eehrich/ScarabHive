@@ -19,7 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
 
 from agent_system.chat_actions import one_line as _one_line
 from agent_system.chat_commands import parse_chat_command
@@ -184,8 +184,24 @@ def _completion_word(line: str) -> str:
     return line.rsplit(" ", 1)[-1]
 
 
-def _build_completer(suggest: Callable[[str], list[tuple[str, str]]]) -> Any:
+#: What *suggest* answers: (value, hint), or (value, hint, spellings) for a
+#: command reached by more than one name -- the value is what gets written,
+#: the spellings are what the typed word is matched against.
+Candidate = Union[tuple[str, str], tuple[str, str, Sequence[str]]]
+
+
+def _build_completer(suggest: Callable[[str], Sequence[Candidate]]) -> Any:
     """A prompt_toolkit completer that asks *suggest* what fits the line.
+
+    A command with aliases is ONE entry under its own name, found by any of
+    its spellings -- "/q" offers "/exit (quit, q, bye)" and writes "/exit", as
+    the other coding CLIs do; listing every alias as an entry of its own put
+    four lines into the menu for one way out. A spelling the word matches
+    exactly goes first, so "/h" offers /help before /history; then the entries
+    whose own name starts with the word, and only then those an alias of
+    theirs reaches -- Tab takes the first entry, and "/res" is /resume, not
+    /new because of its alias /reset. Spellings are matched without case, as
+    the parser reads command words.
 
     Never raises into the prompt: an exception thrown while completing takes
     the editor down mid-keystroke, and losing the prompt is worse than losing
@@ -215,17 +231,33 @@ def _build_completer(suggest: Callable[[str], list[tuple[str, str]]]) -> Any:
             except Exception:
                 logger.debug("Completion failed", exc_info=True)
                 return
-            for value, hint in candidates:
-                if value.startswith(word):
-                    yield Completion(value, start_position=-len(word),
-                                     display_meta=hint)
+            lowered = word.lower()
+            offered = []
+            for candidate in candidates:
+                value, hint = candidate[0], candidate[1]
+                spellings = candidate[2] if len(candidate) > 2 else ()
+                if spellings:
+                    if not any(s.lower().startswith(lowered) for s in spellings):
+                        continue
+                    others = [s.lstrip("/") for s in spellings if s != value]
+                    label = f"{value} ({', '.join(others)})" if others else value
+                    exact = any(s.lower() == lowered for s in spellings)
+                    named = value.lower().startswith(lowered)
+                elif value.startswith(word):
+                    label, exact, named = value, value == word, True
+                else:
+                    continue
+                offered.append(((not exact, not named), value, label, hint))
+            for _rank, value, label, hint in sorted(offered, key=lambda o: o[0]):
+                yield Completion(value, start_position=-len(word), display=label,
+                                 display_meta=hint)
 
     return ThreadedCompleter(_ChatCompleter())
 
 
 def _build_prompt_editor(
     seed: Sequence[str],
-    suggest: Optional[Callable[[str], list[tuple[str, str]]]] = None,
+    suggest: Optional[Callable[[str], Sequence[Candidate]]] = None,
     loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> Optional[_PromptEditor]:
     """Line editing with an arrow-up history, or None to stay on input().

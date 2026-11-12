@@ -52,16 +52,23 @@ class ChatCommand:
         return self.usage or ", ".join(self.aliases)
 
 
+# The first alias is the name a surface offers; the others are spellings that
+# reach it -- the ones the other coding CLIs taught (Claude Code, opencode,
+# Gemini CLI and its successor Antigravity), so a hand used to them lands
+# right. Never one a shipped plugin command uses: a built-in takes the bare
+# name, and the plugin's command would be left to its plugin:name spelling
+# (tests/cli/test_chat_commands.py holds that against every schema.yaml).
 BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("exit", ("/exit", "/quit", "/q", "/bye"),
                 "end the chat (Ctrl-D / Ctrl-Z+Enter work too)",
                 usage="/exit, /quit, /q", surfaces=(CLI,)),
-    ChatCommand("new", ("/new",), "start a fresh session (current one stays saved)"),
+    ChatCommand("new", ("/new", "/clear", "/reset"),
+                "start a fresh session (current one stays saved)"),
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
     ChatCommand("sessions", ("/sessions",),
                 "list recent sessions of the agents meant for chat (0 = no limit, all = every one)",
                 usage="/sessions [count|all]"),
-    ChatCommand("resume", ("/resume",),
+    ChatCommand("resume", ("/resume", "/continue"),
                 "continue an earlier session by id or title; bare takes the last one",
                 usage="/resume [id|title]"),
     # Both surfaces, and both through what that surface already has: the
@@ -70,7 +77,7 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     # A session id cannot be renamed -- it is the key half a dozen stores file
     # their rows under -- so the title IS the name: /resume and --session take
     # it (SessionManager.resolve_session_ref).
-    ChatCommand("title", ("/title",), "name this session, bare shows the name -- /resume takes it",
+    ChatCommand("title", ("/title", "/rename"), "name this session, bare shows the name -- /resume takes it",
                 usage="/title [text]"),
     ChatCommand("agent", ("/agent",),
                 "agent of this chat: bare lists, a name switches (starts a new session)",
@@ -87,18 +94,20 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     # In the browser through the profile selector, as /agent goes through the
     # agent one: a command that disagreed with the button next to it would be
     # worse than no command.
-    ChatCommand("model", ("/model", "/llm"),
+    ChatCommand("model", ("/model", "/models", "/llm"),
                 "LLM of this session: bare lists, a name switches",
                 usage="/model [profile]"),
     # In the browser through the Thinking button next to the model one, for the
     # same reason as /model. It applies to whichever profile the chat runs on.
-    ChatCommand("think", ("/think", "/reasoning"),
+    ChatCommand("think", ("/think", "/effort", "/reasoning"),
                 "thinking level of this session: bare shows it, 'default' takes the model's own",
                 usage="/think [level|default]"),
     ChatCommand("tools", ("/tools",), "tools this agent really has (not what it claims)",
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),
-    ChatCommand("costs", ("/costs", "/cost"), "session cost so far, including sub-agents"),
+    # Not "/stats", which Claude Code and Gemini CLI spell it as too: a shipped
+    # plugin command has that name (see the catalogue's head).
+    ChatCommand("costs", ("/costs", "/cost", "/usage"), "session cost so far, including sub-agents"),
     ChatCommand("context", ("/context", "/ctx"),
                 "what fills the context window of this session"),
     ChatCommand("history", ("/history", "/hist"), "show the last n exchanges (default 6)",
@@ -120,7 +129,7 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 usage="/retry [files]"),
     # Files only, the conversation stays -- the other half of what Claude Code
     # keeps apart. Bare lists the checkpoints (file_checkpoints plugin).
-    ChatCommand("rewind", ("/rewind",),
+    ChatCommand("rewind", ("/rewind", "/checkpoint", "/restore"),
                 "put files back as they were before a checkpoint; bare lists them",
                 usage="/rewind [n]"),
     ChatCommand("export", ("/export",), "write this conversation to a markdown file",
@@ -134,7 +143,7 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 usage="/attach [<path> | clear]"),
     # $EDITOR in the terminal, whose prompt is one line; in the browser the
     # input already is that editor, and the argument goes into it unsent.
-    ChatCommand("edit", ("/edit",),
+    ChatCommand("edit", ("/edit", "/editor"),
                 "write the next message in $EDITOR -- in the browser, in the input "
                 "(argument pre-fills it)",
                 usage="/edit [text]"),
@@ -343,10 +352,14 @@ def suggest_command(word: str, extra: Iterable[str] = ()) -> Optional[str]:
     Prefixes first: "/h" is the common abbreviation-style slip, and difflib
     scores it far below any cutoff against "/help" (2 chars against 5).
     *extra* takes skill names (without the slash) so they compete too.
+    Among the prefixes a command's own name beats an alias of another one:
+    "/res" means /resume, not /new's alias /reset, though that is shorter.
     """
     lowered = word.lower()
+    named = {command.aliases[0] for command in BUILTIN_COMMANDS}
     candidates = list(_COMMAND_ALIASES) + [f"/{name}" for name in extra]
-    prefixed = sorted((c for c in candidates if c.startswith(lowered)), key=len)
+    prefixed = sorted((c for c in candidates if c.startswith(lowered)),
+                      key=lambda c: (c != lowered, c in _COMMAND_ALIASES and c not in named, len(c)))
     if prefixed:
         return prefixed[0]
     matches = difflib.get_close_matches(lowered, candidates, n=1, cutoff=0.6)

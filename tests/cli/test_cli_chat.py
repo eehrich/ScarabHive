@@ -4513,7 +4513,68 @@ class TestCompletion:
     def _values(self, ctx, line, skills=()):
         from agent_system.cli_utils.chat import _completions_for
 
-        return [value for value, _hint in _completions_for(ctx, skills, line)]
+        return [candidate[0] for candidate in _completions_for(ctx, skills, line)]
+
+    def _menu(self, ctx, line, skills=()):
+        """What the menu shows for *line*: the REPL's candidates through the editor's filter."""
+        import agent_system.cli_utils.chat as chat
+
+        completer = chat._build_completer(lambda typed: chat._completions_for(ctx, skills, typed))
+        return list(completer.get_completions(_document(line), None))
+
+    def test_a_command_is_one_entry_under_its_own_name(self, monkeypatch):
+        """Its aliases find it, they are no entries of their own: four lines for one way out
+        was what the menu showed."""
+        from agent_system.chat_commands import BUILTIN_COMMANDS
+
+        values = self._values(_completion_ctx(monkeypatch), "/")
+
+        for command in BUILTIN_COMMANDS:
+            if command.name == "exit" or len(command.aliases) > 1:
+                assert command.aliases[0] in values, command.name
+                assert not set(command.aliases[1:]) & set(values), f"an alias of {command.name} is an entry"
+
+    def test_an_alias_offers_the_command_it_reaches(self, monkeypatch):
+        """'/q' finds /exit and writes /exit -- the other coding CLIs answer it so."""
+        completions = self._menu(_completion_ctx(monkeypatch), "/q")
+
+        assert [c.text for c in completions] == ["/exit"]
+        assert completions[0].start_position == -2, "it must replace what was typed"
+        assert "quit" in completions[0].display_text, "the menu does not say why /exit is offered"
+
+    def test_a_spelling_typed_in_full_comes_first(self, monkeypatch):
+        """'/h' is /help's alias, and /history starts with it too: the exact one leads."""
+        texts = [c.text for c in self._menu(_completion_ctx(monkeypatch), "/h")]
+
+        assert texts[0] == "/help" and "/history" in texts
+
+    def test_an_alias_is_found_whatever_its_case(self, monkeypatch):
+        """The parser reads /Q as /q; the menu has to as well."""
+        assert [c.text for c in self._menu(_completion_ctx(monkeypatch), "/Q")] == ["/exit"]
+
+    @pytest.mark.parametrize("typed, first, also", [
+        ("/res", "/resume", "/new"),          # /new's alias /reset is the shorter fit
+        ("/cont", "/context", "/resume"),     # /resume's alias /continue
+        ("/u", "/undo", "/costs"),            # /costs' alias /usage
+    ])
+    def test_a_name_comes_before_an_alias_of_another_command(self, monkeypatch, typed, first, also):
+        """Tab takes the first entry: '/res' Tab is /resume, not a new session."""
+        texts = [c.text for c in self._menu(_completion_ctx(monkeypatch), typed)]
+
+        assert texts[0] == first and also in texts, texts
+
+    def test_plugin_commands_and_skills_are_found_whatever_their_case(self, monkeypatch):
+        """The parser runs /Compact and /WRITER; the menu offered nothing for them."""
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.plugin_commands = [chat.PluginCommand(
+            plugin="context_engineer", name="compact", summary="shrink it", tool="context_engineer_compact")]
+
+        compact = self._menu(ctx, "/Comp")
+        assert [c.text for c in compact] == ["/compact"]
+        assert compact[0].display_text == "/compact", "an entry without aliases got brackets"
+        assert [c.text for c in self._menu(ctx, "/WRI", skills=["writer"])] == ["/writer"]
 
     def test_a_command_word_offers_commands_skills_and_plugin_commands(
             self, monkeypatch):
@@ -4711,7 +4772,7 @@ class TestCompletion:
         drive_chat_repl(monkeypatch, [], editor=editor, skills=["writer"])
 
         assert editor.suggest is not None, "the editor got no completion at all"
-        assert "/writer" in [value for value, _ in editor.suggest("/wr")]
+        assert "/writer" in [candidate[0] for candidate in editor.suggest("/wr")]
 
 
 class TestResumeWithoutAnId:

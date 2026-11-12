@@ -42,6 +42,28 @@ class TestCatalogue:
                 assert alias.startswith("/")
                 assert alias == alias.lower()
 
+    def test_no_alias_takes_the_name_of_a_shipped_plugin_command(self):
+        """A built-in owns its bare name: a plugin command called like one of its aliases
+        would be reachable only as plugin:name -- /stats of the context summarizer, had
+        /costs taken the spelling the other CLIs use for it. Read from every schema.yaml
+        the plugin roots ship, rendered as the loader renders it."""
+        from pathlib import Path
+
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+
+        src = Path(__file__).resolve().parents[2] / "src"
+        declared = {}
+        for schema in sorted(src.glob("plugins*/*/schema.yaml")):
+            if "commands:" not in schema.read_text(encoding="utf-8"):
+                continue
+            data = load_schema_from_dir(str(schema.parent), template_vars={"name": schema.parent.name})
+            for command in data.get("commands") or []:
+                declared[str(command["name"]).lower()] = schema.parent.name
+        assert len(declared) >= 3, f"fixture: found almost no plugin commands ({declared})"
+
+        taken = {alias[1:] for command in BUILTIN_COMMANDS for alias in command.aliases}
+        assert not taken & set(declared), {name: declared[name] for name in taken & set(declared)}
+
     def test_exit_is_terminal_only(self):
         """There is no terminal to leave in a browser tab."""
         assert "exit" in {c.name for c in commands_for(CLI)}
@@ -66,6 +88,10 @@ class TestParsing:
         # It names the TITLE -- and that name is what /resume takes, because
         # an id cannot be renamed (SessionManager.resolve_session_ref).
         ("/title", "title"),
+        # The spellings Claude Code, opencode and Gemini CLI taught.
+        ("/clear", "new"), ("/reset", "new"), ("/continue", "resume"), ("/rename", "title"),
+        ("/models", "model"), ("/effort", "think"), ("/usage", "costs"),
+        ("/checkpoint", "rewind"), ("/restore", "rewind"), ("/editor", "edit"),
     ])
     def test_aliases_resolve(self, line, expected):
         assert parse_chat_command(line)[0] == expected
@@ -128,6 +154,10 @@ class TestSuggestions:
 
     def test_typo_gets_a_hint(self):
         assert suggest_command("/sesions") == "/sessions"
+
+    def test_a_prefix_means_the_command_it_names_before_another_ones_alias(self):
+        """/reset (an alias of /new) is shorter than /resume, and "/res" still means /resume."""
+        assert suggest_command("/res") == "/resume"
 
     def test_skills_compete_for_suggestions(self):
         """A mistyped skill should be suggested too, not just built-ins."""

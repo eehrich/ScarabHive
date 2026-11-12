@@ -94,6 +94,28 @@ class TestCatalogue:
         data = client.get("/chat/commands", headers=auth_headers).json()
         assert "exit" not in {c["name"] for c in data["commands"]}
 
+    def test_the_browser_menu_ranks_and_labels_this_catalogue(self, client, auth_headers, tmp_path):
+        """static/js/slash_commands.js on the answer this route gives the browser, through a
+        node harness (tests/js/slash_commands_menu.test.js): Enter takes the first row, so an
+        alias of one command must not stand before another one's name ("/res" is /resume,
+        not /new for its alias /reset)."""
+        import json
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node is not installed")
+        data = client.get("/chat/commands?surface=web", headers=auth_headers).json()
+        catalogue = tmp_path / "catalogue.json"
+        catalogue.write_text(json.dumps(data), encoding="utf-8")
+        harness = Path(__file__).resolve().parents[1] / "js" / "slash_commands_menu.test.js"
+
+        result = subprocess.run([node, str(harness), str(catalogue)], capture_output=True, text=True)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_skills_are_listed_with_their_description(self, client, auth_headers):
         """Autocomplete needs a name AND a hint, or the list is unreadable."""
         data = client.get("/chat/commands", headers=auth_headers).json()
