@@ -23,5 +23,22 @@
   },
   "yaml.customTags": [
     "!include"
-  ]
+  ],
+  "files.watcherExclude": {
+    "**/data/**": true,
+    "**/.claude/worktrees/**": true
+  },
+  "search.exclude": {
+    "data/**": true,
+    ".claude/worktrees/**": true
+  },
+  "python.analysis.exclude": [
+    "data",
+    ".claude/worktrees",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    ".venv"
+  ],
+  "git.detectWorktrees": false
 }
