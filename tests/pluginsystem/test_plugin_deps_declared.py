@@ -137,6 +137,10 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
     # Script folders (no __init__.py, an eval's build and check scripts) import each other by name, from their own
     # folder or a neighbour put on sys.path: a module the plugin carries as a script is no pip name.
     scripts = {py.stem for py in plugin_dir.rglob("*.py") if not (py.parent / "__init__.py").exists()}
+    # Likewise a package the plugin carries at the top of such a folder (an eval's template project): its tests
+    # import it by name, from wherever the eval puts it on sys.path.
+    scripts |= {init.parent.name for init in plugin_dir.rglob("__init__.py")
+                if init.parent != plugin_dir and not (init.parent.parent / "__init__.py").exists()}
     for py in plugin_dir.rglob("*.py"):
         # tests/ and test_suite/ are dev tooling: they never ship to a server
         # venv, and their sibling imports (`from run import ...`) are local
@@ -203,6 +207,20 @@ def test_a_script_folder_importing_its_neighbours_is_no_finding(tmp_path):
     (plugin / "pkg" / "use.py").write_text("import helper\n", encoding="utf-8")
 
     assert _third_party_imports(plugin) == {"yaml", "numpy", "helper"}
+
+
+def test_a_package_the_plugin_carries_is_no_finding(tmp_path):
+    """An eval's template project is a package of its own, imported by name from tests beside it; a package nested
+    in another is reached through its parent, and a bare import of its name stays a finding."""
+    plugin = tmp_path / "src" / "plugins" / "probe"
+    (plugin / "evals" / "template" / "ledger" / "inner").mkdir(parents=True)
+    (plugin / "evals" / "template" / "ledger" / "__init__.py").write_text("", encoding="utf-8")
+    (plugin / "evals" / "template" / "ledger" / "inner" / "__init__.py").write_text("", encoding="utf-8")
+    (plugin / "evals" / "hidden").mkdir()
+    (plugin / "evals" / "hidden" / "check_it.py").write_text(
+        "from ledger.parse import x\nimport inner\nimport numpy\n", encoding="utf-8")
+
+    assert _third_party_imports(plugin) == {"inner", "numpy"}
 
 
 def test_scan_covers_packages_without_a_manifest():
