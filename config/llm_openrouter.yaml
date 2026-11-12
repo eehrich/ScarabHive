@@ -69,6 +69,30 @@ llm_system:
       extends: openrouter-gemini-pro
       max_tokens: 0
 
+    # Gemini 4 Hydrogen (12.11.2026): between Flash and Argon, 1.50 / 7.50 per M
+    # (regular price, no promotion). AI Studio and Vertex serve it; their standard
+    # endpoints cap the output at 65536, flex and priority do not.
+    openrouter-gemini-hydrogen:
+      extends: openrouter-gemini
+      model: google/gemini-4-hydrogen
+      context_window: 1048576     # no long-context tier
+
+    openrouter-gemini-hydrogen-unlimited:
+      extends: openrouter-gemini-hydrogen
+      max_tokens: 0
+
+    # Gemini 4 Carbon (12.11.2026): Argon's sibling for coding and agentic work, same
+    # price. AI Studio's standard endpoint caps the output at 32768, Vertex's regional
+    # ones at 65536; flex, priority and Vertex global do not.
+    openrouter-gemini-carbon:
+      extends: openrouter-gemini
+      model: google/gemini-4-carbon
+      context_window: 1048576     # no long-context tier
+
+    openrouter-gemini-carbon-unlimited:
+      extends: openrouter-gemini-carbon
+      max_tokens: 0
+
     openrouter-gemini-flash:
       extends: openrouter-gemini
       model: ~google/gemini-flash-latest
@@ -418,6 +442,26 @@ llm_system:
     or-gemini-pro-unlimited:
       model_ref: openrouter-gemini-pro-unlimited
       description: "OpenRouter Gemini 4 Argon - No output token limit"
+      max_steps: 500
+
+    or-gemini-hydrogen:
+      model_ref: openrouter-gemini-hydrogen
+      description: "OpenRouter Gemini 4 Hydrogen"
+      max_steps: 500
+
+    or-gemini-hydrogen-unlimited:
+      model_ref: openrouter-gemini-hydrogen-unlimited
+      description: "OpenRouter Gemini 4 Hydrogen - No output token limit"
+      max_steps: 500
+
+    or-gemini-carbon:
+      model_ref: openrouter-gemini-carbon
+      description: "OpenRouter Gemini 4 Carbon"
+      max_steps: 500
+
+    or-gemini-carbon-unlimited:
+      model_ref: openrouter-gemini-carbon-unlimited
+      description: "OpenRouter Gemini 4 Carbon - No output token limit"
       max_steps: 500
 
     or-claude-sonnet:

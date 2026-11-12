@@ -122,6 +122,38 @@ llm_system:
       extends: gemini-4-argon-nostream
       max_tokens: null
 
+    # Gemini 4 Hydrogen (12.11.2026): between Flash and Argon in price and strength,
+    # 1.50 / 7.50 per M; everything else as Argon.
+    gemini-4-hydrogen:
+      extends: gemini-4-argon
+      model: gemini-4-hydrogen
+
+    gemini-4-hydrogen-nostream:
+      extends: gemini-4-hydrogen
+      include_thoughts: false
+      capabilities:
+        streaming: false
+
+    gemini-4-hydrogen-batch:
+      extends: gemini-4-argon-batch
+      model: gemini-4-hydrogen
+
+    # Gemini 4 Carbon (12.11.2026): Argon's sibling for coding and agentic work, same price;
+    # everything else as Argon.
+    gemini-4-carbon:
+      extends: gemini-4-argon
+      model: gemini-4-carbon
+
+    gemini-4-carbon-nostream:
+      extends: gemini-4-carbon
+      include_thoughts: false
+      capabilities:
+        streaming: false
+
+    gemini-4-carbon-batch:
+      extends: gemini-4-argon-batch
+      model: gemini-4-carbon
+
     gemini-3-flash-batch:
       extends: gemini-4-argon-batch
       model: gemini-3.8-flash
@@ -505,6 +537,36 @@ llm_system:
     gemini-pro-batch:
       model_ref: gemini-4-argon-batch
       description: "Google Gemini 4 Argon (batch)"
+      max_steps: 500
+
+    gemini-hydrogen:
+      model_ref: gemini-4-hydrogen-nostream
+      description: "Google Gemini 4 Hydrogen"
+      max_steps: 500
+
+    gemini-hydrogen-stream:
+      model_ref: gemini-4-hydrogen
+      description: "Google Gemini 4 Hydrogen"
+      max_steps: 500
+
+    gemini-hydrogen-batch:
+      model_ref: gemini-4-hydrogen-batch
+      description: "Google Gemini 4 Hydrogen (batch)"
+      max_steps: 500
+
+    gemini-carbon:
+      model_ref: gemini-4-carbon-nostream
+      description: "Google Gemini 4 Carbon"
+      max_steps: 500
+
+    gemini-carbon-stream:
+      model_ref: gemini-4-carbon
+      description: "Google Gemini 4 Carbon"
+      max_steps: 500
+
+    gemini-carbon-batch:
+      model_ref: gemini-4-carbon-batch
+      description: "Google Gemini 4 Carbon (batch)"
       max_steps: 500
 
     gpt-pro:

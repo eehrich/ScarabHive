@@ -84,6 +84,21 @@ gemini-4-argon:
   cached_input: 0.20
   batch_discount: 0.5
 
+# Regular price; Google bills 50 % of it for now, as for Argon (OpenRouter
+# discount 0.5, 12.11.2026: 2.00 / 10.00 / 0.10). Implicit caching only.
+gemini-4-carbon:
+  input: 4.00
+  output: 20.00
+  cached_input: 0.20
+  batch_discount: 0.5
+
+# Regular price (no promotion, OpenRouter 12.11.2026). Implicit caching only.
+gemini-4-hydrogen:
+  input: 1.50
+  output: 7.50
+  cached_input: 0.075
+  batch_discount: 0.5
+
 # =============================================================================
 # Anthropic Claude — Direct API (api.anthropic.com)
 # Cache read = 0.1x of input price (Fable 5.1: $0.25/M flat), cache write premium = 0.25x (5-minute cache)
@@ -332,6 +347,19 @@ google/gemini-4-argon:
   input: 4.00
   output: 20.00
   cached_input: 0.20
+
+# Regular price; billed at 50 % for now (endpoints report discount 0.5,
+# 12.11.2026), which usage_json.cost reports.
+google/gemini-4-carbon:
+  input: 4.00
+  output: 20.00
+  cached_input: 0.20
+
+# Regular price, no promotion (endpoints report discount 0, 12.11.2026).
+google/gemini-4-hydrogen:
+  input: 1.50
+  output: 7.50
+  cached_input: 0.075
 
 # OpenAI via OpenRouter — standard tier (endpoint tag `openai`), <=272K context.
 # Routing in llm_openrouter.yaml: order: [openai], allow_fallbacks: false.
