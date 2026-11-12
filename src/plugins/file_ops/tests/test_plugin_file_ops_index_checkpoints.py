@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-import time
 import weakref
 from pathlib import Path
 from unittest.mock import Mock
