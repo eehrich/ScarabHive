@@ -215,7 +215,11 @@ tools:
           - "error handling patterns" → locates try/except blocks, error classes
 
         Use it when you do NOT know the word the code uses; grep_search is
-        better whenever you do. Off unless configured. Files that changed are
+        better whenever you do. Ask in the language of what you are looking
+        for -- for code, in English, whatever language you talk to the user
+        in: the index model is English, and a German question found the code
+        it described at a third of the English one's score. Off unless
+        configured. Files that changed are
         indexed before the answer when that takes only seconds; while the index
         is still building or catching up, the answer covers what is indexed so
         far and says so (index_complete / index_fresh: false, with progress).
@@ -224,7 +228,7 @@ tools:
         properties:
           query:
             type: string
-            description: "Natural language search query describing what code you're looking for"
+            description: "What the code does, as a short question or phrase -- in English for code"
           max_results:
             type: integer
             minimum: 1
