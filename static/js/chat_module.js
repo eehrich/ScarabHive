@@ -1908,6 +1908,7 @@
     const toggle = thinking.querySelector('.thinking-toggle');
     const text = thinking.querySelector('.thinking-content');
     foldOnActivate(toggle, text);
+    text.addEventListener('scroll', () => noteThinkingScroll(text), { passive: true });
     setFolded(toggle, text, chatPrefs.thinking === 'collapsed');
     // Opened or closed by hand, it is the viewer's: a changed setting leaves it alone.
     const touch = () => { thinking.dataset.touched = 'true'; };
@@ -1932,6 +1933,45 @@
     const wrapper = section.querySelector(':scope > .container-body > .step-thinking');
     wrapper.hidden = false;
     return wrapper.querySelector('.thinking-content');
+  }
+
+  /**
+   * A call's thinking as it streams. The box scrolls on its own (its max-height, chat.css),
+   * and shows its newest words as the text grows -- unless the viewer scrolled up in it
+   * (noteThinkingScroll), then it stays where they put it. Brought to its end once a frame,
+   * not per delta: measuring after every one lays the page out per token. Live until the
+   * call ends (endThinking): opening it then shows its end and keeps the chat following
+   * (foldOnActivate).
+   */
+  function appendThinking(box, text) {
+    box.appendChild(document.createTextNode(text));
+    box.dataset.live = 'true';
+    if (box.dataset.pinning === 'true') return;
+    box.dataset.pinning = 'true';
+    requestAnimationFrame(() => {
+      delete box.dataset.pinning;
+      if (box.hidden || box.dataset.held === 'true') return;
+      box.scrollTop = box.scrollHeight;
+      box.dataset.lastTop = String(box.scrollTop);
+    });
+  }
+
+  /**
+   * The viewer's scroll in a thinking box, as the chat tells its own (noteScroll): text
+   * growing never moves the position, and bringing it to the end moves it down -- a
+   * position that came back from further up is the viewer, who holds the box there until
+   * they bring it back to its end.
+   */
+  function noteThinkingScroll(box) {
+    const top = box.scrollTop;
+    if (top + box.clientHeight >= box.scrollHeight - 4) delete box.dataset.held;
+    else if (top < Number(box.dataset.lastTop || 0)) box.dataset.held = 'true';
+    box.dataset.lastTop = String(top);
+  }
+
+  /** The call's thinking is complete: opening it is reading back, not watching. */
+  function endThinking(root) {
+    if (root) root.querySelectorAll('.thinking-content[data-live]').forEach((box) => { delete box.dataset.live; });
   }
 
   /** Fold a step section away or open it, unless the viewer took it in hand. */
@@ -2146,7 +2186,16 @@
     const flip = () => {
       body.hidden = !body.hidden;
       trigger.setAttribute('aria-expanded', body.hidden ? 'false' : 'true');
-      if (!body.hidden) readingHere();
+      if (body.hidden) return;
+      // A call's thinking still being written opens at its newest words, unless the viewer
+      // scrolled up in it before; opened at the chat's end, it is watched as it comes, and
+      // the chat keeps following.
+      const live = body.dataset.live === 'true';
+      if (live && body.dataset.held !== 'true') {
+        body.scrollTop = body.scrollHeight;
+        body.dataset.lastTop = String(body.scrollTop);
+      }
+      if (!(live && following)) readingHere();
     };
     trigger.addEventListener('click', flip);
     trigger.addEventListener('keydown', (e) => {
@@ -3541,7 +3590,7 @@
         // events took over): its tail must not come twice.
         if (view.storedStep && data.step <= view.storedStep) break;
         const section = stepOf(view, data.step);
-        if (section) thinkingOf(section).appendChild(document.createTextNode(data.delta || ''));
+        if (section) appendThinking(thinkingOf(section), data.delta || '');
         break;
       }
       case 'reasoning_reset': {
@@ -3580,6 +3629,7 @@
           const chose = (data.assistant.tool_calls || [])
             .map((tc) => (tc.function || {}).name).filter(Boolean);
           const section = data.step ? stepOf(view, data.step) : null;
+          endThinking(section);
           if (section && chose.length) {
             section.querySelector('.step-note').textContent =
               `· ${chose.slice(0, 3).join(', ')}${chose.length > 3 ? ` +${chose.length - 3}` : ''}`;
@@ -3606,6 +3656,7 @@
         // The answer is here, so no call is in flight any more: what the run says while
         // it saves and runs its end hooks belongs to the run, not to its last call.
         view.openStep = null;
+        endThinking(view.steps);
         // Only when nothing streamed: a streamed answer is already in the box, and
         // this is the same text -- as is one the session load showed (answerLoaded: a run
         // joined past its answer's stream). A reconnect's note in the box is no answer.
@@ -4059,14 +4110,17 @@
         showReason(view.t);
         view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(ev.message || ev.error || 'Error')}</div>`;
         markSubRun(view, 'error');
+        endThinking(view.steps);
         break;
       case 'cancelled':
         markSubRun(view, 'error');
+        endThinking(view.steps);
         break;
       case 'end':
         // Its stream is over. Without an answer before it, it did not finish its work.
         view.openStep = null;
         markSubRun(view, 'unfinished');
+        endThinking(view.steps);
         break;
       default:
         renderRunEvent(view, ev);
@@ -4249,6 +4303,9 @@
         // Before the stream goes: whatever is still open stops being updated
         // the moment it closes, so the row has to say so rather than freeze.
         markOpenScopesUnfinished();
+        // ... and no thinking on this page is written any more (an error or a cancel ends a
+        // run without its final, a call cut short without its result).
+        endThinking(chatContainer);
         // A sub-agent's run can outlive its caller's (an async one it never waited
         // for): nothing of it reaches this page any more, and its header says so.
         endSubRuns(blk);

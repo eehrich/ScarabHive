@@ -37,7 +37,8 @@ class Box {
 function testAResetEmptiesTheStepsThinking() {
   const box = new Box();
   const document = { createTextNode: (text) => ({ text }) };
-  const render = load('renderRunEvent', { document, stepOf: () => ({}), thinkingOf: () => box });
+  const render = load('renderRunEvent', { document, stepOf: () => ({}), thinkingOf: () => box,
+                                          appendThinking: (into, text) => into.appendChild(document.createTextNode(text)) });
   const view = { openStep: 1 };
   render(view, { type: 'reasoning_delta', step: 1, delta: 'first try' });
   render(view, { type: 'reasoning_reset', step: 1 });
