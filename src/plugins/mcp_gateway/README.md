@@ -14,7 +14,9 @@ that run may call, and revokes the token when the run ends.
   ceiling of every token, its `pre_tool_call`/`post_tool_call` hooks see every call.
 
 Both entries ship switched off (`agents/mcp_gateway.yaml`). Enable `mcp_gateway` and `mcp_gateway_runner`, and give
-the runner tools with `+` entries in its `agent_config.tools.allowed`.
+the runner tools with `+` entries in its `agent_config.tools.allowed`. Several plugins handing tools to outside CLIs
+each get an instance and runner of their own, named `mcp_gateway_<purpose>` (`config/security.yaml` opens
+`/plugins/mcp_gateway*/mcp`); a shared default would hand every caller the others' tools.
 
 The full manual -- the grant API and its errors, what a call goes through, what the CLI's model sees, the settings
 and the known gaps -- is the plugin's guide, `mcp_gateway.guide`, in the Help panel.

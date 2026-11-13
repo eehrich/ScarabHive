@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- mcp_gateway: `config/security.yaml` opens `/plugins/mcp_gateway*/mcp`, not only the default instance's route, so
+  a caller with tools of its own runs its own instance (`mcp_gateway_<purpose>`) instead of filling the default one's
+  runner allowlist, which every caller of the default could then reach. A deeper path under such a name stays
+  closed in both auth layers, and a plugin admin route under it keeps its admin rule.
+
 - file_ops: the text search and the semantic index check a symlink's target for a private file, not only the link's
   name (`notes.md -> config/*.env` was searched).
 - llm_openai_compat: the batch backend sends a model entry's own `api_key` to api.openai.com only when the entry

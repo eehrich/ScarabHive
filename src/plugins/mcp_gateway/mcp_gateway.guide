@@ -43,7 +43,11 @@ model could call every tool of its allowlist without a grant's pinned and
 allowed values. The gateway's own calls do not pass this gate.
 
 Enable both and give the runner the tools any run may ever call, with
-@{tt}+@{utt} entries, in your own config:
+@{tt}+@{utt} entries, in your own config. When several plugins hand tools to
+outside CLIs, give each its own instance and runner instead
+(@{tt}mcp_gateway_<purpose>@{utt} with @{tt}runner_agent@{utt} naming its
+runner): every token of an instance may reach its runner's whole allowlist,
+so a shared default hands each caller the others' tools as well:
 
 @{code yaml}
 plugins:
@@ -82,11 +86,13 @@ stays agent-run's). The grants are that process's, so its CLIs must reach
 its gateway, not the API's: @{tt}address()@{utt} below names the one to dial.
 
 A CLI cannot log in,
-so @{tt}config/security.yaml@{utt} opens this one route in both auth layers
-(@{tt}endpoint_security@{utt} and @{tt}plugin_security@{utt}); the route itself
+so @{tt}config/security.yaml@{utt} opens @{tt}/plugins/mcp_gateway*/mcp@{utt}
+in both auth layers (@{tt}endpoint_security@{utt} and @{tt}plugin_security@{utt})
+and keeps every deeper path under such a name closed; the route itself
 answers 401 to any request without the bearer token of a live grant, before
-a byte reaches the MCP server. An instance of another name needs the same
-two rules for its path.
+a byte reaches the MCP server. A further instance is reachable when its name
+starts with @{tt}mcp_gateway@{utt} (@{tt}mcp_gateway_<purpose>@{utt}); any
+other name needs rules of its own.
 
 It speaks MCP's Streamable HTTP through the mcp SDK's own server --
 stateless, answers as JSON, every protocol revision the SDK speaks. There
@@ -253,9 +259,10 @@ its turn (coding_cli's @{tt}run_task@{utt} answering "still going") gets the
 answers to its tool calls in the next turn, or runs into its own MCP timeout.
 The tools themselves run on that loop, so a listener of its own thread would
 wait the same.
-@{bullet}One instance. @{tt}config/security.yaml@{utt} opens the route of
-@{tt}mcp_gateway@{utt} only; a second instance answers every request with
-401 until its route is opened there as well.
+@{bullet}Instance names. @{tt}config/security.yaml@{utt} opens the route of
+every instance whose name starts with @{tt}mcp_gateway@{utt}; an instance of
+another name answers every request with 401 until its route is opened there
+as well.
 @{bullet}Pinned and allowed values hold for what a tool takes as a
 parameter. A tool that finds its target by another id (an item id that
 belongs to some project) is only as narrow as that tool's own check of

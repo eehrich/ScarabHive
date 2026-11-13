@@ -590,8 +590,10 @@ class TestTokens:
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
-def test_the_shipped_security_config_lets_a_cli_without_a_login_reach_the_route(method):
-    """Both auth layers would answer the CLI 401 before the route could check its token."""
+@pytest.mark.parametrize("instance", ["mcp_gateway", "mcp_gateway_second"])
+def test_the_shipped_security_config_lets_a_cli_without_a_login_reach_the_route(method, instance):
+    """Both auth layers would answer the CLI 401 before the route could check its token -- for the default instance
+    and for one a caller names mcp_gateway_<purpose>."""
     from agent_system.auth.enforcement import EndpointSecurityEnforcer
     from agent_system.config.settings import load_settings
     from agent_system.paths import PROJECT_ROOT
@@ -599,11 +601,23 @@ def test_the_shipped_security_config_lets_a_cli_without_a_login_reach_the_route(
 
     auth = load_settings(str(PROJECT_ROOT / "config" / "config.yaml")).auth
     assert auth.enabled, "the shipped config has auth off: this test would prove nothing"
-    path = "/plugins/mcp_gateway/mcp"
+    path = f"/plugins/{instance}/mcp"
     assert EndpointSecurityEnforcer(auth).get_endpoint_policy(method, path).requires_auth is False
-    assert PluginEndpointSecurityEnforcer(auth).get_plugin_policy("mcp_gateway", path, method)["requires_auth"] is False
-    assert PluginEndpointSecurityEnforcer(auth).get_plugin_policy(
-        "mcp_gateway", "/plugins/mcp_gateway/other", method)["requires_auth"] is True, "only the one route is open"
+    plugin_layer = PluginEndpointSecurityEnforcer(auth)
+    assert plugin_layer.get_plugin_policy(instance, path, method)["requires_auth"] is False
+    assert plugin_layer.get_plugin_policy(
+        instance, f"/plugins/{instance}/other", method)["requires_auth"] is True, "only the one route is open"
+    assert plugin_layer.get_plugin_policy(
+        instance, f"/plugins/{instance}/mcpx", method)["requires_auth"] is True, "only the one route is open"
+    assert plugin_layer.get_plugin_policy(
+        "other_plugin", "/plugins/other_plugin/mcp", method)["requires_auth"] is True, "only gateway instances"
+    # The open rule is a glob: its * crosses '/', and the endpoint layer matches a prefix. A deeper path under a
+    # gateway instance's name -- another plugin's admin route, a route below /mcp -- stays closed in both layers.
+    for deeper in (f"/plugins/{instance}/admin/mcp", f"/plugins/{instance}_runner/a/mcp", f"/plugins/{instance}/mcp/x"):
+        assert EndpointSecurityEnforcer(auth).get_endpoint_policy(method, deeper).requires_auth is True, deeper
+        assert plugin_layer.get_plugin_policy(instance, deeper, method)["requires_auth"] is True, deeper
+    # and the closing rule does not shadow the admin rule for plugin admin routes
+    assert plugin_layer.get_plugin_policy(instance, f"/plugins/{instance}/admin/x", method)["min_role"] == "admin"
 
 
 async def test_every_call_leaves_an_audit_line_naming_the_grant_not_the_token(gateway, caplog):

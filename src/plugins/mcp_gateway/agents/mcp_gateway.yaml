@@ -9,8 +9,9 @@
 #     enabled: true
 #     agent_config: {tools: {allowed: ["+my_store/*"]}}
 #
-# config/security.yaml opens /plugins/mcp_gateway/mcp to requests without a login (the route checks the run's token
-# itself); an instance of another name needs the same two rules.
+# config/security.yaml opens /plugins/mcp_gateway*/mcp to requests without a login (the route checks the run's token
+# itself). A caller with tools of its own gets its own instance and runner, named mcp_gateway_<purpose> so the rules
+# cover it; filling this default one's allowlist hands those tools to every caller of the default.
 plugins:
   servers:
     mcp_gateway:
