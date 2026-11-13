@@ -3,7 +3,10 @@ hooks:
   - name: track_usage
     type: post_llm_call
     enabled: true
-    timeout: 5.0
+    # How long the call waits for its snapshot to be written (the write lands either way: the hook awaits it
+    # shielded). The next call's context hooks read it (get_latest), so the call does wait -- 5 s gave up on a
+    # write held up for a moment behind the process's other writes or another process's lock.
+    timeout: 15.0
     description: "Records context usage statistics after each LLM call"
     order:
       after: ["begin"]
@@ -18,7 +21,7 @@ hooks:
   - name: track_non_agent_usage
     type: post_llm_response
     enabled: true
-    timeout: 5.0
+    timeout: 15.0    # the same write as track_usage
     description: "Records what a client without an agent spends (decisions and TTS calls)"
 
 web_ui:
