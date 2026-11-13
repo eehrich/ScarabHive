@@ -303,6 +303,8 @@ llm_system:
     openrouter-deepseek-latest-flash:
       extends: openrouter-deepseek
       model: ~deepseek/deepseek-flash-latest
+      capabilities:
+        image_input: true    # V4.1 reads images (measured 13.11.2026 on DeepInfra and InferenceNet); V4 and Pro do not
       #service_tier: flex
       provider_routing:
         order:

@@ -405,6 +405,8 @@ llm_system:
       extends: deepseek-pro
       model: deepseek-flash       # the listed name; deepseek-v4-flash is an alias of it now
       request_timeout: 240
+      capabilities:
+        image_input: true         # V4.1 reads images (measured 13.11.2026); deepseek-v4-pro drops them silently
 
     deepseek-chat-nostream:
       extends: deepseek-chat
