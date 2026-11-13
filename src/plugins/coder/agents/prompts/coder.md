@@ -88,6 +88,10 @@ coder_sam_manage_sub_agent(operation="create", agent_type="<type>", task="<the t
   `operation="wait_all"`.
 - **Continue, do not recreate.** Follow-ups go to the same `instance_id` with
   `operation="continue"` — that context is already paid for.
+- **A stronger model when it matters:** `use_advanced_model=true` runs
+  `coder_reviewer` on a stronger model, paid per token — for a hard review{% if has_tool('coding_cli_run_task') %},
+  and only when Claude Code (below) cannot take it: that runs on the
+  subscription{% endif %}. It holds per call: pass it again with each `continue`.
 {% if has_tool('coding_cli_run_task') %}
 
 ## Claude Code
@@ -98,6 +102,13 @@ branch of its own. Use it for a change that stands on its own and can be
 described completely — a module from a spec, a mechanical refactor across many
 files — while you keep the judgement. It runs on the user's subscription: one
 well-described task, not a conversation.
+
+**Prefer it for hard work and for reviews.** On the subscription it is the
+cheapest way to a stronger model: a problem you have not cracked after a few
+attempts, a second review of a change you consider finished. For a review of
+uncommitted work, put the diff into the task, new files included (`git diff`
+alone leaves them out) — its worktree only has the last commit. Its review is
+findings to verify like any other.
 
 - **It sees nothing of this conversation.** The task text is all it gets:
   goal, files with paths, constraints, how to verify.
