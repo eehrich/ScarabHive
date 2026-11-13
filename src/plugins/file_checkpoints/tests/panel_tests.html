@@ -75,9 +75,65 @@
       && fileRow('/w/a.txt').querySelector('pre.pk-code--lines') === pre;
   });
 
+  const card = (number) => doc().querySelector(`.pk-card[data-card="${number}"]`);
+  const shownAt = (el) => el.offsetParent !== null;
+
+  await check('the checkpoints stand under the span of their newest change, every change with its moment', async () => {
+    const spans = [...doc().querySelectorAll('#filesView .fc-group')].map((g) => [
+      g.querySelector('.pk-section-title').textContent, [...g.querySelectorAll('[data-rewind]')].map((b) => b.dataset.rewind)]);
+    const stamps = [...doc().querySelectorAll('#filesView details.fc-file time')].map((t) => t.getAttribute('datetime'));
+    const shownStamp = fileRow('/w/c.txt').querySelector('time').textContent;
+    return JSON.stringify(spans) === JSON.stringify([['Last hour', ['5']], ['Yesterday', ['3']]])
+      && stamps.length === 3 && stamps.every(Boolean)
+      && /\d{2}:\d{2}:\d{2}/.test(shownStamp) && !!card(3).querySelector('.pk-card-head time');
+  });
+
+  await check('a file marked reviewed keeps its diff closed and its mark across a redraw', async () => {
+    fileRow('/w/c.txt').querySelector('[data-review]').click();
+    await until('the mark', () => fileRow('/w/c.txt').classList.contains('fc-reviewed'));
+    const closed = !fileRow('/w/c.txt').open;
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await sleep(500);
+    const button = fileRow('/w/c.txt').querySelector('[data-review]');
+    const stored = JSON.parse(frame.contentWindow.localStorage.getItem('fc.reviewed') || '{}');
+    return closed && button.getAttribute('aria-pressed') === 'true' && card(5).classList.contains('fc-all-reviewed')
+      && (stored.s1 || []).length === 1 && stored.s1[0].startsWith('5\n/w/c.txt\n');
+  });
+
+  await check('all files of a checkpoint are marked and unmarked at once', async () => {
+    card(3).querySelector('[data-review-all]').click();
+    await until('both marks', () => fileRow('/w/a.txt').classList.contains('fc-reviewed')
+      && fileRow('/w/logo.bin').classList.contains('fc-reviewed'));
+    const marked = card(3).classList.contains('fc-all-reviewed') && fileRow('/w/a.txt').open;   // its diff stays open
+    card(3).querySelector('[data-review-all]').click();
+    await until('no marks', () => !fileRow('/w/a.txt').classList.contains('fc-reviewed'));
+    return marked && !fileRow('/w/logo.bin').classList.contains('fc-reviewed') && !card(3).classList.contains('fc-all-reviewed')
+      && fileRow('/w/c.txt').classList.contains('fc-reviewed');
+  });
+
+  await check('hiding the reviewed hides their checkpoint and a span left empty', async () => {
+    const toggle = doc().getElementById('hideReviewed');
+    toggle.click();
+    await sleep(100);
+    const lastHour = card(5).closest('.fc-group');
+    const hidden = !shownAt(card(5)) && !shownAt(lastHour) && shownAt(card(3));
+    toggle.click();
+    await sleep(100);
+    return hidden && shownAt(card(5)) && shownAt(lastHour)
+      && frame.contentWindow.localStorage.getItem('fc.hideReviewed') === 'false';
+  });
+
+  await check('a checkpoint reviewed whole offers no put back until a mark comes off', async () => {
+    const hidden = card(5).classList.contains('fc-all-reviewed') && !card(5).querySelector('[data-rewind], [data-revert]')
+      && !!card(3).querySelector('[data-rewind]');
+    fileRow('/w/c.txt').querySelector('[data-review]').click();
+    await until('the mark off', () => !fileRow('/w/c.txt').classList.contains('fc-reviewed'));
+    return hidden && !!card(5).querySelector('[data-rewind="5"]');
+  });
+
   await check('a refusal for a running session offers no overwrite', async () => {
     doc().querySelector('[data-rewind="5"]').click();
-    await answer('Put back');
+    await answer('Restore to here');
     await until('the refusal', () => doc().body.textContent.includes('Session s1 is running'));
     await sleep(300);
     const sent = await (await fetch('/stub/calls')).json();
@@ -86,7 +142,7 @@
 
   await check('a refused rewind is asked once more and then sent with overwrite', async () => {
     doc().querySelector('[data-rewind="3"]').click();
-    const first = await answer('Put back');
+    const first = await answer('Restore to here');
     const second = await answer('Overwrite');
     const calls = await until('both calls', async () => {
       const sent = await (await fetch('/stub/calls')).json();
@@ -95,6 +151,55 @@
     return first.includes('since checkpoint 3') && second.includes('changed outside the agent')
       && calls[0].checkpoint === 3 && calls[0].overwrite === false && calls[1].overwrite === true
       && calls[1].session_id === 's1';
+  });
+
+  await check('a checkpoint that only counted calls is one line with nothing to put back', async () => {
+    const row = doc().querySelector('.fc-counted[data-card="4"]');
+    return !!row && !row.closest('.pk-card') && row.textContent.includes('coder_cli/run_task ×1')
+      && row.textContent.includes('only counted') && !row.querySelector('button') && !!row.querySelector('time')
+      && !row.textContent.includes('let it run');
+  });
+
+  await check('a checkpoint is reverted alone, and a file of it alone', async () => {
+    card(3).querySelector('[data-revert="3"]').click();
+    const asked = await answer('Revert');
+    const wasOpen = fileRow('/w/a.txt').open;
+    fileRow('/w/a.txt').querySelector('[data-revert-file]').click();
+    const askedFile = await answer('Revert');
+    const calls = await until('both reverts', async () => {
+      const sent = await (await fetch('/stub/calls')).json();
+      return sent.length === 5 && sent.slice(3);
+    });
+    return asked.includes('checkpoint 3 alone') && askedFile.includes('/w/a.txt')
+      && calls[0].checkpoint === 3 && calls[0].only === true && !calls[0].path
+      && calls[1].checkpoint === 3 && calls[1].path === '/w/a.txt' && calls[1].only === undefined
+      && fileRow('/w/a.txt').open === wasOpen;   // the button in the file's summary leaves its diff as it was
+  });
+
+  await check('what is reviewed offers no revert', async () => {
+    fileRow('/w/a.txt').querySelector('[data-review]').click();
+    await until('the mark', () => fileRow('/w/a.txt').classList.contains('fc-reviewed'));
+    const fileGone = !fileRow('/w/a.txt').querySelector('[data-revert-file]')
+      && !!fileRow('/w/logo.bin').querySelector('[data-revert-file]') && !!card(3).querySelector('[data-revert="3"]');
+    fileRow('/w/a.txt').querySelector('[data-review]').click();
+    await until('the mark off', () => !fileRow('/w/a.txt').classList.contains('fc-reviewed'));
+    return fileGone && !!fileRow('/w/a.txt').querySelector('[data-revert-file]');
+  });
+
+  await check('without storage a mark still holds for the page', async () => {
+    const storage = Object.getPrototypeOf(frame.contentWindow.localStorage);
+    const setItem = storage.setItem;
+    storage.setItem = () => { throw new Error('storage blocked'); };
+    try {
+      fileRow('/w/logo.bin').querySelector('[data-review]').click();
+      await until('the mark', () => fileRow('/w/logo.bin').classList.contains('fc-reviewed'));
+      const held = fileRow('/w/logo.bin').querySelector('[data-review]').getAttribute('aria-pressed') === 'true';
+      fileRow('/w/logo.bin').querySelector('[data-review]').click();
+      await until('the mark off', () => !fileRow('/w/logo.bin').classList.contains('fc-reviewed'));
+      return held;
+    } finally {
+      storage.setItem = setItem;
+    }
   });
 
   await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });

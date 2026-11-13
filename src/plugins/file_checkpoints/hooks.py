@@ -32,6 +32,7 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -204,7 +205,8 @@ def _one_row_per_turn(rows: List[Change]) -> List[Change]:
             last = row if row.after_seq >= first.after_seq else first
             merged[-1] = Change(id=first.id, turn_seq=first.turn_seq, path=first.path, server=first.server,
                                 tool=first.tool, before=first.before, after=last.after,
-                                outside=first.outside or row.outside, after_seq=last.after_seq)
+                                outside=first.outside or row.outside, after_seq=last.after_seq,
+                                changed_at=max(first.changed_at, row.changed_at))
             continue
         merged.append(row)
     return merged
@@ -245,6 +247,11 @@ def _order(pos: float, turn: Turn, first: Dict[str, int]) -> Tuple[Any, ...]:
 
 def _effective(change: Change) -> bool:
     return change.after is None or not change.before.same(change.after)
+
+
+def _stamp(epoch: float) -> Optional[str]:
+    """A moment for the listing: ISO 8601 in UTC, to the second; None for none."""
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds") if epoch else None
 
 
 class FileCheckpointsPlugin(SchemaBasedPluginHook):
@@ -940,8 +947,9 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         entries = []
         for order, turn in numbered:
             pos = order[0]
-            files = [{"path": c.path, "change": _change_label(c.before, c.after)}
-                     for c in by_turn.get(turn.seq, ()) if _effective(c)]
+            effective = [c for c in by_turn.get(turn.seq, ()) if _effective(c)]
+            files = [{"path": c.path, "change": _change_label(c.before, c.after), "changed_at": _stamp(c.changed_at)}
+                     for c in effective]
             dropped = pos != int(pos)
             entries.append({
                 # The record's own sequence, not a place in this list: a listing
@@ -952,6 +960,8 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                 "after_turn": (int(pos + 0.5) if pos >= 0 else 0) if dropped else None,
                 "dropped": dropped,
                 "question": turn.question,
+                # its newest change; one with only uncounted calls: when the turn was recorded
+                "changed_at": _stamp(max((c.changed_at for c in effective), default=turn.created_at)),
                 "files": files,
                 "untracked": [{"tool": tool, "count": count}
                               for tool, count in sorted(untracked.get(turn.seq, {}).items())],
@@ -990,7 +1000,8 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         return removed
 
     async def rewind(self, *, user_id: str, session_id: str, messages: Sequence[Any],
-                     checkpoint: Optional[int], registry: Any, overwrite: bool = False) -> dict:
+                     checkpoint: Optional[int], registry: Any, overwrite: bool = False,
+                     only: bool = False, path: Optional[str] = None) -> dict:
         journal = Journal(self.root, user_id, session_id)
         if not journal.exists():
             return _report(NOTHING, "No file changes are recorded for this session.")
@@ -1001,14 +1012,18 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                 "write files while they are put back. Try again once it is done."))
         try:
             return await asyncio.to_thread(self._rewind, journal, list(messages), checkpoint, registry,
-                                           bool(overwrite))
+                                           bool(overwrite), bool(only or path), path)
         except ForeignJournal as exc:
             return _report(REFUSED, f"Files not rewound: {exc}.")
 
     def _rewind(self, journal: Journal, messages: Sequence[Any], checkpoint: Optional[int],
-                registry: Any, overwrite: bool) -> dict:
+                registry: Any, overwrite: bool, only: bool = False, path: Optional[str] = None) -> dict:
+        """Everything since ``checkpoint`` -- or, ``only``, that checkpoint's changes alone (``path``: of that
+        one file), the checkpoints after it left as they are."""
         with self._lock(journal.directory):
             placed, by_turn, untracked, numbered = self._load(journal, messages)
+            if only and checkpoint is None:
+                return _report(UNKNOWN_CHECKPOINT, "Which checkpoint? A revert of one names it -- /rewind lists them.")
             if checkpoint is None:
                 count = len(heads(messages))
                 if not count:
@@ -1025,6 +1040,8 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                         + " /rewind lists them."))
                 threshold = found[0]
                 what = f"checkpoint {checkpoint}"
+                if only:
+                    return self._revert_one(journal, found[1], by_turn, untracked, registry, overwrite, path)
             selected = [turn for order, turn in placed if order >= threshold]
             if not selected:
                 return _report(NOTHING, f"No file changes were recorded since {what}.")
@@ -1067,8 +1084,73 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                 return plan.report(NOTHING, journal)
             return plan.report(REWOUND, journal)
 
-    def _plan(self, journal: Journal, changes: List[Change], registry: Any) -> "_RewindPlan":
+    def _revert_one(self, journal: Journal, turn: Turn, by_turn: Dict[int, List[Change]],
+                    untracked: Dict[int, Dict[str, int]], registry: Any, overwrite: bool,
+                    path: Optional[str]) -> dict:
+        """One checkpoint's changes undone, or one file's of it; what came after stays. A file another
+        checkpoint changed again since is a conflict like a person's change: the revert would take that work
+        with it -- and, put back anyway, those rows go too, their change no longer on disk.
+
+        "Since" is the record's own order (after_seq), not the turns' places: an async sub-agent of an earlier
+        turn may write after a later one. A file is the spelling on disk, so both rows of one file recorded
+        under two spellings are one file here as they are in a rewind."""
+        listings: Dict[str, List[str]] = {}
+
+        def spelled(where: str) -> str:
+            return str(fs.spelled_on_disk(Path(where), listings))
+        wanted = spelled(path) if path is not None else None
+        changes = [c for c in by_turn.get(turn.seq, ())
+                   if _effective(c) and (wanted is None or spelled(c.path) == wanted)]
+        what = f"checkpoint {turn.seq}" if path is None else f"{_display(path)} in checkpoint {turn.seq}"
+        if not changes:
+            return _report(NOTHING if path is None else UNKNOWN_CHECKPOINT,
+                           f"No file change is recorded in checkpoint {turn.seq}." if path is None
+                           else f"Checkpoint {turn.seq} names no change of {_display(path)}.")
+        first = min(c.after_seq for c in changes)
+        written: Dict[str, int] = {}   # spelled path -> the last time this checkpoint wrote it
+        for change in changes:
+            key = spelled(change.path)
+            written[key] = max(written.get(key, 0), change.after_seq)
+        since = sorted((c for seq, rows in by_turn.items() if seq != turn.seq for c in rows if c.after_seq > first),
+                       key=lambda c: c.after_seq)
+        later: Dict[str, int] = {}
+        for change in since:
+            later.setdefault(spelled(change.path), change.turn_seq)
+        plan = self._plan(journal, changes, registry, later)
+        plan.untracked = dict(untracked.get(turn.seq, {})) if path is None else {}
+        plan.what, plan.alone = what, True
+        if (plan.conflicts or plan.unrestorable) and not overwrite:
+            return plan.report(REFUSED, journal)
+        failed = self._apply(journal, plan)
+        keep = {p for p, _ in failed} | plan.retry
+        kept_ids = {change_id for p in keep for change_id in plan.ids.get(p, ())}
+        undone = {p for p in plan.actions if p not in keep}
+        with journal.connect() as conn:
+            # Only the rows undone: the turn keeps its other files, its counted calls, and so its number.
+            for change in changes:
+                if change.id not in kept_ids:
+                    Journal.drop_change(conn, change.id)
+            # What other checkpoints wrote to a file since, put back over: no longer on disk, so no longer theirs
+            # to show or to put back -- left, a rewind of theirs would bring back the very change just undone.
+            for change in since:
+                key = spelled(change.path)
+                if key in undone and change.after_seq > written.get(key, 0):
+                    Journal.drop_change(conn, change.id)
+            Journal.drop_empty_turns(conn)
+        journal.collect_blobs()
+        plan.failed = failed
+        if failed or plan.retry:
+            return plan.report(PARTIAL, journal)
+        if not plan.restore and not plan.remove:
+            return plan.report(NOTHING, journal)
+        return plan.report(REWOUND, journal)
+
+    def _plan(self, journal: Journal, changes: List[Change], registry: Any,
+              later: Optional[Dict[str, int]] = None) -> "_RewindPlan":
+        """``later`` (a revert of one): the path as spelled on disk -> the first checkpoint that changed it
+        after these changes."""
         plan = _RewindPlan()
+        plan.later = later or {}
         by_path: "OrderedDict[str, List[Change]]" = OrderedDict()
         listings: Dict[str, List[str]] = {}
         for change in changes:
@@ -1106,7 +1188,9 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
             elif any(not a.after or not a.after.same(b.before) for a, b in zip(chain, chain[1:])):
                 plan.conflicts.append((path, "it was changed outside the agent's file tools between turns"))
             elif not current.same(expected):
-                plan.conflicts.append((path, "it was changed since the agent last wrote it"))
+                again = plan.later.get(path)
+                plan.conflicts.append((path, f"checkpoint {again} changed it again since" if again
+                                       else "it was changed since the agent last wrote it"))
             plan.actions[path] = (target, current)
             plan.roots[path] = [roots_of.get(server) or () for server in dict.fromkeys(row.server for row in rows)]
             # Put back under the name it had: grouped under today's spelling
@@ -1160,7 +1244,12 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                 leaving.discard(path)
                 plan.conflicts = [c for c in plan.conflicts if c[0] != path]
                 shown = ", ".join(_display(s) for s in strangers[:3]) + (" ..." if len(strangers) > 3 else "")
-                plan.unrestorable.append((path, f"kept: it holds files the agent did not create ({shown})"))
+                # A revert of one: what later checkpoints put in the directory is the agent's, not a stranger's.
+                by = sorted({plan.later[s] for s in strangers if s in plan.later})
+                theirs = complete and bool(strangers) and all(s in plan.later for s in strangers)
+                plan.unrestorable.append((path, f"kept: checkpoint {', '.join(map(str, by))} put files in it since "
+                                                f"({shown})" if theirs
+                                          else f"kept: it holds files the agent did not create ({shown})"))
                 plan.retry.add(path)
 
     def _apply(self, journal: Journal, plan: "_RewindPlan") -> List[Tuple[str, str]]:
@@ -1251,6 +1340,10 @@ class _RewindPlan:
         self.failed: List[Tuple[str, str]] = []
         self.untracked: Dict[str, int] = {}
         self.what = ""
+        #: A revert of one checkpoint (or one file of it), not a rewind to before it.
+        self.alone = False
+        #: A revert of one: a path as spelled on disk -> the first checkpoint that changed it since.
+        self.later: Dict[str, int] = {}
 
     def inside(self, path: str) -> bool:
         """Whether ``path`` may be written now: inside the directories of every
@@ -1273,7 +1366,7 @@ class _RewindPlan:
             "failed": [{"path": p, "reason": r} for p, r in self.failed],
             "untracked": [{"tool": t, "count": c} for t, c in sorted(self.untracked.items())],
         }
-        result["text"] = _rewind_text(status, self.what, result)
+        result["text"] = _rewind_text(status, self.what, result, self.alone)
         return result
 
 
@@ -1294,22 +1387,28 @@ def _untracked_line(untracked: List[dict]) -> str:
     return f"  Not tracked: {calls} -- whatever they changed is still as they left it."
 
 
-def _rewind_text(status: str, what: str, result: dict) -> str:
+def _rewind_text(status: str, what: str, result: dict, alone: bool = False) -> str:
     lines: List[str] = []
     if status == REFUSED:
-        lines.append(f"Files not rewound to before {what} -- nothing was changed:")
+        lines.append(f"{what[0].upper()}{what[1:]} not reverted -- nothing was changed:" if alone
+                     else f"Files not rewound to before {what} -- nothing was changed:")
         if result["conflicts"]:
-            lines.append("  Changed outside the agent since it wrote them:")
+            lines.append("  Changed since it wrote them:" if alone else "  Changed outside the agent since it wrote them:")
             lines.extend(_paths(result["conflicts"]))
         if result["unrestorable"]:
             lines.append("  Cannot be put back:")
             lines.extend(_paths(result["unrestorable"]))
         lines.append("  Add 'overwrite' to put back the rest anyway"
-                     + (" (the files changed outside the agent included)." if result["conflicts"] else "."))
+                     + (" (the files changed since included)." if alone and result["conflicts"]
+                        else " (the files changed outside the agent included)." if result["conflicts"] else "."))
         return "\n".join(lines)
     done = len(result["restored"]) + len(result["removed"])
     if status == NOTHING:
-        lines.append(f"No file needed putting back since {what}.")
+        lines.append(f"No file of {what} needed putting back." if alone
+                     else f"No file needed putting back since {what}.")
+    elif alone:
+        lines.append(f"Reverted {what}: {len(result['restored'])} put back, {len(result['removed'])} removed."
+                     if done else f"Reverted {what}.")
     else:
         lines.append(f"Files rewound to before {what}: {len(result['restored'])} put back, "
                      f"{len(result['removed'])} removed." if done else f"Files rewound to before {what}.")

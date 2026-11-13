@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS changes (
     -- set when a later call of the same turn found the path changed since this one's last call
     outside_note TEXT NOT NULL DEFAULT '',
     recorded_at REAL NOT NULL,
+    -- when the call that left the path as it is ran (set_after); NULL until a call finished
+    changed_at REAL,
     UNIQUE (turn_seq, path)
 );
 CREATE TABLE IF NOT EXISTS untracked (
@@ -96,6 +98,8 @@ class Turn:
     key: str
     ancestors: Tuple[str, ...]
     question: str
+    #: When the turn's first change was recorded (epoch seconds).
+    created_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,9 @@ class Change:
     outside: str = ""
     #: When ``after`` was last set (the record's own order).
     after_seq: int = 0
+    #: When the call that left the path as it is ran (epoch seconds); a record from before this was kept, or a
+    #: call that never finished: when the change was recorded.
+    changed_at: float = 0.0
 
 
 class Journal:
@@ -145,6 +152,9 @@ class Journal:
             conn.execute("PRAGMA foreign_keys = ON")
             if create:
                 conn.executescript(_SCHEMA)
+                # A record from before changed_at: the column comes now, its old rows read recorded_at.
+                if "changed_at" not in {row[1] for row in conn.execute("PRAGMA table_info(changes)")}:
+                    conn.execute("ALTER TABLE changes ADD COLUMN changed_at REAL")
                 conn.execute("INSERT OR IGNORE INTO meta VALUES ('version', ?)", (SCHEMA_VERSION,))
                 conn.execute("INSERT OR IGNORE INTO meta VALUES ('user_id', ?)", (self.user_id,))
                 conn.execute("INSERT OR IGNORE INTO meta VALUES ('session_id', ?)", (self.session_id,))
@@ -207,9 +217,9 @@ class Journal:
 
     @staticmethod
     def set_after(conn: sqlite3.Connection, change_id: int, after: State) -> None:
-        conn.execute("UPDATE changes SET after_kind = ?, after_digest = ?,"
+        conn.execute("UPDATE changes SET after_kind = ?, after_digest = ?, changed_at = ?,"
                      " after_seq = (SELECT COALESCE(MAX(after_seq), 0) + 1 FROM changes) WHERE id = ?",
-                     (after.kind, after.digest, change_id))
+                     (after.kind, after.digest, time.time(), change_id))
 
     @staticmethod
     def after_of(conn: sqlite3.Connection, change_id: int) -> Optional[State]:
@@ -239,7 +249,8 @@ class Journal:
     @staticmethod
     def turns(conn: sqlite3.Connection) -> List[Turn]:
         return [Turn(seq=int(row["seq"]), key=row["turn_key"],
-                     ancestors=tuple(json.loads(row["ancestors"] or "[]")), question=row["question"])
+                     ancestors=tuple(json.loads(row["ancestors"] or "[]")), question=row["question"],
+                     created_at=float(row["created_at"] or 0))
                 for row in conn.execute("SELECT * FROM turns ORDER BY seq")]
 
     @staticmethod
@@ -251,7 +262,10 @@ class Journal:
                             tuple(turn_seqs)).fetchall()
         return [Change(id=int(row["id"]), turn_seq=int(row["turn_seq"]), path=row["path"],
                        server=row["server"], tool=row["tool"], before=_before(row), after=_after(row),
-                       outside=row["outside_note"] or "", after_seq=int(row["after_seq"] or 0))
+                       outside=row["outside_note"] or "", after_seq=int(row["after_seq"] or 0),
+                       # read before the column was added (a record no call has written to since): absent
+                       changed_at=float((row["changed_at"] if "changed_at" in row.keys() else None)
+                                        or row["recorded_at"] or 0))
                 for row in rows]
 
     @staticmethod

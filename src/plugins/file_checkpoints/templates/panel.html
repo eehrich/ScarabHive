@@ -1,7 +1,17 @@
 {% extends "kit/panel_base.html" %}
 {% from "kit/macros.html" import icon %}
 {% block title %}Files{% endblock %}
-{% block toolbar %}<pk-session></pk-session><pk-refresh interval="15"></pk-refresh>{% endblock %}
+{% block head %}<style>
+  /* What the viewer marked reviewed steps back; with "Hide reviewed" it goes, and a group left empty with it. */
+  .fc-reviewed > summary .fc-path, .fc-all-reviewed .pk-card-title { opacity: .55; }
+  .fc-hide-reviewed .fc-reviewed, .fc-hide-reviewed .fc-all-reviewed,
+  .fc-hide-reviewed .fc-group:not(:has(.pk-card:not(.fc-all-reviewed), .fc-counted)) { display: none; }
+  .fc-counted { font-size: var(--text-sm); padding: var(--space-1) var(--space-3); }
+  .fc-time { font-size: var(--text-xs); white-space: nowrap; }
+</style>{% endblock %}
+{% block toolbar %}<pk-session></pk-session>
+<label class="pk-switch"><input type="checkbox" role="switch" id="hideReviewed"> Hide reviewed</label>
+<pk-refresh interval="15"></pk-refresh>{% endblock %}
 {% block content %}
 <div id="filesView" class="pk-stack">
   <div class="pk-empty">{{ icon('history') }}<div class="pk-empty-title">No session</div><div>The panel follows the session that is open in the chat.</div></div>

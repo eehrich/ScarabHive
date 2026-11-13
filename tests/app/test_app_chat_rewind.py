@@ -218,6 +218,33 @@ class TestRewind:
         assert "-first\r\n" in shown.json()["diff"] and "+second\r\n" in shown.json()["diff"], shown.json()
         assert other.status_code == 404, "b.txt is the second checkpoint's, not the first's"
 
+    async def test_one_checkpoint_or_one_file_is_reverted_alone(self, api):
+        """only: checkpoint 1's change alone -- a.txt, which checkpoint 2 wrote again, is refused (409, files);
+        path: b.txt of checkpoint 2 alone, a.txt left as checkpoint 2 wrote it."""
+        await _two_turns(api)
+        work = api.rig.work
+
+        async with _client(api.app) as client:
+            refused = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 1, "only": True},
+                                        timeout=30)
+            one_file = await client.post("/chat/rewind", timeout=30, json={
+                "session_id": SID, "checkpoint": 2, "path": str(work / "b.txt")})
+            bad = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 2, "path": 3}, timeout=30)
+            # A mistyped only must not fall back to the rewind of everything since.
+            loose = await client.post("/chat/rewind", json={"session_id": SID, "checkpoint": 1, "only": "true"},
+                                      timeout=30)
+
+        assert refused.status_code == 409, refused.text
+        assert refused.headers.get("X-Rewind-Refusal") == "files"
+        assert "checkpoint 2 changed it again since" in refused.json()["detail"]
+        assert one_file.status_code == 200, one_file.text
+        assert one_file.json()["status"] == "rewound"
+        assert tree(work) == {"a.txt": b"second\r\n"}, "the revert of one file touched another"
+        assert bad.status_code == 400
+        assert loose.status_code == 400, loose.text
+        assert tree(work) == {"a.txt": b"second\r\n"}, "a mistyped only rewound the files"
+        assert await _questions_on_disk(api) == ["first", "second"]
+
     async def test_what_the_request_must_name(self, api):
         await _two_turns(api)
 

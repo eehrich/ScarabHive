@@ -193,11 +193,12 @@ class Rig:
         return dropped
 
     async def rewind(self, checkpoint: Optional[int] = None, overwrite: bool = False, user: str = USER,
-                     session_id: str = SESSION, agent: Optional[Agent] = None, registry: Any = None) -> dict:
+                     session_id: str = SESSION, agent: Optional[Agent] = None, registry: Any = None,
+                     only: bool = False, path: Optional[str] = None) -> dict:
         return await self.plugin.rewind(
             user_id=user, session_id=session_id, messages=self.messages(agent, session_id),
             checkpoint=checkpoint, registry=registry if registry is not None else self.registry,
-            overwrite=overwrite)
+            overwrite=overwrite, only=only, path=path)
 
     async def checkpoints(self, user: str = USER, session_id: str = SESSION,
                           agent: Optional[Agent] = None) -> dict:

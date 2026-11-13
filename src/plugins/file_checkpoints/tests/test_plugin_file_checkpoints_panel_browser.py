@@ -7,6 +7,7 @@ mounts plugins; the chat endpoints behind it are a stub.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -27,12 +28,20 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
 
 TESTS = Path(__file__).resolve().parent
 
+# By the test machine's clock and calendar, as the panel groups them: yesterday at noon, and ten minutes ago.
+_NOW = datetime.now().astimezone()
+YESTERDAY = (_NOW - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+RECENT = (_NOW - timedelta(minutes=10)).replace(microsecond=0).isoformat()
 CHECKPOINTS = [
-    {"number": 3, "turn": 1, "after_turn": None, "dropped": False, "question": "fix the parser",
-     "files": [{"path": "/w/a.txt", "change": "modified"}, {"path": "/w/logo.bin", "change": "created"}],
+    {"number": 3, "turn": 1, "after_turn": None, "dropped": False, "question": "fix the parser", "changed_at": YESTERDAY,
+     "files": [{"path": "/w/a.txt", "change": "modified", "changed_at": YESTERDAY},
+               {"path": "/w/logo.bin", "change": "created", "changed_at": YESTERDAY}],
      "untracked": [{"tool": "terminal/execute", "count": 2}]},
-    {"number": 5, "turn": None, "after_turn": 1, "dropped": True, "question": "try again",
-     "files": [{"path": "/w/c.txt", "change": "created"}], "untracked": []},
+    # A turn that only counted a call which may change files (a coding CLI's run): no file of its own.
+    {"number": 4, "turn": 2, "after_turn": None, "dropped": False, "question": "let it run", "changed_at": YESTERDAY,
+     "files": [], "untracked": [{"tool": "coder_cli/run_task", "count": 1}]},
+    {"number": 5, "turn": None, "after_turn": 1, "dropped": True, "question": "try again", "changed_at": RECENT,
+     "files": [{"path": "/w/c.txt", "change": "created", "changed_at": RECENT}], "untracked": []},
 ]
 DIFFS = {
     "/w/a.txt": {"diff": "--- before\n+++ after\n@@ -3,2 +4,2 @@\n-old line\n+new line\n same\n", "note": "",
@@ -61,6 +70,8 @@ def stub_app(store: Path) -> FastAPI:
     async def rewind(request: Request):
         body = await request.json()
         calls.append(body)
+        if body.get("only") or body.get("path"):   # a revert of one checkpoint or one file
+            return {"status": "rewound", "text": "Reverted it."}
         if body["checkpoint"] == 5:   # what held_for_a_write answers: no files stood in the way
             raise HTTPException(status_code=409, detail="Session s1 is running. Try again once it is done.")
         if not body.get("overwrite"):
@@ -98,8 +109,17 @@ EXPECTED = [
     'a file opened shows its diff with the numbers of the new file',
     'a file without a diff says why',
     'a refresh with nothing new leaves an open diff alone',
+    'the checkpoints stand under the span of their newest change, every change with its moment',
+    'a file marked reviewed keeps its diff closed and its mark across a redraw',
+    'all files of a checkpoint are marked and unmarked at once',
+    'hiding the reviewed hides their checkpoint and a span left empty',
+    'a checkpoint reviewed whole offers no put back until a mark comes off',
     'a refusal for a running session offers no overwrite',
     'a refused rewind is asked once more and then sent with overwrite',
+    'a checkpoint that only counted calls is one line with nothing to put back',
+    'a checkpoint is reverted alone, and a file of it alone',
+    'what is reviewed offers no revert',
+    'without storage a mark still holds for the page',
 ]
 
 

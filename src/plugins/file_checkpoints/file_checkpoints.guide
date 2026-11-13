@@ -17,8 +17,21 @@ checkpoint n. A rewind never touches a file the agent did not change, and
 refuses when a file was changed by someone else since. The model gets no
 tool: undoing its work is the person's call. The Files panel (session
 category, offered while this plugin is loaded) lists the checkpoints of the
-open session newest first, shows what each one changed in a file as a diff
-and puts the files back like @{tt}/rewind <n>@{utt}.
+open session newest first, under the span their newest change falls in (last
+hour, today, yesterday, last 7 days, earlier), each change with the moment
+the call that made it ran. It shows what each one changed in a file as a
+diff. "Restore to here" puts every file back as it was before the
+checkpoint, like @{tt}/rewind <n>@{utt} -- the later checkpoints' changes
+too. "Revert" undoes that checkpoint's changes alone, or, on a file, that
+file's change alone; the later checkpoints stay. A file a later checkpoint
+changed again is refused like one changed outside the agent, and put back
+only when asked once more -- that checkpoint then no longer lists its change
+of the file, which is gone from the disk. A checkpoint that recorded no file, only counted
+calls that may have changed some (a coding CLI's run), is one line. A file,
+or all files of a checkpoint, can be marked reviewed -- a help to find
+one's way, kept in that browser only; what is reviewed offers nothing to
+put back, and "Hide reviewed" leaves it out. A later change to the file in
+the same checkpoint takes the mark off.
 
 @{code}
 For users

@@ -489,7 +489,10 @@ async def chat_rewind(request: Request, force: bool = Query(default=False),
 
     Files only: the conversation stays as it is (`/undo files` takes the
     last exchange and its files together). Body ``{"session_id",
-    "checkpoint": <n from /chat/checkpoints>, "overwrite": false}``. Held
+    "checkpoint": <n from /chat/checkpoints>, "overwrite": false}``, and
+    ``"only": true`` for that checkpoint's changes alone (the later ones
+    stay; a file one of them changed again is refused like one changed
+    outside the agent), ``"path"`` for one file of it. Held
     like /undo's cut: refused while the session runs, since a run could
     write files while they are put back. 409 when files were changed
     outside the agent since (``overwrite`` puts them back anyway), 404 for
@@ -504,6 +507,12 @@ async def chat_rewind(request: Request, force: bool = Query(default=False),
     checkpoint = body.get("checkpoint")
     if isinstance(checkpoint, bool) or not isinstance(checkpoint, int) or checkpoint < 1:
         raise HTTPException(status_code=400, detail="'checkpoint' is required: a number /rewind lists")
+    path, only = body.get("path"), body.get("only")
+    if path is not None and (not isinstance(path, str) or not path):
+        raise HTTPException(status_code=400, detail="'path': a file as /chat/checkpoints lists it")
+    if only is not None and not isinstance(only, bool):
+        # Read loosely, a mistyped "only" would turn a revert of one checkpoint into a rewind of all after it.
+        raise HTTPException(status_code=400, detail="'only': true or false")
     rewinder = file_rewinder_or_503()
     target_agent = await _session_agent_for(ctx, request, session_id, user_id, body.get("agent_name"),
                                             current_user)
@@ -511,7 +520,8 @@ async def chat_rewind(request: Request, force: bool = Query(default=False),
                                 "it may write files while they are put back") as messages:
         report = await rewinder.rewind(
             user_id=user_id, session_id=session_id, messages=messages, checkpoint=checkpoint,
-            registry=getattr(target_agent, "registry", None), overwrite=body.get("overwrite") is True)
+            registry=getattr(target_agent, "registry", None), overwrite=body.get("overwrite") is True,
+            only=only is True or path is not None, path=path)
     rewind_refusal(report)
     return {"session_id": session_id, **report}
 

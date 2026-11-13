@@ -48,10 +48,13 @@ class FileRewinder(Protocol):
         ...
 
     async def rewind(self, *, user_id: str, session_id: str, messages: Sequence[Any],
-                     checkpoint: Optional[int], registry: Any, overwrite: bool = False) -> dict:
+                     checkpoint: Optional[int], registry: Any, overwrite: bool = False,
+                     only: bool = False, path: Optional[str] = None) -> dict:
         """Put every file the agent changed since ``checkpoint`` (a number from
         ``checkpoints()``; None: since the last turn of ``messages`` began) back as
-        it was then. ``{"status": REWOUND|NOTHING|REFUSED|PARTIAL, "restored": [...],
+        it was then. ``only``: that checkpoint's changes alone, the ones after it
+        stay -- a file a later checkpoint changed again is a conflict; ``path`` (a
+        path its listing names): that one file's change alone. ``{"status": REWOUND|NOTHING|REFUSED|PARTIAL, "restored": [...],
         "removed": [...], "conflicts": [...], "unrestorable": [...], "failed": [...],
         "untracked": [...], "text": str}`` with a status from above. REFUSED and
         UNKNOWN_CHECKPOINT touch nothing; ``overwrite``
