@@ -559,6 +559,65 @@ def test_making_a_workdir_runs_none_of_the_operators_git(tmp_path, monkeypatch):
     assert not (scratch / ".git" / "hooks").exists(), "the template's hooks were copied in"
 
 
+def test_a_workdir_another_process_is_making_is_never_seen_half_made(tmp_path, monkeypatch, caplog):
+    """The API and the worker start together and both make a new workdir: neither may find it without its commit
+    (the folder made, git init not done), or it skips the workdir until its next start and every run on it fails.
+    The one that comes second takes its own away and registers the other's."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    scratch = tmp_path / "d" / "story_code"
+    real = server_module.run_bounded
+    seen, other = [], []
+
+    def other_process_meanwhile(argv, **kwargs):
+        if other:       # the other process's own git calls
+            return real(argv, **kwargs)
+        # Between this process's steps the other one is halfway: the path, if there, has to be whole already.
+        seen.append(not scratch.exists() or (scratch / ".git" / "HEAD").exists() and bool(
+            real(["git", "-C", str(scratch), "rev-list", "--all"], timeout=30).stdout.strip()))
+        if "init" in argv:
+            other.append(1)
+            server_module._scratch_repo(scratch)     # the other process makes it first, all of it
+            other.clear()
+        return real(argv, **kwargs)
+    monkeypatch.setattr(server_module, "run_bounded", other_process_meanwhile)
+    server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
+    assert all(seen) and list(server.workdirs) == ["text"], caplog.text
+    assert git(scratch, "rev-list", "--count", "HEAD").strip() == "1"
+    assert git(scratch, "log", "-1", "--format=%s").strip() == "story_code"
+    assert [p.name for p in scratch.parent.iterdir()] == ["story_code"], "the one made second is taken away"
+
+
+def test_a_workdir_whose_folder_cannot_be_made_is_skipped_alone(tmp_path, monkeypatch, caplog, repo):
+    """A parent that is a file (or no right to write there): that workdir is skipped, the instance starts with the
+    others -- not a start that fails whole."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "blocked").write_text("a file", encoding="utf-8")
+    server = make_server(repo, workdirs={"bad": {"path": str(tmp_path / "d" / "blocked" / "story_code")},
+                                         "repo": {"path": str(repo)}})
+    assert list(server.workdirs) == ["repo"] and "could not be created" in caplog.text, caplog.text
+
+
+def test_a_rename_windows_refuses_for_a_moment_is_tried_again(tmp_path, monkeypatch):
+    """Windows refuses to move a folder while a process holds a file in it (a scanner reading the new objects): the
+    workdir is made all the same, not skipped until the next start."""
+    from agent_system.paths import DATA_DIR_ENV
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path / "d"))
+    scratch, real, refused = tmp_path / "d" / "story_code", Path.rename, []
+
+    def held_once(self, target):
+        if not refused:
+            refused.append(self)
+            raise PermissionError(5, "in use", str(self))
+        return real(self, target)
+    monkeypatch.setattr(Path, "rename", held_once)
+    server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
+    assert refused and list(server.workdirs) == ["text"]
+    assert [p.name for p in scratch.parent.iterdir()] == ["story_code"]
+
+
 def test_a_workdir_that_could_not_be_made_is_skipped_and_gone(tmp_path, monkeypatch, caplog):
     """The commit fails after git wrote its objects (read-only on Windows): the folder goes again and the workdir is
     skipped -- not registered half made, every run on it failing at the worktree."""
@@ -569,23 +628,25 @@ def test_a_workdir_that_could_not_be_made_is_skipped_and_gone(tmp_path, monkeypa
     def failing_commit(argv, **kwargs):
         done = real(argv, **kwargs)
         if "commit" in argv:
-            assert list((scratch / ".git" / "objects").rglob("*")), "fixture: the commit wrote no object"
+            made = Path(argv[argv.index("-C") + 1])
+            assert list((made / ".git" / "objects").rglob("*")), "fixture: the commit wrote no object"
             raise subprocess.CalledProcessError(1, argv)
         return done
     monkeypatch.setattr(server_module, "run_bounded", failing_commit)
     scratch = tmp_path / "d" / "story_code"
     server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
     assert server.workdirs == {} and "could not be created" in caplog.text, caplog.text
-    assert not scratch.exists(), "the half-made folder was left"
+    assert list(scratch.parent.iterdir()) == [], "the half-made folder was left"
 
-    # A folder that cannot be taken away again (a process holding a file in it): its .git is there, the workdir is
-    # still no workdir.
+    # A folder that cannot be taken away again (a process holding a file in it) is left beside it, its .git there:
+    # the workdir is still no workdir, and the path stays free for the next start.
     def stuck(path, **kwargs):
         raise PermissionError(13, "in use", str(path))
     monkeypatch.setattr(server_module.shutil, "rmtree", stuck)
     server = make_server(scratch, workdirs={"text": {"path": str(scratch)}})
-    assert (scratch / ".git").exists(), "fixture: nothing was left behind"
-    assert server.workdirs == {} and "left half made" in caplog.text, caplog.text
+    left = [p for p in scratch.parent.iterdir() if p.name.startswith(".story_code.")]
+    assert left and (left[0] / ".git").exists(), "fixture: nothing was left behind"
+    assert server.workdirs == {} and "left half made" in caplog.text and not scratch.exists(), caplog.text
 
 
 def test_a_web_workdir_with_mcp_servers_is_skipped(repo, caplog):
@@ -1154,16 +1215,18 @@ async def test_a_room_run_does_not_resume_in_a_room_that_lost_its_repository(rep
 def test_a_room_another_process_makes_first_is_taken_whole(tmp_path, monkeypatch):
     """Built beside it and moved: the one that comes second takes its own away, no half-made room is used."""
     room = tmp_path / "rooms" / "text"
-    real = server_module._scratch_repo
+    real = server_module._init_repo
 
-    def other_process_first(path, anywhere=False):
+    def other_process_first(path, message):
         assert path != room, "built in place, another process could start a run in it half made"
-        made = real(path, anywhere)
+        made = real(path, message)
         if path != room:
-            real(room, anywhere=True)       # the other process moves its room into place meanwhile
+            other = room.parent / ".other"
+            real(other, message)
+            other.rename(room)       # the other process moves its room into place meanwhile
         return made
 
-    monkeypatch.setattr(server_module, "_scratch_repo", other_process_first)
+    monkeypatch.setattr(server_module, "_init_repo", other_process_first)
     server_module._make_room(room)
     assert (room / ".git").is_dir() and git(room, "log", "--oneline").strip()
     assert [p.name for p in room.parent.iterdir()] == ["text"], "the one made second is taken away"

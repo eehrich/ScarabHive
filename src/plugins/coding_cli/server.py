@@ -408,23 +408,53 @@ def _scratch_repo(path: Path, anywhere: bool = False) -> bool:
     """A workdir in the data directory that is not there yet: an empty repository with one empty commit (a run's
     worktree branches from it), the shape every such workdir has -- the scratch folder a run as an LLM works in. A
     data directory of its own (an eval's) starts without them. A folder that is there is left alone, repository or
-    not: its content is someone's. A failed attempt takes the folder it made away again (git's objects are read-only
-    on Windows), and the workdir is skipped as before. False: it tried and failed, whatever is left there.
+    not: its content is someone's. Made whole or not at all: built beside it and moved into place, so another process
+    making it at the same time (the API beside the worker) never finds it half made -- the one that comes second
+    takes its own away and uses the other's. A failed attempt takes the folder it made away again (git's objects are
+    read-only on Windows), and the workdir is skipped as before. False: it tried and failed.
     anywhere: a room of this plugin's own (DATA_ROOT may lie elsewhere), made the same way."""
     if path.exists() or not (anywhere or path.is_relative_to(data_path().resolve())):
         return True
     try:
-        path.mkdir(parents=True)
-    except OSError as e:  # FileExistsError too: another process (the API beside the worker) makes it -- its own
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
         logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
-        return True
+        return False
+    making = path.parent / f".{path.name}.{secrets.token_hex(4)}"
+    if not _init_repo(making, path.name):
+        return False
+    for attempt in range(SAVE_ATTEMPTS):
+        try:
+            making.rename(path)
+            return True
+        except OSError as e:
+            if path.exists():
+                break       # another process was first: its own is used
+            if not isinstance(e, PermissionError) or attempt == SAVE_ATTEMPTS - 1:
+                logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
+                _remove_tree(making)
+                return False
+            # Windows refuses the rename while a process holds a file in it (a scanner reading the new objects).
+            time.sleep(0.05)
+    _remove_tree(making)
+    return True
+
+
+def _init_repo(path: Path, message: str) -> bool:
+    """An empty repository with one empty commit (`message`), made at `path` (a new folder); False, and the folder taken away
+    again, when that fails."""
+    try:
+        path.mkdir()
+    except OSError as e:
+        logger.warning("coding_cli: workdir %s could not be created -- %s", path, e)
+        return False
     # No template, hook, fsmonitor or signing of the operator's git (run._pinned): they would run programs in this
     # process, with its keys, or wait for a passphrase.
     git = ["git", "-c", "user.name=coding_cli", "-c", "user.email=coding_cli@localhost", "-c", "commit.gpgsign=false",
            "-c", f"core.hooksPath={path / '.git' / 'coding_cli-no-hooks'}", "-c", "core.fsmonitor=false",
            "-C", str(path)]
     try:
-        for args in (["init", "-q", "--template="], ["commit", "-q", "--allow-empty", "-m", path.name]):
+        for args in (["init", "-q", "--template="], ["commit", "-q", "--allow-empty", "-m", message]):
             done = run_bounded([*git, *args], timeout=60)  # the whole tree on a timeout
             if done.returncode:
                 raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
@@ -442,21 +472,9 @@ def _in_room(spec: dict, prior: Optional[dict]) -> bool:
 
 
 def _make_room(path: Path) -> None:
-    """The room, made whole or not at all: a repository with one empty commit, built beside it and moved into place.
-    Another process making it at the same time moves its own there first, and this one's is taken away -- no run
-    starts in a room half made, or in one that is taken away under it. A folder that is there is left alone."""
-    if path.exists():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    making = path.parent / f".{path.name}.{secrets.token_hex(4)}"
-    if not _scratch_repo(making, anywhere=True):
-        return
-    try:
-        making.rename(path)
-    except OSError:
-        if not path.exists():
-            raise
-        _remove_tree(making)    # another process was first
+    """The room, made whole or not at all (_scratch_repo): no run starts in a room half made, or in one that is taken
+    away under it. A folder that is there is left alone; one that could not be made is not there (_prepare says so)."""
+    _scratch_repo(path, anywhere=True)
 
 
 def _remove_tree(path: Path) -> None:
@@ -1328,6 +1346,9 @@ class CodingCliServer(SchemaBasedToolServer):
             _make_room(worktree)
         else:
             worktree, branch = self._root() / "worktrees" / run_id, f"coding_cli/{run_id}"
+        if room and not worktree.exists():
+            raise OSError(f"the room {worktree} is gone" if prior else
+                          f"the room {worktree} could not be made -- the log says why")
         if room and not (worktree / ".git").is_dir():
             # It would show the git status of a repository around it (the project's), in every run's prefix.
             raise OSError(f"the room {worktree} is no repository of its own -- remove the folder")
