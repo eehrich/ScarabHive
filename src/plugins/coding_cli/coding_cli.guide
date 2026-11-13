@@ -384,7 +384,7 @@ answer, not to the guard. Runs already going when a window fills are not stopped
 holds back new ones only. A refused run never reports: a
 stored state that would refuse and is older than five minutes is asked anew
 first -- one turn on haiku without tools, under the login the runs use, at
-most once in five minutes per instance and process, and only for a user
+most once in five minutes across processes and instances, and only for a user
 in @{tt}allowed_users@{utt}. A window that reset early (it happens) no longer
 refuses until its old reset.
 
@@ -400,8 +400,17 @@ stopped midway: its result is an error with @{tt}api_error@{utt}
 caller that must tell the budget from any other failure reads the field, not
 the words: "not started: N run(s) still going" carries none. The tool
 @{tt}coding_cli_quota@{utt} reads the windows and the limit a new run would
-be refused for, without starting one; no report yet: @{tt}known: false@{utt},
-no limit.
+be refused for, without starting one. It is asked for the state, not for a
+refusal, so it asks anew whenever the stored one is older than five
+minutes, below the threshold too -- measured: it showed a seven-day window
+at 54 % from a run before the window's reset, and the next run said 5 %.
+The same conditions hold as for run_task's question: only for a user in
+@{tt}allowed_users@{utt}, and at most once in five minutes -- across
+processes and instances, an unanswered question included (an answer moves
+@{tt}quota.json@{utt}, a question that got none marks
+@{tt}quota.asked@{utt}; a question still running marks nothing, so the
+others do not take the old state for fresh meanwhile). Nothing known and no answer:
+@{tt}known: false@{utt}, no limit.
 @endnode
 
 @node agent "The relay agent"
@@ -584,9 +593,9 @@ Error: "no run <id> of yours".
 @node quota "quota"
 @{h1}quota
 
-Reads the subscription's windows as the last run reported them
-(@{tt}data/coding_cli/quota.json@{utt}; asked anew when that would refuse
-and is older than five minutes, as run_task does) and the budget limit a new run would
+Reads the subscription's windows as last reported
+(@{tt}data/coding_cli/quota.json@{utt}; asked anew when that is older than
+five minutes -- run_task asks only when the state would refuse) and the budget limit a new run would
 be refused for now, without starting one -- the reading
 @{" run_task " link run_task} refuses by. A state machine asks it at a run's
 start, before it pays for anything that a refused Claude Code step would
@@ -599,8 +608,9 @@ max_window_utilization | a lower threshold than the instance's (a share above 0,
 
 @{table}
 Field | Meaning
-known | whether any run has reported the windows yet; false: no windows and no limit -- nothing to go by refuses nothing
-windows | utilization per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}
+known | whether the windows are known (a run or a question reported them); false: no windows and no limit -- nothing to go by refuses nothing
+windows | utilization per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}; a window whose reset has passed since the report counts 0
+as_of | when the windows were reported (local time; only when known). With no fresh answer (a user outside allowed_users, a question that got none) a window counted 0 for its reset is a lower bound, not a reading
 threshold | the threshold it judged by: the instance's, or the lower one asked
 limit | null, or the limit run_task would refuse with (see @{" How a run goes " link run})
 @{body}
@@ -835,6 +845,7 @@ runs/<id>.answered | the starting call answered with the run id of a run still g
 runs/<id>.read-<session> | that session has read the run's end: it is not woken for it
 runs/<id>.released-<instance>, .adopt-<instance> | a stopped instance let the run go; the claim of the instance that took it over
 quota.json | the last subscription report
+quota.asked | when a question for the subscription's state last got no answer
 agy_home/<user> | an Antigravity run's home folder, one per user: its pinned settings, agy's state
 runs/<id>.mcp.json | the run's MCP config, for a workdir with @{tt}mcp_servers@{utt}: urls and placeholders, no secret; deleted when the run ends, or when it did not start
 no_mcp.json | the empty MCP config

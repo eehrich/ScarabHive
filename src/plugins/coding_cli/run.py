@@ -515,10 +515,13 @@ def outcome(stream: Iterable[dict]) -> dict:
     return found
 
 
-def windows(rate_limit: Any) -> dict[str, float]:
-    """Utilization per subscription window, e.g. {"five_hour": 0.35}."""
+def windows(rate_limit: Any, now: Optional[float] = None) -> dict[str, float]:
+    """Utilization per subscription window, e.g. {"five_hour": 0.35}. With `now`, a window whose reset has passed
+    counts 0: the stored report is from before it (measured: a seven-day window shown at 54 % from a run before its
+    reset stood at 5 % on the next run)."""
     found = rate_limit.get("unifiedWindows") if isinstance(rate_limit, dict) else None
-    return {name: float(w["utilization"]) for name, w in (found if isinstance(found, dict) else {}).items()
+    return {name: 0.0 if now is not None and isinstance(w.get("resetsAt"), (int, float)) and w["resetsAt"] <= now
+            else float(w["utilization"]) for name, w in (found if isinstance(found, dict) else {}).items()
             if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float))}
 
 

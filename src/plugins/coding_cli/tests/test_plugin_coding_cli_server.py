@@ -1021,7 +1021,7 @@ def test_a_failed_run_is_told_apart_by_its_measured_fields():
 
 async def test_the_quota_tool_reads_what_run_task_would_refuse(repo, data_root):
     server = make_server(repo)
-    unknown, _ = await call(server, "quota")
+    unknown, _ = await call(server, "quota", user="someone")   # may not run: asks nothing anew
     assert unknown == {"status": "success", "known": False, "windows": {}, "threshold": 0.8, "limit": None}, \
         "no run reported yet: nothing to go by refuses nothing"
     full_window(data_root, used=0.6)
@@ -1075,18 +1075,109 @@ async def test_without_an_answer_the_state_on_file_stands_and_is_not_asked_again
     assert len(probes) == 1, "asked again within QUOTA_FRESH_S"
 
 
-@pytest.mark.parametrize("used, user", [(None, "admin"), (0.5, "admin"), (0.91, "someone")])
-async def test_asked_anew_only_when_it_would_refuse_and_only_for_who_may_run(repo, data_root, monkeypatch, used,
-                                                                            user):
-    """The probe is a call on the operator's subscription: none for a state that refuses nothing (or none known),
-    none for a user who may not run there -- the quota tool is open to them."""
+@pytest.mark.parametrize("used, user, asked", [(None, "admin", 1), (0.5, "admin", 1), (0.91, "someone", 0)])
+async def test_the_quota_tool_asks_an_old_state_anew_for_who_may_run(repo, data_root, monkeypatch, used, user, asked):
+    """The quota tool is asked for the state, not for a refusal: an old one -- or none -- is asked anew below the
+    threshold too (measured: it showed a seven-day window at 54 % from before its reset; the next run said 5 %). The
+    probe is a call on the operator's subscription: none for a user who may not run there -- the tool is open to them."""
     if used is not None:
         full_window(data_root, used=used, name="seven_day")
         aged(data_root, server_module.QUOTA_FRESH_S + 60)
     probes = []
     monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append(a))
     answer, _ = await call(make_server(repo), "quota", user=user)
-    assert answer["status"] == "success" and not probes, answer
+    assert answer["status"] == "success" and len(probes) == asked, answer
+
+
+async def test_run_task_asks_anew_only_when_the_state_would_refuse(repo, data_root, monkeypatch):
+    """The guard needs no fresher state to let a run pass: an old one below the threshold starts the run unasked."""
+    full_window(data_root, used=0.5, name="seven_day")
+    aged(data_root, server_module.QUOTA_FRESH_S + 60)
+    probes = []
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append(a))
+    result, _ = await call(make_server(repo), "run_task", task="x")
+    assert result["state"] == "done" and not probes, result
+
+
+async def test_the_quota_tool_shows_a_window_past_its_reset_as_emptied_and_says_when(repo, data_root, monkeypatch):
+    full_window(data_root, used=0.54, resets_in=-60, name="seven_day")
+    aged(data_root, 7200)   # from before reported_at: the file's own time
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: None)
+    written = time.strftime("%Y-%m-%d %H:%M", time.localtime((data_root / "quota.json").stat().st_mtime))
+    answer, _ = await call(make_server(repo), "quota")
+    assert answer["windows"] == {"seven_day": 0.0} and answer["as_of"] == written, answer
+
+
+async def test_an_answer_that_could_not_be_stored_is_dated_by_its_question(repo, data_root, monkeypatch):
+    """Windows refuses the replace while a reader holds quota.json: the probe's answer still answers, and as_of
+    is its own time, not the old file's."""
+    full_window(data_root, used=0.5, name="seven_day")
+    aged(data_root, 7200)
+    probes = []
+
+    def answers(*a):
+        probes.append(a)
+        return {"status": "allowed", "unifiedWindows": {"seven_day": {"utilization": 0.07,
+                                                                      "resetsAt": time.time() + 86400}}}
+
+    def refused(*a, **k):
+        raise PermissionError("held by a reader")
+
+    monkeypatch.setattr(cli, "probe_quota", answers)
+    monkeypatch.setattr(server_module, "_replace", refused)
+    before = cli._when(time.time())
+    answer, _ = await call(make_server(repo), "quota")
+    assert answer["windows"] == {"seven_day": 0.07} and answer["as_of"] in {before, cli._when(time.time())}, answer
+    again, _ = await call(make_server(repo), "quota")   # another process: the answer reached no file
+    assert len(probes) == 2, "an answer nobody else can read must not keep the others from asking"
+
+
+async def test_a_stored_state_is_dated_by_its_report_not_by_the_file(repo, data_root):
+    data_root.mkdir(parents=True)   # made by the run that reports
+    server = make_server(repo)
+    before = cli._when(time.time())
+    server._store_quota({"status": "allowed", "unifiedWindows": {"seven_day": {"utilization": 0.2,
+                                                                               "resetsAt": time.time() + 86400}}})
+    aged(data_root, 7200)   # the file looks old; the report is not
+    answer, _ = await call(server, "quota", user="someone")
+    assert answer["as_of"] in {before, cli._when(time.time())}, answer
+
+
+async def test_a_question_that_cannot_be_asked_leaves_the_state_on_file(repo, data_root, monkeypatch):
+    full_window(data_root, used=0.5, name="seven_day")
+    aged(data_root, server_module.QUOTA_FRESH_S + 60)
+
+    def full(self):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(server_module.CodingCliServer, "_no_mcp", full)
+    answer, _ = await call(make_server(repo), "quota")
+    assert answer["status"] == "success" and answer["windows"] == {"seven_day": 0.5}, answer
+
+
+async def test_a_question_without_an_answer_is_not_repeated_by_the_next_process(repo, data_root, monkeypatch):
+    """A broken login answers nothing and moves no quota.json: each process and instance would ask again."""
+    full_window(data_root, used=0.5, name="seven_day")
+    aged(data_root, server_module.QUOTA_FRESH_S + 60)
+    probes = []
+    # a question still running marks nothing: the others must not take the old state for fresh meanwhile
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append((data_root / "quota.asked").exists()))
+    for server in (make_server(repo), make_server(repo), make_server(repo, name="other_cli")):
+        answer, _ = await call(server, "quota")
+        assert answer["windows"] == {"seven_day": 0.5}, answer
+    assert probes == [False], "asked again within QUOTA_FRESH_S, or marked before the answer"
+
+
+async def test_a_mark_from_a_clock_set_back_does_not_stop_the_questions(repo, data_root, monkeypatch):
+    full_window(data_root, used=0.5, name="seven_day")
+    aged(data_root, server_module.QUOTA_FRESH_S + 60)
+    (data_root / "quota.asked").touch()
+    future = time.time() + 86400
+    os.utime(data_root / "quota.asked", (future, future))
+    probes = []
+    monkeypatch.setattr(cli, "probe_quota", lambda *a: probes.append(a))
+    await call(make_server(repo), "quota")
+    assert len(probes) == 1
 
 
 async def test_resume_continues_the_conversation_in_the_same_worktree(repo, log):

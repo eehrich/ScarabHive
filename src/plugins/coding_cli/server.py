@@ -172,9 +172,10 @@ def _run_folder_listing(folder: Path) -> _Listing:
 
 SAVE_ATTEMPTS = 40
 # A refused run never reports, and only reports and this question write quota.json: a window that reset early kept
-# refusing until its old reset (measured: the file far above what the subscription reported, the reset moved). A state that
-# would refuse and is older than this is asked anew first (cli.probe_quota), at most once in that time per
-# instance and process.
+# refusing until its old reset (measured: the file far above what the subscription reported, the reset moved). A state
+# older than this is asked anew (cli.probe_quota) -- by run_task when it would refuse, by the quota tool in any case
+# -- at most once in that time across processes and instances (an answer moves quota.json, a question that got
+# none marks quota.asked).
 QUOTA_FRESH_S = 300
 PROBE_TIMEOUT_S = 60
 # Claude Code's --effort levels; agy takes the same (run.py, build_agy_command).
@@ -819,6 +820,8 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _store_quota(self, state: dict) -> None:
         # Whole or not at all: a reader that caught it half written read no state, and no state refuses nothing.
+        # reported_at goes with the state: the file's mtime can belong to a later write than the state read.
+        state = {**state, "reported_at": state.get("reported_at", time.time())}   # a copy: it is the run's event
         try:
             _replace(self._root() / "quota.json", json.dumps(state))
         except OSError as exc:
@@ -896,41 +899,60 @@ class CodingCliServer(SchemaBasedToolServer):
     def _no_mcp(self) -> Path:
         mcp = self._root() / "no_mcp.json"
         if not mcp.exists():
+            mcp.parent.mkdir(parents=True, exist_ok=True)   # the quota tool asks before any run made the folder
             mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
         return mcp
 
-    async def _quota_now(self, threshold: float, user_id: str) -> Any:
-        """The last known state (_quota) -- asked anew when it would refuse a run at `threshold` and is older than
+    async def _quota_now(self, threshold: float, user_id: str, ask_when_old: bool = False) -> Any:
+        """The last known state (_quota) -- asked anew when it would refuse a run at `threshold` (or, with
+        `ask_when_old`, in any case: the quota tool is asked for the state, not for a refusal) and is older than
         QUOTA_FRESH_S, by a user who may run on the subscription (allowed_users). Without an answer the state on
         file stands. An Antigravity instance knows none: agy reports no window, and quota.json is Claude Code's."""
         if self.agy:
             return None
         state = self._quota()
         if (self.command is None or user_id not in self.allowed_users
-                or not cli.quota_limit(state, threshold, time.time())):
+                or not (ask_when_old or cli.quota_limit(state, threshold, time.time()))):
             return state
         async with self._probe_lock:
-            path = self._root() / "quota.json"
-            try:
-                written = path.stat().st_mtime
-            except OSError:
-                written = 0.0
-            if time.time() - max(written, self._probed_at) < QUOTA_FRESH_S:
+            def mtime(path: Path) -> float:
+                try:
+                    return path.stat().st_mtime
+                except OSError:
+                    return 0.0
+
+            # quota.asked: a question that got no answer moves no quota.json; without the mark every process and
+            # instance would ask again each QUOTA_FRESH_S, each a call on the subscription of up to PROBE_TIMEOUT_S.
+            # Marked once unanswered, not before asking: a question still running must not make the others take the
+            # old state on file as fresh. A mark from a clock set back (in the future) counts for nothing.
+            now = time.time()
+            written, asked = mtime(self._root() / "quota.json"), self._root() / "quota.asked"
+            marked = mtime(asked)
+            if now - max(written, marked if marked <= now else 0.0, self._probed_at) < QUOTA_FRESH_S:
                 return self._quota()
-            self._probed_at = time.time()
+            self._probed_at = now
             # Stored in the thread: a caller cancelled meanwhile does not take the answer along.
             found = await asyncio.to_thread(self._probe_and_store)
             if not isinstance(found, dict):
+                with contextlib.suppress(OSError):
+                    asked.parent.mkdir(parents=True, exist_ok=True)
+                    asked.touch()
                 logger.warning("coding_cli: %s: asking the subscription's state anew gave no answer -- the one on "
                                "file from %s stands", self.name, time.strftime("%Y-%m-%d %H:%M", time.localtime(written)))
                 return self._quota()
             return found
 
     def _probe_and_store(self) -> Optional[dict]:
+        try:
+            no_mcp = self._no_mcp()
+        except OSError as exc:   # no answer, and the state on file stands -- not a failed tool
+            logger.warning("coding_cli: %s: cannot ask the subscription's state: %s", self.name, exc)
+            return None
         # Under the environment the runs get: a login or proxy set in env is theirs.
-        found = cli.probe_quota(self.command, self._no_mcp(), self._root(), {**cli.child_env(self.pass_env), **self.env},
+        found = cli.probe_quota(self.command, no_mcp, self._root(), {**cli.child_env(self.pass_env), **self.env},
                                 PROBE_TIMEOUT_S)
         if isinstance(found, dict):
+            found["reported_at"] = time.time()   # dated also when the store fails
             self._store_quota(found)
         return found
 
@@ -1247,10 +1269,11 @@ class CodingCliServer(SchemaBasedToolServer):
         return answer
 
     async def quota(self, params: dict[str, Any]) -> dict[str, Any]:
-        """The subscription's windows as the last run reported them -- asked anew when that would refuse and is
-        older than QUOTA_FRESH_S, as run_task does -- and the budget limit a run would be refused for now (limit, as
-        run_task's: None when none), at the instance's threshold, or the lower one asked. No run has reported yet:
-        known false, no limit -- nothing to go by refuses nothing."""
+        """The subscription's windows as last reported -- asked anew when that is older than QUOTA_FRESH_S (run_task
+        asks only when it would refuse: the guard needs no fresher state to let a run pass), a window past its reset
+        at 0 -- with when they were reported (as_of), and the budget limit a run would be refused for now (limit, as
+        run_task's: None when none), at the instance's threshold, or the lower one asked. Nothing known: known
+        false, no limit -- nothing to go by refuses nothing."""
         status = params.get("_status") or _NoStatus()
         if self.agy:
             # Not offered (schema.yaml); called by name it says why instead of "below 80 %".
@@ -1259,11 +1282,23 @@ class CodingCliServer(SchemaBasedToolServer):
         if utilization is not None and not _utilization_ok(utilization):
             return await self._fail(status, "max_window_utilization: a share above 0 and at most 1")
         threshold = min(utilization or 1.0, self.max_utilization)
-        state = await self._quota_now(threshold, str(params.get("_user_id") or ""))
-        limit = cli.quota_limit(state, threshold, time.time())
+        state = await self._quota_now(threshold, str(params.get("_user_id") or ""), ask_when_old=True)
+        now = time.time()
+        limit = cli.quota_limit(state, threshold, now)
+        answer = {"status": "success", "known": isinstance(state, dict), "windows": cli.windows(state, now),
+                  "threshold": threshold, "limit": limit}
+        if answer["known"]:
+            reported = state.get("reported_at")
+            if not isinstance(reported, (int, float)):   # a file from before reported_at: its mtime
+                try:
+                    reported = (self._root() / "quota.json").stat().st_mtime
+                except OSError:
+                    reported = None
+            if reported is not None:
+                with contextlib.suppress(OverflowError, OSError, ValueError):   # a stamp no clock has
+                    answer["as_of"] = cli._when(reported)
         await status.end(cli.limit_text(limit) if limit else f"below {threshold:.0%}")
-        return {"status": "success", "known": isinstance(state, dict), "windows": cli.windows(state),
-                "threshold": threshold, "limit": limit}
+        return answer
 
     async def cancel_run(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()

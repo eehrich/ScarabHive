@@ -72,7 +72,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_quota"
-      description: "The subscription's windows (five_hour, seven_day: their utilization as the last run reported it, asked anew when that would refuse and is over five minutes old) and the budget limit a new run would be refused for now (limit, null when none). Starts no run."
+      description: "The subscription's windows (five_hour, seven_day: their utilization as last reported, asked anew when that is over five minutes old and you may start runs; a window past its reset counts 0), when they were reported (as_of), and the budget limit a new run would be refused for now (limit, null when none). Starts no run."
       parameters:
         type: object
         properties:
