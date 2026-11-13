@@ -6,40 +6,43 @@
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
 [![YouTube](https://img.shields.io/badge/YouTube-playlist-red.svg?logo=youtube)](https://www.youtube.com/watch?v=IQx1PrSRp5Q&list=PLVydEHPBKRiI)
 
-**The right model for every agent, as much structure as each task needs -- and a live view of
-what every agent really does.**
+**A self-hosted agent framework with everything built in: about 75 plugins of tools, agents and
+panels, your own in a small folder, the current agent technology ready to use -- MCP, skills,
+sub-agents, workflows as state machines, any model -- and every step visible and debuggable.**
 
-ScarabHive is a flexible, powerful, self-hosted framework for LLM agents, built entirely on
-plugins. You define an agent in YAML -- its model, its prompt, the few tools it may use -- and run
-it in the browser, from the command line or as a model behind an OpenAI-compatible API. Not a
-library to build an app on: the whole runtime ships -- agent loop, sessions, tools, a web UI and
-the API -- so agents are configured, not coded.
+![The chat with an agent's steps, tool calls and a sub-agent, next to the cost and context of the session](docs/images/shell.png)
 
-**Built on current technology throughout**: the providers' newest APIs and features -- OpenAI's
-Responses and Realtime APIs, extended and adaptive thinking, prompt-cache breakpoints, batch
-APIs -- and the open standards around agents: MCP (stdio and streamable HTTP), the
-[Agent Skills](https://agentskills.io) format and OpenTelemetry's GenAI conventions.
+An agent is one YAML file: its model, its prompt, the tools it may use. It runs in a web UI, from
+the CLI, and as a model behind an OpenAI-compatible API -- so your own code calls it like any
+other model. The whole runtime ships, not a library to build one on: agent loop, sessions,
+sub-agents, files and shell, web search and research, memory, a coding agent, media tools, and a
+live view of what every agent does.
+
+**Current agent technology, built in**: MCP (stdio and streamable HTTP), the
+[Agent Skills](https://agentskills.io) format, sub-agents that run in parallel and wake their
+caller, deferred tools, tool scripts that chain several calls in one turn, prompt-cache
+breakpoints, extended and adaptive thinking, the providers' newest APIs (OpenAI Responses and
+Realtime, batch) and OpenTelemetry's GenAI conventions. Any provider: OpenRouter, OpenAI,
+Anthropic, Gemini, DeepSeek, or a local model through Ollama, vLLM or llama.cpp.
 
 [Quick start](#quick-start) · [Why ScarabHive](#why-scarabhive) · [Plugins](#built-on-plugins) ·
 [Web UI, CLI and API](#web-ui-cli-and-api) · [Documentation](#documentation) ·
 [Discussions](https://github.com/eehrich/ScarabHive/discussions)
 
-![The chat with an agent's steps, tool calls and a sub-agent, next to the cost and context of the session](docs/images/shell.png)
-
 ## Highlights
 
-- **[A model per agent](#the-right-model-for-every-agent)** -- fallback chains, a stronger model
-  for hard tasks, any provider, local models, batch APIs, Claude Code as a tool.
-- **[From one agent to fixed workflows](#as-much-freedom-as-the-task-needs)** -- one agent with
-  skills, an agent with specialised sub-agents, or a state machine.
-- **[Lean on tokens](#built-to-spend-less)** -- cache-friendly requests, a context that stays
-  small, fewer turns per task.
-- **[Live observability](#see-what-the-model-really-does)** -- every step, every tool call, the raw
-  requests, the cost of every call.
 - **[Plugins all the way down](#built-on-plugins)** -- about 75 ship with it; tools, panels and
   hooks of your own are a small folder each.
+- **[See and debug everything](#see-what-the-model-really-does)** -- every step, every tool call
+  and the raw requests on the wire, live; a debugger with breakpoints for workflows.
+- **[From one agent to fixed workflows](#as-much-freedom-as-the-task-needs)** -- one agent with
+  skills, an agent with specialised sub-agents, or a state machine.
+- **[A model per agent](#the-right-model-for-every-agent)** -- fallback chains, a stronger model
+  for hard tasks, any provider, local models, batch APIs, Claude Code as a tool.
 - **[Every agent is a model](#web-ui-cli-and-api)** -- behind an OpenAI-compatible API, next to
   a web UI and a CLI.
+- **[Lean on tokens](#built-to-spend-less)** -- cache-friendly requests, a context that stays
+  small, fewer turns per task.
 
 ## Quick start
 
