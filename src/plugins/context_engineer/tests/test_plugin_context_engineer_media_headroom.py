@@ -209,6 +209,43 @@ class TestReadingsAfterTheMediaPasses:
         assert _with_media(result.modified_messages) == with_media[1:]
 
 
+class TestFrozenMediaCountsTowardTheByteLimit:
+
+    @pytest.mark.asyncio
+    async def test_a_moved_file_still_sent_from_the_freeze_trips_the_limit(self, tmp_path):
+        """An agent moves an image it was shown; the request keeps sending the frozen
+        bytes. Counted from disk the moved image was 0 bytes: the gate stayed shut,
+        the request went out over the provider's cap, and Layer B skipped the image
+        as too small to matter."""
+        from agent_system.utils import multimodal_tool_content as mtc
+
+        messages = _run(tmp_path, 3, size=300_000)
+        keys = []
+        for i in _with_media(messages):
+            item = messages[i]["multimodal_content"][0]
+            item["sha256"] = mtc.content_sha256(item["path"], "image")
+            assert mtc.encode_multimodal_item(item) is not None
+            keys.append((str(Path(item["path"])), item["sha256"]))
+        try:
+            oldest = messages[_with_media(messages)[0]]["multimodal_content"][0]
+            Path(oldest["path"]).rename(tmp_path / "moved.png")
+            assert mtc.encode_multimodal_item(oldest) is not None, "the request no longer sends it"
+
+            strategy = _strategy(tmp_path, max_request_bytes=1_000_000,
+                                 target_request_bytes=600_000)
+            assert strategy._estimate_request_bytes(messages) > 1_000_000
+
+            result = await strategy.compact(messages, current_tokens=10)
+
+            remaining = [item for msg in result.modified_messages
+                         for item in msg.get("multimodal_content") or []]
+            assert oldest["path"] not in [item["path"] for item in remaining]
+            assert strategy._estimate_request_bytes(result.modified_messages) <= 1_000_000
+        finally:
+            for key in keys:
+                mtc._FROZEN.pop(key, None)
+
+
 class TestTheHook:
 
     @pytest.fixture
