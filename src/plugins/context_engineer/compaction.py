@@ -40,7 +40,7 @@ from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 from agent_system.llm.tool_pairs import tool_call_units
 from agent_system.llm.message_roles import is_input, opens_a_turn
 from agent_system.paths import resolve_data_path
-from agent_system.utils.multimodal_tool_content import extract_inline_media
+from agent_system.utils.multimodal_tool_content import extract_inline_media, frozen_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
     estimate_content_tokens,
@@ -1755,9 +1755,12 @@ class LayeredCompactionStrategy:
             if isinstance(field_data, (str, bytes)) and field_data:
                 return len(field_data)
         
-        # Fallback: check file path and get actual file size
-        # This is important for multimodal_content items that reference files
-        # where the request encodes it from: data/... lands in the data directory
+        # A path: what the request encodes, in the encoder's order -- the bytes
+        # its tool returned while frozen (the file may since be moved or
+        # rewritten), else the file. Counted from disk alone, a moved file was 0.
+        frozen = frozen_media(item)
+        if frozen is not None:
+            return int(len(frozen) * 4 / 3)
         file_path = str(resolve_data_path(item.get("path", ""))) if item.get("path") else ""
         if file_path and os.path.isfile(file_path):
             try:
