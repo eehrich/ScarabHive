@@ -26,13 +26,14 @@ plugins:
         blender_agent_list_available_tools: "List this agent's tools"
 
       agent_config:
-        # Flash leads because this work is iterative and VISUAL: the agent
-        # takes a viewport screenshot and looks at it, over and over, and the
-        # cheap vision model is the one that makes that affordable. The
-        # fallbacks are other families, so one provider's bad day does not
-        # stop the chain. If bpy script quality matters more than cost here,
-        # put or-claude-sonnet first — that is the whole change.
-        llm_profile: [or-gemini-flash, or-gemini-pro, or-claude-sonnet]
+        # The work is iterative and VISUAL: the agent takes a viewport
+        # screenshot and looks at it, over and over, so every link must read
+        # images and the first one must be cheap. DeepSeek V4.1 leads: it
+        # reads images and writes code well for its price. Gemini Flash and
+        # Claude Sonnet are other families behind it, so one provider's bad
+        # day does not stop the chain. If bpy script quality matters more
+        # than cost here, put or-claude-sonnet first -- that is the whole change.
+        llm_profile: [or-deepseek-latest-flash, or-gemini-flash, or-claude-sonnet]
         llm_profile_advanced: []
         llm_params:
           "*":

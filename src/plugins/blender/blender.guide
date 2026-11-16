@@ -309,10 +309,10 @@ screenshot), @{tt}datetime/*@{utt} and, from the
 @{tt}multi_turn_agent@{utt} it inherits from,
 @{tt}context_engineer/*@{utt}. The context engineer hook is on, since
 screenshots and scene dumps are large (see
-@{" Context Engineer " link context_engineer/hook}). Models: Gemini Flash,
-then Gemini Pro, then Claude Sonnet (profiles @{tt}or-gemini-flash@{utt},
-@{tt}or-gemini-pro@{utt}, @{tt}or-claude-sonnet@{utt}); at most 60
-steps. Only users with the admin role may use it.
+@{" Context Engineer " link context_engineer/hook}). Models: DeepSeek V4.1
+Flash, then Gemini Flash, then Claude Sonnet (profiles
+@{tt}or-deepseek-latest-flash@{utt}, @{tt}or-gemini-flash@{utt},
+@{tt}or-claude-sonnet@{utt}), all of which read images; at most 60 steps. Only users with the admin role may use it.
 
 Both the agent and the @{tt}blender@{utt} instance are defined in
 @{tt}agents/blender_agent.yaml@{utt} in the plugin folder and are loaded
