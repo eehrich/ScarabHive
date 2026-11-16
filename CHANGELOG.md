@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- file_checkpoints: what a shell command or a coding CLI changes is recorded, not only counted. The directories of
+  the agent's file tools are looked at before and after such a call: in a git work tree through git, copying only
+  what `git status` lists (a clean file's earlier content is HEAD's, read with its checked-out line endings); outside
+  work trees through a cache by mtime and size. A commit, stash or reset by the call is undone in the files by a
+  rewind; ignored files are not recorded. A file's earlier state is only what was known of it -- a rewind never
+  deletes a file the look could not see -- and a call that changed what is not known (ignored files, an unreadable
+  directory) is named as partly not recorded -- a change to ignored files alone (a service's log) on a checkpoint
+  the turn has anyway, without making one. 0.2 s before and 0.4 s after a call on a coder with 17 work trees. Over
+  `snapshot_max_files` / `snapshot_max_bytes`, when the look was cut off or the run stopped mid-call, the call is
+  counted, with the reason; `snapshot_untracked: false` only counts, as before.
 - Coding CLIs: a workdir in the data directory that is not there yet is made at the start -- an empty repository
   with one empty commit, the shape of every such scratch workdir. An eval with `data: fresh` (whose data directory
   starts empty) skipped every such workdir before, and a server needed a `git init` by hand for each. A folder that

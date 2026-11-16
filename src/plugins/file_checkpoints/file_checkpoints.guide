@@ -108,8 +108,10 @@ and try again; a plain @{tt}/undo@{utt} drops it and leaves the files (their
 record stays for a later @{tt}/rewind@{utt}).
 
 Tools that change files without naming them -- shell commands and the like
--- are not recorded, only counted: the answer ends with "Not tracked:
-<tool> xN", so a "rewound" is never mistaken for "exactly as before".
+-- are recorded by a look before and after the call (see @{" What is
+recorded " link recorded}). Where that was not possible they are counted:
+the answer ends with "Not tracked: <tool> xN", so a "rewound" is never
+mistaken for "exactly as before".
 
 In the browser the answers come from the server: a refusal is a 409, an
 unknown checkpoint a 404, a partial rewind a 500 with the same text, and
@@ -184,7 +186,7 @@ second's work.
 Tool (server type) | Recorded
 file_ops manage create, delete, move, rename; replace_string_in_file | the state before: content and mode, a link's target, a directory, or "did not exist"; every instance, whatever its name
 media_ops save | the target file, the same way
-terminal execute, coding_cli run_task, blender, godot, audio_ops, image_compose, comfyui, sqlite_query, stategraph machine tools, and untracked_tools | not recorded, counted per turn
+terminal execute, coding_cli run_task, blender, godot, audio_ops, image_compose, comfyui, sqlite_query, stategraph machine tools, and untracked_tools | what differs in the directories of the agent's file tools after the call; over the limits counted per turn
 everything else | nothing
 @{body}
 
@@ -206,6 +208,58 @@ under the spelling the directory stores, and a file comes back under the
 name it had.
 @{b}Calls that changed nothing@{ub} (a replace that did not match) are
 dropped again after the call.
+@{body}
+
+@{h2}Calls that do not name their files
+
+A shell command or a coding CLI says nothing about the files it will touch.
+Around such a call the directories of the agent's file tools (the
+non-read-only file_ops and media_ops servers its allowlist admits -- the
+only directories a rewind may write) are looked at twice, and each file that
+differs is recorded as if a file tool had changed it, under the tool's name.
+
+@{bullet}
+@{b}In a git work tree@{ub} only what git does not hold is copied
+beforehand: the files @{tt}git status@{utt} lists. A clean file's earlier
+content is HEAD's, read afterwards as it was checked out (line endings
+included). The repository is only read. A commit, stash, checkout or reset
+the call made shows as what it did to the files; a commit alone changes
+none, and a rewind leaves the history as it is.
+@{b}Only what is known.@{ub} A rewind writes back the state a file had
+before, so that state is never guessed: copied, read from the index entry
+of a file git tracked and did not list, or from the cache. "Did not exist"
+only where git saw the place, or the cache walked it, and found nothing.
+What the work tree ignored before the call (a build directory and every
+file in it, an @{tt}.env@{utt} the call stopped ignoring), a submodule's
+commit or its place without a repository, a directory that could not be
+read, a name known before only in another case (a rename of case on macOS),
+content git cannot give (an object gone, a smudge filter failing) are not
+known: such a file is left as it is, or listed as one that cannot be put
+back.
+Files git was told to skip (skip-worktree, assume-unchanged) are copied
+beforehand like changed ones. A work tree inside another (a clone, a
+submodule) is looked at on its own, and so is a directory of the tools that
+its surrounding work tree ignores; a @{tt}git init@{utt} over files that
+were there changes none of them.
+@{b}Outside work trees@{ub} every file is kept in a cache
+(@{tt}data/file_checkpoints/.snapshots/<user>/loose@{utt}) and looked at
+again by mtime and size, so a call copies only what changed since. The
+cache can be deleted at any time; the next call fills it again.
+@{b}Limits.@{ub} Beyond @{tt}snapshot_max_files@{utt} files or
+@{tt}snapshot_max_bytes@{utt} bytes the call is counted, with the reason
+("... (not recorded: more than 5000 files under ...)"). So is a call whose
+look before was cut off (the hook's timeout) or whose run stopped before
+the call reported back.
+@{b}Partly recorded.@{ub} A call that changed what is not known, or what
+the look leaves out -- files the work tree ignores, @{tt}node_modules@{utt}
+or @{tt}.venv@{utt} outside work trees -- is named next to what was
+recorded: "shell_execute (partly not recorded: files the work tree
+ignores)". A rewind then does not read as "exactly as before". Ignored
+files change under a running service too (its logs), so a change to them
+alone makes no checkpoint: it is named on one the turn has anyway.
+@{b}Cost.@{ub} Measured on a coder with 17 work trees and 1,000 loose
+files: 0.2 s before and 0.4 s after a call; the first look of a process
+copies the loose files once.
 @{body}
 
 @{h2}Turns
@@ -233,8 +287,9 @@ tool_script calls pass the same hooks and are recorded like the model's.
 Throwaway sessions (@{tt}ephemeral-...@{utt}: openai_api without
 @{tt}store@{utt}, a stateless collect_final_result) and the runs they start.
 Runs without a user or without a session id a chat could name.
-Anything a shell command, a machine activity, a slash command or a web
-button writes -- these pass no file hook.
+What a machine activity, a slash command or a web button writes -- these
+pass no file hook. What a shell command writes outside the directories of
+the agent's file tools, or into files the work tree ignores.
 @{body}
 @endnode
 
@@ -283,9 +338,19 @@ prompt cache.
 @{h2}Known gaps
 
 @{bullet}
-Shell commands and other tools that write without naming the file are only
-counted. Recording them would need a snapshot of the whole tree around every
-call.
+A shell command's changes are found by comparing two looks: whatever else
+changes the same directories while it runs -- a call beside it in the same
+step, another session, the person -- is recorded as the command's too. A
+file written twice within the file system's clock tick and to the same size
+is found only because files that recent are read again.
+Of a directory the work tree ignores, and of @{tt}node_modules@{utt} or
+a venv outside work trees, only a change to its own entries (or to a venv's
+site-packages) names the call as partly not recorded: an edit deeper inside,
+in a build's output, passes without a word. Telling more would mean walking
+them around every call.
+A clean file's earlier content is what a checkout writes now: a work tree
+checked out before its line-ending settings changed (core.autocrlf switched
+on later) gets the new line endings back.
 A sub-agent without the hooks records nothing; the call that started it is
 named instead.
 Stategraph machines call their tools without hooks: their runs are counted,
@@ -328,7 +393,10 @@ max_call_bytes | 268435456 | content copied for one call at most; the rest is re
 max_session_bytes | 536870912 | content kept per session; older turns are forgotten to make room, the turn being recorded never
 max_entries_per_call | 2000 | a directory with more entries is recorded as one, its contents not kept
 retention_days | 0 | records untouched this many days are deleted, at start and once a day while recording; 0: never
-untracked_tools | [] | more "server_type/tool" patterns (fnmatch) counted like shell commands
+untracked_tools | [] | more "server_type/tool" patterns (fnmatch) treated like shell commands
+snapshot_untracked | true | record what such calls change by looking before and after them; false: only count them
+snapshot_max_files | 5000 | files one call may look at outside work trees, or find changed in one; beyond it the call is counted
+snapshot_max_bytes | 536870912 | bytes one call may copy, and the cache of files outside work trees may hold
 @{body}
 
 Forgetting old turns only shortens how far back a rewind reaches: it deletes

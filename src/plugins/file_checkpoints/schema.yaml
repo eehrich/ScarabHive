@@ -114,4 +114,29 @@ config:
       More "server_type/tool" patterns (fnmatch) for calls that change files
       without naming them, beyond the built-in list (terminal/execute,
       coding_cli/run_task, blender, godot, audio_ops, image_compose, comfyui,
-      sqlite_query, stategraph). A rewind lists how often they ran.
+      sqlite_query, stategraph). They are recorded by snapshot_untracked, or
+      counted.
+
+  snapshot_untracked:
+    type: boolean
+    default: true
+    description: >
+      Record what such a call changed: the directories of the agent's file
+      tools are looked at before and after it. In a git work tree only the
+      files git status lists are copied beforehand (a clean file's content is
+      HEAD's); outside work trees a cache keeps every file. false: the calls
+      are only counted.
+
+  snapshot_max_files:
+    type: integer
+    default: 5000
+    description: >
+      Files one call may look at outside work trees, or find changed in one:
+      beyond it the call is counted, with the reason.
+
+  snapshot_max_bytes:
+    type: integer
+    default: 536870912
+    description: >
+      Bytes one call may copy, and the cache of files outside work trees may
+      hold: beyond it the call is counted, with the reason.

@@ -5,7 +5,9 @@ first changed it in a turn, so the chat can put it back: `/undo files` drops the
 file changes, `/rewind` lists the checkpoints of a session and `/rewind <n>` puts the files back as they were
 before checkpoint n. A rewind never touches a path it has no record of, never writes outside the directories of
 the tool server that recorded it, and refuses when a file was changed outside the agent since (`overwrite` puts it
-back anyway). Shell commands and similar tools are not recorded, only counted.
+back anyway). Shell commands and similar tools (a coding CLI) are recorded by looking at the directories of the
+agent's file tools before and after the call (`snapshot.py`): in a git work tree through git, copying only what
+`git status` lists; outside one through a cache. Over the limits such a call is counted instead.
 
 - **Hooks** `record_before_change` (pre_tool_call) and `record_after_change` (post_tool_call) -- record the state
   before and after every file_ops / media_ops write. Off for every agent; an agent switches both on in

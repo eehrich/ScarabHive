@@ -656,36 +656,6 @@ class TestReach:
         assert report["status"] == REWOUND, report["text"]
         assert tree(rig.work) == {}
 
-    async def test_a_shell_call_is_named_in_the_report(self, rig):
-        class _Shell(ToolServer):
-            def __init__(self, work: Path):
-                super().__init__("shell", AgentSystemConfig(), ToolServerConfig(type="terminal", enabled=True))
-                self.work = work
-
-            def get_tools(self):
-                return [{"type": "function", "function": {"name": "shell_execute", "description": "Run.",
-                                                          "parameters": {"type": "object", "properties": {}}}}]
-
-            async def execute(self, params):
-                (self.work / "made_by_shell.txt").write_text("shell")
-                return {"status": "success"}
-
-            async def shell_execute(self, params):
-                return await self.execute(params)
-
-        rig.registry.register("shell", _Shell(rig.work))
-        agent = rig.agent("with_shell", allowed=["fs/*", "shell/*"])
-        await rig.turn("build", [create(rig.work / "a.txt", "A"), call("shell_execute")], agent=agent)
-
-        listing = await rig.checkpoints(agent=agent)
-        report = await rig.rewind(agent=agent)
-
-        assert listing["checkpoints"][0]["untracked"] == [{"tool": "shell_execute", "count": 1}]
-        assert report["status"] == REWOUND
-        assert report["untracked"] == [{"tool": "shell_execute", "count": 1}]
-        assert "shell_execute x1" in report["text"]
-        assert tree(rig.work) == {"made_by_shell.txt": b"shell"}, "an untracked change was touched"
-
     async def test_one_hook_without_the_other_records_nothing(self, rig, caplog):
         agent = rig.agent("half", hooks={BEFORE: {"enabled": True}})
 

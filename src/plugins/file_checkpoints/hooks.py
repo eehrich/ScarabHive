@@ -5,9 +5,11 @@ switched it on. A call whose writes can be named (``targets.plan_for``) gets
 the state of each path it is about to change recorded -- once per turn and
 path, so a file edited twenty times in one turn costs one copy, and a file
 nobody touches costs nothing. A call that changes files without naming them
-(a shell command) is counted instead. ``record_after_change`` (post_tool_call)
-then records what the call left: that is how a rewind later tells the agent's
-own change from one made outside it since.
+(a shell command, a coding CLI) gets the directories of the agent's file tools
+looked at before and after it instead (``snapshot``), and what differs is
+recorded the same way; over the limits it is counted. ``record_after_change``
+(post_tool_call) then records what the call left: that is how a rewind later
+tells the agent's own change from one made outside it since.
 
 A sub-agent's changes belong to the turn that started it: a run whose request
 id extends one this plugin has seen (``<run>_003_sub_x``, the scheme tool
@@ -21,6 +23,7 @@ record is placed in it by ``turns.position``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -29,9 +32,10 @@ import shutil
 import stat
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
@@ -47,13 +51,15 @@ from agent_system.servers.agent.components.hook_integration import hook_runs_for
 from agent_system.servers.agent.components.session_tracking import session_chain
 from agent_system.services.session_service import is_ephemeral_session
 from agent_system.servers.agent.components.status_forwarding import run_is_live, run_streams
+from agent_system.servers.agent.tool_schema_builder import server_matches_patterns
 
 from . import fs
 from .diff import contents as diff_contents, render as diff_render
 from .fs import ABSENT, DIR, FILE, SYMLINK, UNREADABLE, State
-from .store import Change, ForeignJournal, Journal, Turn, is_session_id, journals_older_than
+from .snapshot import IGNORED_FILES, Caches, Limits, Snapshot, TooBig, clear_stale_scratch
+from .store import Change, ForeignJournal, Journal, Turn, is_session_id, journals_older_than, safe_user
 from .targets import (
-    Plan, Target, is_untracked, plan_for, server_instance, server_roots, server_type, tool_of,
+    Plan, Target, is_untracked, plan_for, recorded_types, server_instance, server_roots, server_type, tool_of,
 )
 from .turns import TurnRef, current_turn, head_index, heads, position
 
@@ -76,6 +82,35 @@ _SUB_RUN = re.compile(r"^_(\d{3}|ts\d+|sub_|async_)")
 #: Files named per checkpoint in a listing.
 LISTED_FILES = 5
 _DAY = 86400.0
+
+
+def _run_live(request_id: str) -> bool:
+    """Whether the run a call belongs to is going. A script's calls (tool_script) carry ids derived from
+    their run's -- <run>_NNN_tsNN, through the MCP gateway <run>_NNN_<hex>_mcpNNN, NNN past 999 after long
+    -- which no status forwarder extends, so run_is_live alone took them for ended: their looks were let go
+    mid-call. As in _run_ref: a run the id extends with what the framework appends, and that run ITSELF
+    streams (run_streams) -- run_is_live on the cut id let "sub_x" live while any sub-agent ran, and a
+    client's ended "job_001" while its "job_002" did."""
+    if run_is_live(request_id):
+        return True
+    run = request_id
+    while "_" in run:
+        run = run.rsplit("_", 1)[0]
+        if _SUB_RUN.match(request_id[len(run):]) and run_streams(run):
+            return True
+    return False
+
+
+def _read_source(source: Optional[Path], limit: int) -> Optional[bytes]:
+    """The bytes a look kept of a file before a call, when there are no more than ``limit`` of them."""
+    if source is None:
+        return None
+    try:
+        if source.stat().st_size > limit:
+            return None
+        return source.read_bytes()
+    except OSError:
+        return None
 
 
 def _pass(context: HookContext) -> HookResult:
@@ -274,6 +309,16 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         # Destructive, so off unless the operator asks for it.
         self.retention_days = float(config.get("retention_days", 0) or 0)
         self.untracked_tools = tuple(str(p) for p in (config.get("untracked_tools") or ()))
+        self.snapshot_untracked = bool(config.get("snapshot_untracked", True))
+        self.snapshot_limits = Limits(
+            file_bytes=self.max_file_bytes,
+            files=max(1, int(config.get("snapshot_max_files", 5000))),
+            total_bytes=max(0, int(config.get("snapshot_max_bytes", 512 * 1024 * 1024))))
+        #: Calls looked at before (snapshot), waiting for the look after: call key -> [(ref, tool, snapshot)]
+        #: in call order (two calls without an id and with the same arguments share a key, as in _pending)
+        self._snapshots: "OrderedDict[Tuple[Any, ...], List[Tuple[RunRef, str, Snapshot]]]" = OrderedDict()
+        self._caches: Dict[str, Caches] = {}
+        self._quietly(lambda: clear_stale_scratch(self.root / ".snapshots"))
         self._runs: "OrderedDict[str, Tuple[RunRef, float]]" = OrderedDict()
         self._last_sweep = time.monotonic()
         self._pending: "OrderedDict[Tuple[Any, ...], List[List[Pending]]]" = OrderedDict()
@@ -473,7 +518,7 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         if now - self._last_sweep >= SWEEP_SECONDS or len(self._runs) > MAX_RUNS:
             self._last_sweep = now
             for ended in [rid for rid, (_, at) in self._runs.items()
-                          if now - at >= SWEEP_SECONDS and not run_is_live(rid)]:
+                          if now - at >= SWEEP_SECONDS and not _run_live(rid)]:
                 self._forget_run(ended)
         while len(self._runs) > MAX_RUNS:
             self._forget_run(next(iter(self._runs)))
@@ -555,6 +600,12 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                              "can be told from one made outside the agent, so nothing is recorded. "
                              "Switch both on.", agent_name, self.before_hook_name, self.after_hook_name)
             return _pass(context)
+        if plan is None and untracked == name and self.snapshot_untracked:
+            looked, reason = await self._look_before(context, ref, agent, name)
+            if looked:
+                return _pass(context)
+            if reason:
+                untracked = f"{name} (not recorded: {reason})"
         # The count is taken in the worker thread, under the record's lock, so a
         # post hook of another call never sees the row as nobody else's. Shielded:
         # a hook cut off meanwhile (its timeout, the run cancelled) stores no
@@ -583,7 +634,7 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         or blocked after this hook)."""
         now = time.monotonic()
         stale = [key for key, since in self._pending_since.items()
-                 if now - since >= SWEEP_SECONDS and not run_is_live(str(key[0] or ""))]
+                 if now - since >= SWEEP_SECONDS and not _run_live(str(key[0] or ""))]
         while len(self._pending) - len(stale) > MAX_PENDING:
             stale.append(next(key for key in self._pending if key not in stale))
         for key in stale:
@@ -592,6 +643,19 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
             self._pending_since.pop(key, None)
 
     async def record_after_change(self, context: HookContext) -> HookResult:
+        queue = self._snapshots.get(self._call_key(context))
+        looked = queue.pop(0) if queue else None
+        if queue is not None and not queue:
+            self._snapshots.pop(self._call_key(context), None)
+        if looked is not None:
+            try:
+                # Shielded: popped already, a hook cut off here would leave its copies behind.
+                await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(self._record_snapshot, *looked)))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - logged; the call's changes stay unrecorded
+                logger.exception("file_checkpoints: recording what %s changed failed", context.tool_call)
+            return _pass(context)
         waiting = self._pending.get(self._call_key(context))
         if not waiting:
             return _pass(context)
@@ -608,6 +672,165 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         except Exception:  # noqa: BLE001 - logged; the change stays "not confirmed"
             logger.exception("file_checkpoints: recording what %s left failed", context.tool_call)
         return _pass(context)
+
+    def _snapshot_roots(self, agent: Any) -> List[Tuple[str, Path]]:
+        """(server, directory) of every file tool server the agent may write with -- the directories a
+        rewind may write to, so the only ones worth looking at."""
+        registry = getattr(agent, "registry", None)
+        tools = getattr(getattr(agent, "agent_config", None), "tools", None)
+        allowed = list(getattr(tools, "allowed", None) or [])
+        if registry is None or not allowed:
+            return []
+        kinds = set(recorded_types())
+        pairs: List[Tuple[str, Path]] = []
+        for name in registry.list():
+            if not server_matches_patterns(name, allowed):
+                continue
+            instance = server_instance(agent, name)
+            if instance is None or server_type(agent, name, instance) not in kinds:
+                continue
+            if getattr(instance, "read_only", False) or getattr(getattr(instance, "sandbox", None), "read_only", False):
+                continue
+            pairs.extend((name, root) for root in server_roots(instance))
+        return pairs
+
+    async def _look_before(self, context: HookContext, ref: RunRef, agent: Any, tool: str) -> Tuple[bool, str]:
+        """Look at the agent's directories before a call that writes without naming its paths.
+        (looked, why not): not looked and no reason -- the agent has no directory to look at."""
+        try:
+            roots = self._snapshot_roots(agent)
+            if not roots:
+                return False, ""
+            user_dir = self.root / ".snapshots" / safe_user(ref.user_id)
+            caches = self._caches.get(ref.user_id)
+            if caches is None:
+                caches = self._caches[ref.user_id] = Caches(user_dir / "loose")
+            snap = Snapshot(roots, self.snapshot_limits, user_dir / "calls" / uuid.uuid4().hex, caches)
+        except Exception:  # noqa: BLE001 - the call runs counted
+            logger.exception("file_checkpoints: finding the directories to look at before %s failed", tool)
+            return False, "the look before it failed"
+        work = asyncio.ensure_future(asyncio.to_thread(snap.take))
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError:
+            # Cut off (the hook's timeout, the run stopped): the call may run all the same -- counted.
+            loop = asyncio.get_running_loop()
+            work.add_done_callback(lambda _: loop.run_in_executor(
+                None, self._drop_looks, [(ref, tool, snap)], "the look before it was cut off"))
+            raise
+        except TooBig as exc:
+            snap.release()
+            return False, str(exc)
+        except Exception:  # noqa: BLE001 - the call runs counted, as it always did
+            logger.exception("file_checkpoints: looking at the files before %s failed", tool)
+            snap.release()
+            return False, "the look before it failed"
+        self._snapshots.setdefault(self._call_key(context), []).append((ref, tool, snap))
+        stale = self._sweep_snapshots()
+        if stale:
+            await asyncio.to_thread(self._drop_looks, stale, "the call did not report back")
+        return True, ""
+
+    def _sweep_snapshots(self) -> List[Tuple[RunRef, str, Snapshot]]:
+        """Take out the looks whose call will not report back: beyond MAX_PENDING, and those of runs
+        that ended SWEEP_SECONDS ago (the call blocked after this hook, the run stopped mid-call)."""
+        now = time.monotonic()
+        stale = [key for key, queue in self._snapshots.items()
+                 if queue and now - queue[0][2].taken_at >= SWEEP_SECONDS and not _run_live(str(key[0] or ""))]
+        while len(self._snapshots) - len(stale) > MAX_PENDING:
+            stale.append(next(key for key in self._snapshots if key not in stale))
+        return [item for key in stale for item in self._snapshots.pop(key, None) or []]
+
+    def _dead_looks(self, user_id: str, session_id: str) -> List[Tuple[RunRef, str, Snapshot]]:
+        """Take out the looks of this session's runs that ended: their calls will not report back."""
+        dead = []
+        # Only runs that have an id: without one a run cannot be told live, and the sweep takes its looks later.
+        for key in [k for k in self._snapshots if k[0] and not _run_live(str(k[0]))]:
+            queue = self._snapshots[key]
+            dead.extend(item for item in queue if (item[0].user_id, item[0].session_id) == (user_id, session_id))
+            queue[:] = [item for item in queue if (item[0].user_id, item[0].session_id) != (user_id, session_id)]
+            if not queue:
+                self._snapshots.pop(key)
+        return dead
+
+    def _drop_looks(self, looks: List[Tuple[RunRef, str, Snapshot]], why: str) -> None:
+        """Let go of looks whose call ran unrecorded, and count the calls -- a rewind must not say "as
+        before" over what they changed."""
+        for ref, tool, snap in looks:
+            self._quietly(snap.release)
+            self._quietly(lambda: self._record_before(ref, "", f"{tool} (not recorded: {why})", None,
+                                                      snap.taken_at))
+
+    def _record_snapshot(self, ref: RunRef, tool: str, snap: Snapshot) -> None:
+        """What the call changed, as changes of the turn -- or, over the limits, the call counted. The look's
+        copies go only afterwards: the bytes before are read from them."""
+        try:
+            self._record_snapshot_held(ref, tool, snap)
+        finally:
+            self._quietly(snap.release)
+
+    def _record_snapshot_held(self, ref: RunRef, tool: str, snap: Snapshot) -> None:
+        reason = ""
+        try:
+            found = snap.finish()
+        except TooBig as exc:
+            found, reason = None, str(exc)
+        except Exception:  # noqa: BLE001 - counted, as it always was
+            logger.exception("file_checkpoints: looking at what %s changed failed", tool)
+            found, reason = None, "the look after it failed"
+        unseen = sorted(snap.unseen)
+        if found == [] and not unseen:
+            return                    # it changed nothing the agent's tools could put back
+        # Ignored files change under a running service too (its logs): alone, that change is named on a
+        # checkpoint the turn has anyway, but makes none -- every `ls` would, pushing real ones out.
+        makes = not (found == [] and unseen == [IGNORED_FILES])
+        journal = Journal(self.root, ref.user_id, ref.session_id)
+        forgotten: List[int] = []
+        with self._lock(journal.directory):
+            forgot = self._forgotten.get(str(journal.directory))
+            if forgot is not None and snap.taken_at <= forgot:
+                return                # the person deleted the session while this call was under way
+            if not makes and not journal.exists():
+                return
+            with journal.connect(create=makes) as conn:
+                seq = Journal.turn_seq(conn, ref.turn, create=makes)
+                if seq is None:
+                    return
+                if found is None:
+                    Journal.note_untracked(conn, seq, f"{tool} (not recorded: {reason})")
+                    return
+                if unseen:
+                    Journal.note_untracked(conn, seq, f"{tool} (partly not recorded: {', '.join(unseen)})")
+                needed = sum(item.before.size or 0 for item in found if item.source is not None)
+                forgotten = Journal.prune(conn, self.max_checkpoints, self.max_session_bytes, keep_seq=seq,
+                                          needed=min(needed, self.max_call_bytes))
+                room = min(self.max_call_bytes, max(0, self.max_session_bytes - Journal.kept_bytes(conn)))
+                listings: Dict[str, List[str]] = {}
+                for item in found:
+                    key = str(fs.spelled_on_disk(Path(item.path), listings))
+                    existing = Journal.change_id(conn, seq, key)
+                    if existing is None:
+                        before = item.before
+                        content = _read_source(item.source, min(room, self.max_file_bytes))
+                        if content is not None and hashlib.sha256(content).hexdigest() == before.digest:
+                            journal.keep_blob(str(before.digest), content)
+                            room -= len(content)
+                            before = replace(before, kept=True)
+                        elif before.kind in (FILE, SYMLINK):
+                            before = replace(before, kept=False, note=before.note
+                                             or "not kept: the checkpoint store of this session or call is full")
+                        existing = Journal.add_change(conn, seq, key, item.server, tool, before)
+                    else:
+                        # Recorded earlier in this turn: its state before stands. Not as that call left it
+                        # when this one began, someone else changed it in between.
+                        left = None if self._awaited(journal, existing) else Journal.after_of(conn, existing)
+                        if left is not None and not left.same(item.before):
+                            Journal.mark_outside(conn, existing, "it was changed outside the agent's tools "
+                                                                 "while the turn was running")
+                    Journal.set_after(conn, existing, fs.fingerprint(Path(key)))
+            if forgotten:
+                self._quietly(journal.collect_blobs)
+        self._quietly(self._maybe_apply_retention)
 
     def _records(self, agent: Any) -> bool:
         """Whether ``agent`` has both hooks on -- its changes are recorded."""
@@ -884,9 +1107,15 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
     # --- the rewinder ------------------------------------------------------
 
     def _live_runs(self, ident: Tuple[str, str]) -> List[str]:
-        return sorted(rid for rid in self._journal_runs.get(ident, ()) if run_is_live(rid))
+        return sorted(rid for rid in self._journal_runs.get(ident, ()) if _run_live(rid))
+
+    async def _settle_looks(self, user_id: str, session_id: str) -> None:
+        dead = self._dead_looks(user_id, session_id)
+        if dead:
+            await asyncio.to_thread(self._drop_looks, dead, "the run stopped before it reported back")
 
     async def checkpoints(self, *, user_id: str, session_id: str, messages: Sequence[Any]) -> dict:
+        await self._settle_looks(user_id, session_id)
         journal = Journal(self.root, user_id, session_id)
         if not journal.exists():
             return {"checkpoints": [], "text": "No file changes are recorded for this session."}
@@ -1002,6 +1231,7 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
     async def rewind(self, *, user_id: str, session_id: str, messages: Sequence[Any],
                      checkpoint: Optional[int], registry: Any, overwrite: bool = False,
                      only: bool = False, path: Optional[str] = None) -> dict:
+        await self._settle_looks(user_id, session_id)
         journal = Journal(self.root, user_id, session_id)
         if not journal.exists():
             return _report(NOTHING, "No file changes are recorded for this session.")
