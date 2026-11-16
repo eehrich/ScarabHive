@@ -1788,6 +1788,42 @@
     }
   });
 
+  await check('a status line too narrow for its text gives up its words before its brackets, and shows it all on hover', async () => {
+    // "Calling LLM (<profile>)" was cut at its end: which LLM ran was the one thing gone.
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'steps');
+      $('#task').value = 'Read something';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      const box = $$('#chat .msg.assistant').at(-1);
+      const body1 = box.querySelector('.step-section[data-step="1"] .container-body');
+      if (body1.getClientRects().length === 0)
+        box.querySelector('.step-section[data-step="1"] .container-header').click();
+      const message = box.querySelector('.operation-progress[data-request-id$="_002"] .progress-message');
+      const head = message && message.querySelector('.progress-head');
+      const tail = message && message.querySelector('.progress-tail');
+      if (!head || !tail || message.textContent !== 'Calling LLM (one)' || tail.textContent !== ' (one)') return false;
+      const hover = () => message.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+      // the line's width is the page's: each width here is set, not found
+      message.style.flex = '0 0 40ch';
+      hover();
+      if (message.title) return false;                 // nothing cut, nothing to add
+      message.style.flex = '0 0 9ch';
+      const cut = head.scrollWidth > head.clientWidth && tail.scrollWidth <= tail.clientWidth;
+      hover();
+      const shown = message.title === 'Calling LLM (one)';
+      message.style.flex = '';
+      return cut && shown;
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('two runs of a session read back keep their calls apart, whatever id the provider gave them', async () => {
     // Keyed by the provider's id where the session carries no stamp -- and a provider may
     // give every run a call_1: each run's call is looked for in its own block.

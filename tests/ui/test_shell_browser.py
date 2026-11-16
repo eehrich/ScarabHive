@@ -1820,6 +1820,7 @@ EXPECTED = [
     'each LLM call keeps its own reasoning, its own tool lines, and folds when the next one starts',
     'a sub-agents lines nest under the call that spawned it, none go missing, and what was still running when the run ended says so',
     'clicking a tool status line unfolds what it was asked and what it answered, as one block per call',
+    'a status line too narrow for its text gives up its words before its brackets, and shows it all on hover',
     'a session read back from disk brings its run with it, not just the answer',
     'a session read back shows thinking the server kept only in reasoning_details',
     'a session read back keeps a run a hook continued as one run, not two turns',

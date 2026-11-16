@@ -2545,6 +2545,41 @@
     }
   }
 
+  /**
+   * A status line's text. One that ends in brackets -- "Calling LLM (<profile>)" -- is
+   * split there, and the words before them are cut first (chat.css .progress-head): the
+   * brackets name what runs, and a long profile was cut off where it mattered.
+   */
+  function setProgressMessage(span, message) {
+    const text = String(message);
+    const tail = /\s*\([^()]*\)$/.exec(text);
+    if (!tail || !tail.index) {
+      span.classList.remove('split');
+      span.textContent = text;
+      return;
+    }
+    // The halves keep their spaces (white-space: pre, or the one between them goes);
+    // a line break would then break the line, where nowrap made it a space.
+    const flat = (part) => part.replace(/\s+/g, ' ');
+    const head = document.createElement('span');
+    head.className = 'progress-head';
+    head.textContent = flat(text.slice(0, tail.index));
+    const end = document.createElement('span');
+    end.className = 'progress-tail';
+    end.textContent = flat(tail[0]);
+    span.classList.add('split');
+    span.replaceChildren(head, end);
+  }
+
+  /** A cut line's whole text on hover, and only a cut one's: the others say it all. */
+  function titleIfCut(event) {
+    const line = event.target.closest && event.target.closest('.progress-message');
+    if (!line) return;
+    const cut = [line, ...line.children].some((part) => part.scrollWidth > part.clientWidth);
+    if (cut) line.title = line.textContent;
+    else line.removeAttribute('title');
+  }
+
   function createTreeOperationDiv(operationKey, ev, depthLevel, parentId) {
     const operationDiv = document.createElement('div');
     operationDiv.className = 'operation-progress';
@@ -2582,10 +2617,12 @@
         <span class="progress-time">${formatTime(ev.timestamp)}</span>
         ${reqSpan}
         <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
-        <span class="progress-message">${escapeHtml(ev.message || (ev.phase === 'start' ? 'Starting...' : 'In progress...'))}</span>
+        <span class="progress-message"></span>
       </div>
     `;
-    
+    setProgressMessage(operationDiv.querySelector('.progress-message'),
+      ev.message || (ev.phase === 'start' ? 'Starting...' : 'In progress...'));
+
     // Add click handler for expand/collapse
     const expandBtn = operationDiv.querySelector('.tree-expand-btn');
     if (expandBtn) {
@@ -2723,7 +2760,7 @@
         const existing = activeOperations.get(operationKey);
         const msg = existing.querySelector('.progress-message');
         const time = existing.querySelector('.progress-time');
-        if (msg) msg.textContent = ev.message || 'Starting...';
+        if (msg) setProgressMessage(msg, ev.message || 'Starting...');
         if (time) time.textContent = formatTime(ev.timestamp);
         row = existing;
       } else {
@@ -2756,7 +2793,7 @@
       } else {
         const messageSpan = operationDiv.querySelector('.progress-message');
         const timeSpan = operationDiv.querySelector('.progress-time');
-        if (messageSpan) messageSpan.textContent = ev.message || 'In progress...';
+        if (messageSpan) setProgressMessage(messageSpan, ev.message || 'In progress...');
         if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
       }
       row = operationDiv;
@@ -2775,7 +2812,7 @@
       const messageSpan = operationDiv.querySelector('.progress-message');
       const timeSpan = operationDiv.querySelector('.progress-time');
       if (iconSpan) iconSpan.innerHTML = '<div class="checkmark">✓</div>';
-      if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
+      if (messageSpan) setProgressMessage(messageSpan, ev.message || 'Completed');
       if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
       operationDiv.classList.add('completed');
       activeOperations.delete(operationKey);
@@ -2796,7 +2833,7 @@
       const messageSpan = operationDiv.querySelector('.progress-message');
       const timeSpan = operationDiv.querySelector('.progress-time');
       if (iconSpan) iconSpan.innerHTML = '<div class="error-mark">✕</div>';
-      if (messageSpan) messageSpan.textContent = ev.message || 'Error occurred';
+      if (messageSpan) setProgressMessage(messageSpan, ev.message || 'Error occurred');
       if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
       operationDiv.classList.add('error');
       activeOperations.delete(operationKey);
@@ -3784,7 +3821,8 @@
   /** What a sub-run was asked, in its header. */
   function showSubRunTask(view, text) {
     const task = view.element.querySelector('.sub-run-task');
-    task.textContent = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+    // the line cuts it to its width (chat.css); this only spares it a page of task
+    task.textContent = text.length > 400 ? `${text.slice(0, 400)}…` : text;
     task.title = text;
   }
 
@@ -4374,6 +4412,8 @@
       console.warn('Chat form elements not found');
       return;
     }
+
+    chatContainer.addEventListener('mouseover', titleIfCut);
 
     loadPreferences();
     // Changed in the Settings panel: the shell passes them on, and they apply at once.

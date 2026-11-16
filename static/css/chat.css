@@ -4,8 +4,12 @@
 
 /* ---------------------------------------------------------------- messages */
 
+/* Wide: a status line, a run's header and a tool's detail are scanned, not read, and
+   what they end in (the LLM of a call) was cut off at 920px. Text to read keeps the
+   measure it had (--chat-measure, below). */
 .chat {
-  width: 100%; max-width: 920px; margin: 0 auto;
+  --chat-measure: 860px;
+  width: 100%; max-width: 1280px; margin: 0 auto;
   padding: var(--space-6) var(--space-6) var(--space-4);
   display: flex; flex-direction: column; gap: var(--space-4);
 }
@@ -59,7 +63,7 @@
 .container-label { font-weight: 500; }
 .container-body { padding: var(--space-1) 0 0 var(--space-5); }
 .container-body > pre, .step-thinking > pre {
-  margin: 0; padding: var(--space-3); max-height: 360px; overflow: auto; white-space: pre-wrap;
+  margin: 0; padding: var(--space-3); max-height: 360px; max-width: var(--chat-measure); overflow: auto; white-space: pre-wrap;
   font: 400 var(--text-xs)/1.6 var(--font-mono); color: var(--text-secondary);
   background: var(--surface-1); border-left: 2px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
@@ -170,6 +174,12 @@
 .progress-time { color: var(--text-muted); flex: none; }
 .progress-server { color: var(--accent-text); flex: none; }
 .progress-message { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+/* A line that ends in brackets -- "Calling LLM (<profile>)" -- gives up its words before
+   them: the brackets name what runs (setProgressMessage). */
+.progress-message.split { display: flex; }
+.progress-head, .progress-tail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.progress-head { flex: 0 1000 auto; min-width: 2ch; }
+.progress-tail { flex: 0 1 auto; }
 .operation-progress.completed .progress-message { color: var(--text-secondary); }
 .operation-progress.error .progress-message { color: var(--danger); }
 /* Still open when the run ended -- deliberately neither of the two above. A
@@ -229,6 +239,8 @@ label.question-choice {
 /* ------------------------------------------------------------ the answer */
 
 .response-text { font-size: var(--text-md); line-height: 1.65; color: var(--text-primary); overflow-wrap: anywhere; }
+/* Prose at the measure it is read at; a table or a code block may use the width. */
+.response-text > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6) { max-width: var(--chat-measure); }
 .response-text > :first-child { margin-top: 0; }
 .response-text > :last-child { margin-bottom: 0; }
 .response-text p { margin: 0 0 var(--space-3); }
@@ -289,7 +301,7 @@ label.question-choice {
 
 .inputBar { padding: 0 var(--space-6) var(--space-4); }
 .composer {
-  max-width: 920px; margin: 0 auto;
+  max-width: 1280px; margin: 0 auto;  /* as wide as the chat above it (.chat) */
   background: var(--surface-2); border: 1px solid var(--border-default); border-radius: var(--radius-lg);
   box-shadow: 0 1px 0 var(--border-subtle);
 }
