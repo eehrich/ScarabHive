@@ -48,20 +48,21 @@ class ChatCommand:
 
     @property
     def display(self) -> str:
-        """What to show in help: the usage line, or all spellings."""
-        return self.usage or ", ".join(self.aliases)
+        """What help and the menus show: the usage line, or the name."""
+        return self.usage or self.aliases[0]
 
 
 # The first alias is the name a surface offers; the others are spellings that
 # reach it -- the ones the other coding CLIs taught (Claude Code, opencode,
 # Gemini CLI and its successor Antigravity), so a hand used to them lands
-# right. Never one a shipped plugin command uses: a built-in takes the bare
+# right. They are not shown anywhere: a hand that knows them types them, and
+# naming them on every row doubled the menu's width for nobody else.
+# Never one a shipped plugin command uses: a built-in takes the bare
 # name, and the plugin's command would be left to its plugin:name spelling
 # (tests/cli/test_chat_commands.py holds that against every schema.yaml).
 BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("exit", ("/exit", "/quit", "/q", "/bye"),
-                "end the chat (Ctrl-D / Ctrl-Z+Enter work too)",
-                usage="/exit, /quit, /q", surfaces=(CLI,)),
+                "end the chat (Ctrl-D / Ctrl-Z+Enter work too)", surfaces=(CLI,)),
     ChatCommand("new", ("/new", "/clear", "/reset"),
                 "start a fresh session (current one stays saved)"),
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
@@ -147,7 +148,7 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 "write the next message in $EDITOR -- in the browser, in the input "
                 "(argument pre-fills it)",
                 usage="/edit [text]"),
-    ChatCommand("help", ("/help", "/h", "/?"), "this help; a topic searches the guides", usage="/help [topic], /h, /?"),
+    ChatCommand("help", ("/help", "/h", "/?"), "this help; a topic searches the guides", usage="/help [topic]"),
 )
 
 #: alias -> canonical name, built once from the catalogue above.

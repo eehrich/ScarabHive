@@ -4535,12 +4535,12 @@ class TestCompletion:
                 assert not set(command.aliases[1:]) & set(values), f"an alias of {command.name} is an entry"
 
     def test_an_alias_offers_the_command_it_reaches(self, monkeypatch):
-        """'/q' finds /exit and writes /exit -- the other coding CLIs answer it so."""
+        """'/q' finds /exit and writes /exit; the row names no alias."""
         completions = self._menu(_completion_ctx(monkeypatch), "/q")
 
         assert [c.text for c in completions] == ["/exit"]
         assert completions[0].start_position == -2, "it must replace what was typed"
-        assert "quit" in completions[0].display_text, "the menu does not say why /exit is offered"
+        assert completions[0].display_text == "/exit", "the row lists the aliases"
 
     def test_a_spelling_typed_in_full_comes_first(self, monkeypatch):
         """'/h' is /help's alias, and /history starts with it too: the exact one leads."""

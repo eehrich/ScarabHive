@@ -194,9 +194,9 @@ def _build_completer(suggest: Callable[[str], Sequence[Candidate]]) -> Any:
     """A prompt_toolkit completer that asks *suggest* what fits the line.
 
     A command with aliases is ONE entry under its own name, found by any of
-    its spellings -- "/q" offers "/exit (quit, q, bye)" and writes "/exit", as
-    the other coding CLIs do; listing every alias as an entry of its own put
-    four lines into the menu for one way out. A spelling the word matches
+    its spellings -- "/q" offers "/exit" and writes it; listing every alias as
+    an entry of its own put four lines into the menu for one way out, and
+    naming them on the row widened it for nobody. A spelling the word matches
     exactly goes first, so "/h" offers /help before /history; then the entries
     whose own name starts with the word, and only then those an alias of
     theirs reaches -- Tab takes the first entry, and "/res" is /resume, not
@@ -239,18 +239,15 @@ def _build_completer(suggest: Callable[[str], Sequence[Candidate]]) -> Any:
                 if spellings:
                     if not any(s.lower().startswith(lowered) for s in spellings):
                         continue
-                    others = [s.lstrip("/") for s in spellings if s != value]
-                    label = f"{value} ({', '.join(others)})" if others else value
                     exact = any(s.lower() == lowered for s in spellings)
                     named = value.lower().startswith(lowered)
                 elif value.startswith(word):
-                    label, exact, named = value, value == word, True
+                    exact, named = value == word, True
                 else:
                     continue
-                offered.append(((not exact, not named), value, label, hint))
-            for _rank, value, label, hint in sorted(offered, key=lambda o: o[0]):
-                yield Completion(value, start_position=-len(word), display=label,
-                                 display_meta=hint)
+                offered.append(((not exact, not named), value, hint))
+            for _rank, value, hint in sorted(offered, key=lambda o: o[0]):
+                yield Completion(value, start_position=-len(word), display_meta=hint)
 
     return ThreadedCompleter(_ChatCompleter())
 

@@ -65,14 +65,15 @@ slash.load().then(() => {
   // A spelling typed in full leads, though another command's name starts with it too.
   rows = menu('/h');
   check('"/h" offers /help first', rows[0] && rows[0].startsWith('/help'), JSON.stringify(rows));
-  // The row says why it is offered when only an alias matched.
+  // An alias finds its command, and the row shows the command alone.
+  const rewind = catalogue.commands.find((c) => c.name === 'rewind');
   rows = menu('/restore');
-  check('"/restore" names the alias on /rewind\'s row',
-    rows.length === 1 && rows[0].startsWith('/rewind') && rows[0].includes('restore'), JSON.stringify(rows));
-  // ...and repeats nothing the usage line already names.
+  check('"/restore" offers /rewind\'s row without its aliases',
+    rows.length === 1 && rows[0] === rewind.display && !rows[0].includes('restore'), JSON.stringify(rows));
   const help = catalogue.commands.find((c) => c.name === 'help');
-  rows = menu('/hel');
-  check('"/help" lists no alias twice', rows[0] === help.display, JSON.stringify(rows));
+  rows = menu('/?');
+  check('"/?" offers /help without its aliases',
+    rows[0] === help.display && !rows[0].includes('/h,') && !rows[0].includes('?'), JSON.stringify(rows));
 
   if (failures.length) {
     failures.forEach((f) => console.log('FAIL', f));

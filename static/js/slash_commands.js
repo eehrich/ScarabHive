@@ -132,14 +132,10 @@
     const needle = word.toLowerCase();
     const out = [];
     data.commands.forEach((c) => {
-      // Match any spelling, but always offer the canonical one -- and say which
-      // other spellings reach it, unless its usage line names them already.
+      // Match any spelling, but offer the canonical one only (chat_commands.py
+      // says why the aliases are not shown).
       if (c.aliases.some((a) => a.toLowerCase().indexOf(needle) === 0)) {
-        const named = c.display.split(/[\s,]+/);
-        const others = c.aliases.slice(1).filter((a) => named.indexOf(a) === -1);
-        const label = others.length
-          ? c.display + ' (' + others.map((a) => a.slice(1)).join(', ') + ')' : c.display;
-        out.push({ insert: c.aliases[0], label: label, hint: c.summary, kind: 'command',
+        out.push({ insert: c.aliases[0], label: c.display, hint: c.summary, kind: 'command',
                    rank: rank(needle, c.aliases[0], c.aliases) });
       }
     });
