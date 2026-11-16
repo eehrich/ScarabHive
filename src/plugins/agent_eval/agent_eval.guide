@@ -643,6 +643,48 @@ whatever order they are listed. A name that is no agent of the
 configuration, an overlay that does not validate or an unknown profile
 refuses the suite.
 
+@{h2}A closing line of the arm's own
+
+@{tt}input_suffix@{utt} is appended to every task's input: the same task
+with another last instruction. Everything before it is the same for every
+arm, one prefix a provider can cache. Fork tasks have no input: a suite with
+both is refused.
+
+@{h2}Ensembles: arms scored together
+
+A panel of reviewers is judged by what it finds together, not by each
+reviewer alone. @{tt}ensembles@{utt} names such groups of arms:
+
+@{code}
+arms:
+  flash-a: {agent_config: {llm_profile: [flash]}}
+  flash-b: {agent_config: {llm_profile: [flash]}}
+  mixed-b: {agent_config: {llm_profile: [other]}}
+  dates:   {input_suffix: "\n\nReport only timeline issues."}
+  places:  {input_suffix: "\n\nReport only issues of who is where."}
+ensembles:
+  two-flash: {arms: [flash-a, flash-b], merge: "mypkg.merge:union"}
+  mixed:     {arms: [flash-a, mixed-b], merge: "mypkg.merge:union"}
+  sliced:    {arms: [dates, places], merge: "mypkg.merge:union"}
+@{body}
+
+The members run as ordinary arms and keep their own scores. Once all runs
+are done, each ensemble gets a run per task and repeat: @{tt}merge@{utt}
+(@{tt}module:function@{utt}) takes the answers of the members that finished
+-- whole, not the record's tail -- and returns one answer, which the task's
+own check scores. Its cost is its members' together; the report lists it
+after the arms, compared with the reference like one. A member that crashed
+or timed out leaves the others to answer, and the run's detail says how many
+did; with none finished it scores 0. A member that never counted (budget,
+stop, a failed setup) leaves the ensemble's run uncounted too.
+
+Each member is listed once: one arm twice would be one run counted twice --
+two independent members of one setting are two arms with the same overlay.
+Merged answers have no workspace of their own, so the tasks' checks must
+read the answer (@{tt}python@{utt} or @{tt}expect@{utt}), and a chain has no
+ensembles. Running only some arms (@{tt}--arm@{utt}) drops every ensemble
+that misses a member.
+
 @{h2}Admin overlays and machine overlays
 
 A suite is written by an administrator, so its overlays may set anything

@@ -226,6 +226,22 @@ class Arm(BaseModel):
     #: Agent names to overlays for the whole run: laid over the configuration before anything is built from it,
     #: so the sub-agents the agent starts (a machine's, a panel's) run with them. Admin overlays, like agent_config.
     agents: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    #: Appended to every task's input: the same task with a closing instruction of this arm's own (one slice of the
+    #: work, for an ensemble member). The beginning the arms share stays one prefix a provider can cache.
+    input_suffix: str = ""
+
+
+class Ensemble(BaseModel):
+    """Arms scored together, as a panel of reviewers is: per task and repeat the members' answers are merged into
+    one (``merge``) and checked by the task's own check, as one run's answer. The members run as arms of their own
+    and keep their own scores; the ensemble's cost is theirs together."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The member arms, each once: two independent members of one setting are two arms with the same overlay.
+    arms: List[str] = Field(min_length=2)
+    #: ``module:function`` taking the answers of the members that finished (in ``arms`` order) and returning one.
+    merge: str
 
 
 class Suite(BaseModel):
@@ -250,6 +266,8 @@ class Suite(BaseModel):
     tasks: List[Task]
     #: What a task with a ``judge`` check is judged by.
     judge: Optional[Judge] = None
+    #: Ensemble names to the arms they score together (Ensemble); reported like arms, after them.
+    ensembles: Dict[str, Ensemble] = Field(default_factory=dict)
     #: A layer over the configuration, as config/local.yaml lays one, for this suite's runs only (its runner and
     #: every run): a plugin instance, an LLM profile or model entry the arms run on.
     config: Dict[str, Any] = Field(default_factory=dict)
@@ -308,12 +326,32 @@ class Suite(BaseModel):
             unknown = sorted(set(wanted) - set(self.judge.criteria)) if isinstance(wanted, list) else []
             if unknown:
                 raise ValueError(f"task {task.id}: the judge has no criteria {unknown}")
+        suffixed = [name for name, arm in self.arms.items() if arm.input_suffix]
+        if forks and suffixed:
+            raise ValueError(f"arms {suffixed} append to the input, which fork tasks {forks} do not have")
+        self._check_ensembles()
         if len(forks) == len(self.tasks):
             idle = [name for name, arm in self.arms.items() if arm.agent or arm.agent_config]
             if idle:
                 raise ValueError(f"arms {idle}: every task is a fork task, where agent and agent_config change "
                                  "nothing -- an arm changes the machine's agents in agents")
         return self
+
+    def _check_ensembles(self) -> None:
+        if not self.ensembles:
+            return
+        bad = [name for name in self.ensembles if not _ID.fullmatch(name) or name in self.arms]
+        if bad:
+            raise ValueError(f"ensemble names {bad}: letters, digits and '-', at most 40, none an arm's")
+        for name, ensemble in self.ensembles.items():
+            unknown = [a for a in ensemble.arms if a not in self.arms]
+            if unknown or len(set(ensemble.arms)) != len(ensemble.arms):
+                raise ValueError(f"ensemble {name}: its arms {ensemble.arms} must be the suite's, each once")
+        # Merged answers have no run, no workspace and no product of their own: what checks them reads the answer.
+        unfit = [t.id for t in self.tasks if t.check.kind not in ("python", "expect")]
+        if unfit or self.chain:
+            raise ValueError(f"ensembles score answers: tasks {unfit} need a python or expect check"
+                             if unfit else "ensembles need runs of their own per task, not a chain")
 
     def criteria(self, task: Task) -> Dict[str, str]:
         """The judge's criteria *task* is judged by."""

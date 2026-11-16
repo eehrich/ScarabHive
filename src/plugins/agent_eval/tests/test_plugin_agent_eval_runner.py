@@ -1078,3 +1078,101 @@ def test_a_run_whose_store_cannot_tell_estimates_is_counted_not_zeroed():
                 "estimated_cost": 0.0}]
     arm = stats.report(records, "a", ["a"])["arms"]["a"]
     assert arm["cost_estimate_unknown_runs"] == 1, "an unknown estimate went in as 0"
+
+
+# --- ensembles: arms scored together ---------------------------------------------------------------------------
+
+def _ensemble_suite(tmp_path: Path, monkeypatch, extra: str = "") -> Path:
+    (tmp_path / "ensemble_mod.py").write_text("def join(answers):\n    return ' | '.join(answers)\n",
+                                              encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return _suite(tmp_path, f"""
+        name: s
+        agent: a
+        repeats: 2
+        {extra}
+        arms: {{one: {{}}, two: {{}}}}
+        ensembles: {{both: {{arms: [one, two], merge: 'ensemble_mod:join'}}}}
+        tasks:
+          - {{id: t1, input: x, check: {{expect: {{contains: [alpha, beta]}}}}}}
+    """)
+
+
+def _by_arm(answers: dict, statuses: dict | None = None, cost=0.5):
+    def run(suite, run_id, job, task, jdir, workspace, data):
+        status = (statuses or {}).get(job["arm"], "done")
+        return {"status": status, "answer": answers[job["arm"]], "cost": cost, "request_id": "r"}
+    return run
+
+
+def test_an_ensemble_checks_its_members_answers_merged(tmp_path, monkeypatch):
+    # each member finds half and fails alone; together they find all, at the cost of both
+    monkeypatch.setattr(runner, "_agent_run", _by_arm({"one": "alpha " + "x" * 5000, "two": "beta"}))
+    run_id = runner.run_suite(_ensemble_suite(tmp_path, monkeypatch), progress=lambda _: None)
+    records = _records(run_id)
+    members = [r for r in records if r["arm"] in ("one", "two")]
+    ensemble = [r for r in records if r["arm"] == "both"]
+    assert len(members) == 4 and not any(r["passed"] for r in members)
+    # the merge sees the whole answer, not the record's tail: "alpha" stands 5000 characters before its end
+    assert [(r["rep"], r["score"], r["cost"]) for r in ensemble] == [(1, 1.0, 1.0), (2, 1.0, 1.0)]
+    assert all(sorted(r["members"]) == sorted(m["n"] for m in members if m["rep"] == r["rep"]) for r in ensemble)
+    meta = store.read_meta(run_id)
+    assert meta["arms"] == ["one", "two", "both"] and meta["status"] == "done"
+    from plugins.agent_eval.stats import report
+    assert report(records, meta["reference_arm"], meta["arms"])["arms"]["both"]["mean_score"] == 1.0
+
+
+def test_an_ensemble_goes_on_without_a_member_that_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _by_arm({"one": "alpha beta", "two": "?"}, {"two": "crashed"}))
+    run_id = runner.run_suite(_ensemble_suite(tmp_path, monkeypatch), progress=lambda _: None)
+    ensemble = [r for r in _records(run_id) if r["arm"] == "both"]
+    assert [r["score"] for r in ensemble] == [1.0, 1.0]
+    assert all(r["detail"].startswith("1 of 2 members answered") for r in ensemble), ensemble
+
+
+def test_an_ensemble_of_a_member_that_never_ran_does_not_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_agent_run", _by_arm({"one": "alpha", "two": "beta"}, cost=1.0))
+    path = _ensemble_suite(tmp_path, monkeypatch, "budget_usd: 1")
+    run_id = runner.run_suite(path, progress=lambda _: None)
+    ensemble = [r for r in _records(run_id) if r["arm"] == "both"]
+    assert {r["status"] for r in ensemble} == {"budget"} and not any(r["scored"] for r in ensemble)
+
+
+def test_an_arm_appends_its_closing_line_to_the_input(tmp_path, monkeypatch):
+    seen = []
+
+    def child(suite, job, jdir, name, workspace, data, timeout):
+        seen.append(job["input"])
+        return {"status": "done", "answer": "ok", "request_id": job["request_id"]}
+
+    monkeypatch.setattr(runner, "_child", child)
+    path = _suite(tmp_path, """
+        name: s
+        agent: a
+        repeats: 1
+        arms: {whole: {}, slice: {input_suffix: "\\n\\nFind only the timeline issues."}}
+        tasks:
+          - {id: t1, input: "Review this.", check: {expect: {contains: [ok]}}}
+    """)
+    runner.run_suite(path, progress=lambda _: None)
+    assert sorted(seen) == ["Review this.", "Review this.\n\nFind only the timeline issues."]
+
+
+@pytest.mark.parametrize("ensembles, check, why", [
+    ("{both: {arms: [one, three], merge: 'm:f'}}", "{expect: {contains: [ok]}}", "must be the suite's"),
+    ("{both: {arms: [one, one], merge: 'm:f'}}", "{expect: {contains: [ok]}}", "each once"),
+    ("{one: {arms: [one, two], merge: 'm:f'}}", "{expect: {contains: [ok]}}", "none an arm's"),
+    ("{both: {arms: [one, two], merge: 'm:f'}}", "{command: 'true'}", "python or expect"),
+])
+def test_an_ensemble_the_suite_cannot_score_is_refused(tmp_path, ensembles, check, why):
+    from plugins.agent_eval.suite import load_suite
+    path = _suite(tmp_path, f"""
+        name: s
+        agent: a
+        arms: {{one: {{}}, two: {{}}}}
+        ensembles: {ensembles}
+        tasks:
+          - {{id: t1, input: x, check: {check}}}
+    """)
+    with pytest.raises(ValueError, match=why):
+        load_suite(path)

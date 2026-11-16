@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import hashlib
+import importlib
 import json
 import os
 import random
@@ -105,6 +106,8 @@ def _run_suite(suite: Suite, suite_path: str | Path, run_id: Optional[str], arms
         if unknown:
             raise ValueError(f"unknown arms {unknown}; the suite has {list(suite.arms)}")
         suite.arms = {name: arm for name, arm in suite.arms.items() if name in arms}
+        # an ensemble without all its members would score a smaller panel under its name
+        suite.ensembles = {name: e for name, e in suite.ensembles.items() if all(a in suite.arms for a in e.arms)}
     check_arms(suite)
     expected = expected_models(suite)
     check_judge(suite, expected)
@@ -114,7 +117,7 @@ def _run_suite(suite: Suite, suite_path: str | Path, run_id: Optional[str], arms
     shutil.copy2(suite_path, rdir / "suite.yaml")
     meta = {"run_id": run_id, "suite": suite.name, "suite_path": str(Path(suite_path).resolve()),
             "suite_sha": hashlib.sha256(Path(suite_path).read_bytes()).hexdigest(),
-            "agent": suite.agent, "arms": list(suite.arms), "reference_arm": suite.reference_arm,
+            "agent": suite.agent, "arms": [*suite.arms, *suite.ensembles], "reference_arm": suite.reference_arm,
             "tasks": len(suite.tasks), "repeats": suite.repeats, "status": "running", "started": store.now(),
             "pid": os.getpid(), "expected_models": expected}
     store.write_meta(run_id, meta)
@@ -126,6 +129,8 @@ def _run_suite(suite: Suite, suite_path: str | Path, run_id: Optional[str], arms
         with ThreadPoolExecutor(max_workers=suite.parallel) as pool:
             for wave in waves:
                 list(pool.map(lambda job: _job_or_error(suite, run_id, job, frozen, budget, progress), wave))
+        if suite.ensembles:
+            _score_ensembles(suite, run_id, sum(map(len, waves)), progress)
         if suite.judge is not None:
             _judge(suite, run_id, progress, meta)
         meta["status"] = _status(run_id, meta)
@@ -362,6 +367,8 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
         verdict = (run_check(task.check, suite, task, workspace, result) if result["status"] == "done"
                    else {"score": 0.0, "passed": False, "detail": result.get("detail") or result["status"]})
         record.update(verdict)
+    if suite.ensembles and result["status"] == "done":  # an ensemble merges all of it
+        (jdir / f"answer-{task.id}.txt").write_text(result.get("answer") or "", encoding="utf-8")
     if "answer" in record:  # the check saw all of it
         record["answer"] = (record["answer"] or "")[-_ANSWER_CHARS:]
     budget.add(record.get("cost"))
@@ -371,13 +378,65 @@ def _job(suite: Suite, run_id: str, job: Dict[str, Any], frozen: Dict[str, Optio
              + (f" ${record['cost']:.4f}" if record.get("cost") else ""))
 
 
+def _score_ensembles(suite: Suite, run_id: str, last_n: int, progress: Callable[[str], None]) -> None:
+    """Each ensemble's runs, once its members' are done: per task and repeat the answers of the members that
+    finished, merged and checked as one run's. A member that crashed or timed out leaves the others to answer, as
+    a panel goes on without a reviewer that failed; with none finished the ensemble scores 0 like a crashed run.
+    A member that never counted (budget, stop, a failed setup) leaves the ensemble's run uncounted too."""
+    records = store.read_records(run_id)
+    by_key = {(r["arm"], r["task"], r["rep"]): r for r in records}
+    n = last_n
+    for name, ensemble in suite.ensembles.items():
+        module, _, function = ensemble.merge.partition(":")
+        merge = getattr(importlib.import_module(module), function)
+        for task in suite.tasks:
+            for rep in range(1, suite.repeats + 1):
+                n += 1
+                members = [by_key.get((arm, task.id, rep)) for arm in ensemble.arms]
+                record: Dict[str, Any] = {"run_id": run_id, "n": n, "arm": name, "task": task.id, "kind": task.kind,
+                                          "rep": rep, "members": [m and m["n"] for m in members], "scored": False}
+                if any(m is None or not m.get("scored") for m in members):
+                    status = next((m.get("status") for m in members if m is not None and not m.get("scored")),
+                                  None) or "stopped"
+                    store.append_record(run_id, {**record, "status": status if status in store.NOT_COUNTED
+                                                 else "error"})
+                    continue
+                costs = [m.get("cost") for m in members]
+                record["cost"] = sum(float(c) for c in costs) if None not in costs else None
+                estimated = [m.get("estimated_cost") for m in members]
+                record["estimated_cost"] = sum(float(c) for c in estimated) if None not in estimated else None
+                finished = [m for m in members if m["status"] == "done"]
+                record.update(_ensemble_verdict(suite, run_id, task, merge, finished, len(members)))
+                store.append_record(run_id, record)
+                progress(f"{name}/{task.id} r{rep}: {record['status']} score {record['score']:.2f}")
+
+
+def _ensemble_verdict(suite: Suite, run_id: str, task: Task, merge: Callable[[List[str]], str],
+                      finished: List[Dict[str, Any]], size: int) -> Dict[str, Any]:
+    if not finished:
+        return {"status": "crashed", "scored": True, "score": 0.0, "passed": False,
+                "detail": "no member finished"}
+    try:
+        answers = [(store.run_dir(run_id, m["dir"]) / f"answer-{task.id}.txt").read_text(encoding="utf-8")
+                   for m in finished]
+        answer = merge(answers)
+        workspace, _ = _dirs(suite, run_id, *Path(finished[0]["dir"]).parts)
+        verdict = run_check(task.check, suite, task, workspace, {"status": "done", "answer": answer})
+    except Exception as e:  # noqa: BLE001 - scored with its reason, as a check that fails to run
+        return {"status": "done", "scored": True, "score": 0.0, "passed": False,
+                "detail": f"ensemble failed: {type(e).__name__}: {e}"[-2000:]}
+    if len(finished) < size:
+        verdict = {**verdict, "detail": f"{len(finished)} of {size} members answered; {verdict.get('detail', '')}"}
+    return {"status": "done", "scored": True, **verdict, "answer": answer[-_ANSWER_CHARS:]}
+
+
 def _agent_run(suite: Suite, run_id: str, job: Dict[str, Any], task: Task, jdir: Path, workspace: Path,
                data: Path) -> Dict[str, Any]:
     arm = suite.arms[job["arm"]]
     return _child(suite, {
         # In order: the task's material first, the arm's change over it.
         "agent": arm.agent or suite.agent, "overlays": [task.agent_config, arm.agent_config],
-        "agents": arm.agents, "input": task.input if task.fork is None else f"fork at {task.fork.at}",
+        "agents": arm.agents, "input": task.input + arm.input_suffix if task.fork is None else f"fork at {task.fork.at}",
         "fork": _fork_job(task), "request_id": f"ev-{run_id.replace('-', '')[-12:]}-{job['n']}-{task.id}"[:64],
         "tool_bindings": task.tool_bindings,
     }, jdir, task.id, workspace, data, suite.timeout_s)
