@@ -28,7 +28,9 @@
 .continuation-reason { font-size: var(--text-xs); color: var(--text-muted); }
 
 .msg.assistant { width: 100%; }
-.msg.note { width: 100%; }
+.msg.note { width: 100%; position: relative; }
+.note-close { position: absolute; top: var(--space-1); right: var(--space-1); }
+.msg.note:has(> .note-close) > :is(.note-text, div) { padding-right: calc(var(--control-h-sm) + var(--space-2)); }
 .note-text {
   margin: 0; padding: var(--space-3); white-space: pre-wrap;
   font: 400 var(--text-sm)/1.55 var(--font-mono); color: var(--text-secondary);

@@ -2239,6 +2239,62 @@
     }
   });
 
+  await check('a command typed mid-run takes the place of the answer before it, and a closed note leaves the run where it is', async () => {
+    // A run goes on below a note only at its next step: over a sub-agent call of hours
+    // every /costs typed meanwhile stacked up at the bottom of the chat.
+    // close: a second command replaces the first one's answer, the x takes the second.
+    // edit: a command that writes no note still takes the one before it.
+    // keep: a note marked to stay (an offer, a warning) is not taken, and the run goes below it.
+    for (const variant of ['close', 'edit', 'keep']) {
+      try {
+        sessionButton('s-1', 'open').click();
+        await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+        cookie('stub_stream', 'subrun');
+        $('#task').value = 'Get help';
+        $('#f').requestSubmit();
+        await until(`${variant}: its run`, () => sessionStorage.getItem('activeRequestId') === 'r-subrun', 3000);
+        const first = $$('#chat .msg.assistant').at(-1);
+        await until(`${variant}: call 2`, () => first.querySelector(':scope > .steps > .step-section[data-step="2"]'), 3000);
+        const notesBefore = $$('#chat .msg.note').length;
+        const newNote = (seen) => $$('#chat .msg.note').slice(notesBefore).find((note) => !seen.includes(note));
+        $('#task').value = '/session';
+        $('#f').requestSubmit();
+        const one = await until(`${variant}: the first note`, () => newNote([]), 3000);
+        if (variant === 'close') {
+          $('#task').value = '/session';
+          $('#f').requestSubmit();
+          const two = await until('close: the second note', () => newNote([one]), 3000);
+          need(!one.isConnected, 'close: the answer before it stayed');
+          two.querySelector('.note-close').click();
+          need(!two.isConnected, 'close: the close button left the note standing');
+        } else {
+          if (variant === 'keep') one.dataset.keep = 'true';
+          $('#task').value = '/edit later';
+          $('#f').requestSubmit();
+          // exactly: '/edit later' holds the word before the command has run
+          await until(`${variant}: the input filled`, () => $('#task').value === 'later', 3000);
+          $('#task').value = '';
+          need(one.isConnected === (variant === 'keep'), `${variant}: the note before it ${variant === 'keep' ? 'went' : 'stayed'}`);
+        }
+        await until(`${variant}: its end`, () => !win().chatModule.hasActiveRequest(), 8000);
+        const last = $$('#chat .msg.assistant').at(-1);
+        if (variant === 'keep') {
+          const after = (a, b) => Boolean(a.compareDocumentPosition(b) & win().Node.DOCUMENT_POSITION_FOLLOWING);
+          need(last !== first && after(one, last), 'keep: the run did not go on below the note that stays');
+        } else {
+          need(last === first, `${variant}: the run moved on below a note that is gone`);
+          need(first.querySelector('.step-section[data-step="3"]'), `${variant}: the steps after it went nowhere`);
+        }
+      } finally {
+        $('#task').value = '';
+        cookie('stub_stream', null);
+        forgetRun();
+        await loadShell();
+      }
+    }
+    return true;
+  });
+
   await check('a command typed while the run is still starting leaves no empty block above its note', async () => {
     // Nothing had reached the run's block yet: moving on below the note would have left
     // it standing empty above, and without its request id -- that goes to the last row.

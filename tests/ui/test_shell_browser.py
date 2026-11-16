@@ -1829,6 +1829,7 @@ EXPECTED = [
     "a sub-agent's run stays in the step that started it and shows its own steps, one level in",
     'a message appended mid-run moves the run on to a new block, and its answer folds the steps of both',
     'a command typed mid-run answers where it was typed, and the run goes on below it',
+    'a command typed mid-run takes the place of the answer before it, and a closed note leaves the run where it is',
     'a command typed while the run is still starting leaves no empty block above its note',
     'a command typed while the last answer is on its way leaves that answer once, streamed or whole',
     'a session read back while its run still works keeps that run open',

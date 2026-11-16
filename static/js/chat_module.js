@@ -209,6 +209,7 @@
     pre.textContent = text;
     msgDiv.appendChild(pre);
     row.appendChild(msgDiv);
+    addNoteClose(row, msgDiv);
     chatContainer.appendChild(row);
     runGoesOnBelow();
     // force: a note answers something the user just typed. Honouring
@@ -236,6 +237,7 @@
     const note = addNote(container, 'Model: ' + (own || "the agent's own") + ' -- ' + agent +
       "'s own. What you chose before (" + was + ') applied to the agent you left.');
     if (!note) return;
+    note.dataset.keep = 'true';   // the only way back to that choice: no later command clears it
     const keep = document.createElement('button');
     keep.type = 'button';
     keep.className = 'pk-btn pk-btn--sm';
@@ -261,6 +263,42 @@
     if (chatModule.activeRun() && !pendingAppendRebind) pendingAppendRebind = 'note';
   }
 
+  const endsInNote = () => Boolean(chatContainer.lastElementChild
+    && chatContainer.lastElementChild.querySelector(':scope > .msg.note'));
+
+  /**
+   * A command typed while a run is going: the answers to the ones before it that the run
+   * has not moved past yet go. They are the chat's last rows until the run's next step
+   * (runGoesOnBelow), and over a sub-agent call of hours every /costs stacked up there.
+   * Once per command, not per note -- a command may write more than one. A note marked
+   * data-keep (an offer, a warning about what the next message does) stays, and the ones
+   * above it with it. None left: the run goes on where it is -- a command that writes no
+   * note (/edit) would otherwise split it into a second block with nothing between.
+   */
+  function dropNotesTheRunHasNotPassed() {
+    if (!chatContainer || !chatModule.activeRun() || pendingAppendRebind !== 'note') return;
+    while (endsInNote() && !chatContainer.lastElementChild.querySelector(':scope > .msg.note[data-keep]')) {
+      chatContainer.lastElementChild.remove();
+    }
+    if (!endsInNote()) pendingAppendRebind = false;
+  }
+
+  /** A note goes with a click. The last one gone, a run waiting to go on below it goes on where it is. */
+  function addNoteClose(row, msgDiv) {
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm note-close';
+    close.title = 'Close note';
+    close.setAttribute('aria-label', 'Close note');
+    close.innerHTML = kitIcon('x');
+    close.addEventListener('click', function () {
+      row.remove();
+      if (pendingAppendRebind === 'note' && !endsInNote()) pendingAppendRebind = false;
+      if (taskInputEl) taskInputEl.focus();   // the focused button is gone: not back to the top of the page
+    });
+    msgDiv.prepend(close);
+  }
+
   /**
    * A note with rendered content, for /history: assistant answers are drawn by
    * formatContent (raw HTML stays text there). Everything a person or a tool
@@ -276,6 +314,7 @@
     body.innerHTML = html;
     msgDiv.appendChild(body);
     row.appendChild(msgDiv);
+    addNoteClose(row, msgDiv);
     chatContainer.appendChild(row);
     runGoesOnBelow();
     scrollBottom(true);
@@ -707,9 +746,10 @@
     const before = currentSessionId;
     await window.sessionManager.newConversation();
     if (currentSessionId === before && before !== null) {
-      addNote(container, 'Agent: ' + wanted +
+      const warning = addNote(container, 'Agent: ' + wanted +
         '   -- but the session stayed: the next message would run ' + before +
         ' under ' + wanted + '. /new once the running request is done.');
+      if (warning) warning.dataset.keep = 'true';   // it says what the next message does: no later command clears it
       if (dropped) noteDroppedChoice(container, dropped);
       return;
     }
@@ -4473,6 +4513,9 @@
           addNote(chatContainer, 'Could not reach the server to resolve "' + task + '".');
           submitting = false;
           return;
+        }
+        if (resolved.kind === 'command' || resolved.kind === 'plugin' || resolved.kind === 'unknown') {
+          dropNotesTheRunHasNotPassed();
         }
         if (resolved.kind === 'command') {
           // Awaited, so the command's note is there when the submit is done. The guard
