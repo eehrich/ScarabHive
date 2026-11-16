@@ -4,6 +4,7 @@ Real are the server, the git worktree, the detached process and the files it str
 replaced (fake_agy.py). Shared fixtures come from the server tests.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -337,6 +338,14 @@ async def test_each_user_has_an_agy_home_of_their_own(repo, log, data_root):  # 
     await call(server, "run_task", task="x")
     await call(server, "run_task", user="other", task="x")
     assert Path(log()["home"]) == data_root / "agy_home" / "other"
+
+
+async def test_an_agy_run_on_windows_starts_no_updater_to_flash_a_window(repo, log):  # noqa: F811
+    await call(make_agy(repo), "run_task", task="x")
+    assert (cli.AGY_NO_UPDATER in log()["env"]) == (os.name == "nt")
+    env = {cli.AGY_NO_UPDATER: "0"}
+    cli.agy_home(repo.parent / "home", env)
+    assert env[cli.AGY_NO_UPDATER] == "0", "the instance's own value was overwritten"
 
 
 def test_an_agy_home_reached_over_a_symlink_is_handed_on_resolved(tmp_path):

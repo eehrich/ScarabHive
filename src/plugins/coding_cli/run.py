@@ -197,6 +197,8 @@ AGY_SETTINGS = {"permissions": {"allow": [f"mcp({GATEWAY_SERVER}/*)"],
                                 "deny": [f"write_file({root}/)" for root in AGY_ROOTS]}}
 # What agy loads from a root and would run: a repository or an earlier run may not hand it a run.
 AGY_UNSAFE = ("hooks.json", "plugins", "mcp_config.json")
+# agy's own switch for its background updater (the binary says "Auto-update disabled via environment variable").
+AGY_NO_UPDATER = "AGY_CLI_DISABLE_AUTO_UPDATE"
 # Claude Code's own variables: its login token goes to no other program.
 CLAUDE_ONLY_ENV = frozenset({"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"})
 
@@ -246,6 +248,10 @@ def agy_home(root: Path, env: dict) -> None:
     env["HOME"] = str(root)
     if os.name == "nt":
         env["USERPROFILE"] = str(root)
+        # Each run starts agy's updater detached, without a console; the `agy --version` it runs then gets one of
+        # its own, and a terminal window flashes up on the desktop per run (measured 2026-11-16). The user's own
+        # agy keeps updating itself; a value the instance's env sets wins.
+        env.setdefault(AGY_NO_UPDATER, "1")
 
 
 def agy_unsafe(worktree: Path) -> list[str]:
