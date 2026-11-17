@@ -659,12 +659,14 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
     committed as deleted (measured 22.09.) -- and so is every other file that
     holds one of the secret values they carry: a key copied into a doc or a
     test would be readable otherwise."""
-    base = git(repo, "rev-parse", "HEAD").strip()
+    quiet = _no_hooks(path)
+    base = git(repo, "rev-parse", "HEAD", pinned=quiet).strip()
     path.parent.mkdir(parents=True, exist_ok=True)
-    git(repo, "worktree", "add", "-q", "-b", branch, str(path), base)
+    git(repo, "worktree", "add", "-q", "-b", branch, str(path), base, pinned=quiet)
     # Written by git a moment ago; the .git file in the worktree is the run's to rewrite.
-    git_dir = git(path, "rev-parse", "--absolute-git-dir").strip()
-    excluded = {t for rel in exclude for t in git(path, "ls-files", "-z", "--", rel).split("\0") if t}
+    git_dir = git(path, "rev-parse", "--absolute-git-dir", pinned=quiet).strip()
+    excluded = {t for rel in exclude for t in git(path, "ls-files", "-z", "--", rel, pinned=quiet).split("\0")
+                if t}
     values = set()
     for rel in {*excluded, *exclude}:
         for source in (repo / rel, path / rel):
@@ -673,12 +675,13 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
     if values:
         # On stdin, never as arguments: a command line is visible to every process.
         found = git(path, "grep", "-l", "-z", "-I", "-F", "-f", "-", stdin="\n".join(sorted(values)) + "\n",
-                    ok=(0, 1))
+                    ok=(0, 1), pinned=quiet)
         hidden = sorted(excluded | {f for f in found.split("\0") if f})
     if hidden:
         # One call for all: an excluded folder holds thousands of files, and a git process each took some
         # 50 ms on Windows -- over two minutes for 2700 files (measured 12.11.2026).
-        git(path, "update-index", "--skip-worktree", "-z", "--stdin", stdin="\0".join(hidden) + "\0")
+        git(path, "update-index", "--skip-worktree", "-z", "--stdin", stdin="\0".join(hidden) + "\0",
+            pinned=quiet)
     for tracked in hidden:
         (path / tracked).unlink(missing_ok=True)
     return Worktree(base, git_dir, hidden)
@@ -708,11 +711,11 @@ def remove_worktree(repo: Path, path: Path, branch: str) -> None:
     folder, which is this run's own, named by its id. The hand path would take a merely locked one too;
     twice forced, git does that itself, and git's internals are touched only where git refuses."""
     try:
-        git(repo, "worktree", "remove", "--force", "--force", str(path))
+        git(repo, "worktree", "remove", "--force", "--force", str(path), pinned=_no_hooks(path))
     except GitError:
         _drop_worktree_entry(repo, path)
     try:
-        git(repo, "branch", "-D", branch)
+        git(repo, "branch", "-D", branch, pinned=_no_hooks(path))
     except GitError:
         pass
 
@@ -768,6 +771,14 @@ def _secret_leaves(node: Any, found: set[str]) -> None:
     elif isinstance(node, list):
         for value in node:
             _secret_leaves(value, found)
+
+
+def _no_hooks(path: Path) -> list[str]:
+    """No hook and no fsmonitor of the repository a worktree is made from or taken back to: they would run
+    programs in this process, with its keys (a post-checkout hook ran at `worktree add`, measured). A workdir
+    from a pattern is any repository someone put into its folder. Filters a repository's config names still
+    run (git's smudge on checkout); nothing here can stop those."""
+    return ["-c", f"core.hooksPath={path.parent / '.coding_cli-no-hooks'}", "-c", "core.fsmonitor=false"]
 
 
 def _pinned(path: Path, git_dir: str) -> list[str]:

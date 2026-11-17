@@ -1,5 +1,6 @@
 """A workdir whose path holds a *: every git repository it matches, found at each call -- a project made after the
 start is a workdir without a line of configuration and without a restart."""
+
 from plugins.coding_cli.tests.test_plugin_coding_cli_server import (call, data_root, fresh_repo, git,  # noqa: F401
                                                                     make_server, plain_git)
 
@@ -100,3 +101,104 @@ def test_a_name_two_repositories_give_opens_neither(tmp_path, caplog):
         "left": {"path": str(tmp_path / "a" / "*")}, "right": {"path": str(tmp_path / "b" / "*")}})
     assert sorted(server._live_workdirs()) == ["only"], server._live_workdirs()
     assert any("'proj' left out -- 2 repositories" in r.getMessage() for r in caplog.records), caplog.text
+
+
+async def test_a_workdir_is_found_by_its_folders_own_spelling(tmp_path):
+    """A model names the project as its folder is spelled (Later), the workdir is named later."""
+    root = projects(tmp_path)
+    fresh_repo(root / "Later")
+    server = make_server(root / "First", workdirs={"projects": {"path": str(root / "*")}})
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello", workdir="Later")
+    assert result["state"] == "done" and git(root / "Later", "show", f"{result['branch']}:b.txt") == "hello", result
+
+
+def test_a_configured_repository_is_not_opened_again_by_a_pattern(tmp_path):
+    """A configured workdir hides a secret file; the same repository matched by a pattern would open it again
+    without -- under its folder's name, or under a configured name in another case."""
+    root = projects(tmp_path)
+    fresh_repo(root / "Billing")
+    server = make_server(root / "First", workdirs={
+        "secretrepo": {"path": str(root / "Billing"), "exclude": ["a.txt"]},
+        "First": {"path": str(root / "First")},
+        "projects": {"path": str(root / "*")}})
+    assert sorted(server._live_workdirs()) == ["First", "secretrepo"], server._live_workdirs()
+
+
+def test_every_part_of_a_pattern_but_the_stars_is_literal(tmp_path):
+    """[x] after the first * was a character class: it matched a folder x, not [x]."""
+    fresh_repo((tmp_path / "group" / "[x]").mkdir(parents=True) or tmp_path / "group" / "[x]" / "proj")
+    fresh_repo((tmp_path / "group" / "x").mkdir(parents=True) or tmp_path / "group" / "x" / "other")
+    server = make_server(tmp_path, workdirs={"projects": {"path": str(tmp_path / "*" / "[x]" / "*")}})
+    assert sorted(server._live_workdirs()) == ["proj"], server._live_workdirs()
+
+
+def test_the_model_reads_the_pattern_as_configured(tmp_path):
+    root = tmp_path / "my [x] projects"
+    root.mkdir()
+    fresh_repo(root / "One")
+    server = make_server(root / "One", workdirs={"projects": {"path": str(root / "*")}})
+    workdir = server.get_schema_data()["tools"][0]["function"]["parameters"]["properties"]["workdir"]
+    assert "[[]" not in workdir["description"] and "my [x] projects/*" in workdir["description"], workdir
+
+
+async def test_a_folder_name_no_workdir_can_have_is_named_in_the_answer(tmp_path, caplog):
+    root = projects(tmp_path)
+    fresh_repo(root / "my.game")
+    server = make_server(root / "First", workdirs={"projects": {"path": str(root / "*")}})
+    assert sorted(server._live_workdirs()) == ["first"]
+    assert any("'my.game' left out" in r.getMessage() for r in caplog.records), caplog.text
+    refused, _ = await call(server, "run_task", task="x", workdir="my.game")
+    assert "no plain name" in refused["error"], refused
+
+
+async def test_a_repository_from_a_pattern_runs_none_of_its_hooks_in_the_server(tmp_path):
+    """Anyone who puts a repository into the pattern's folder chooses its hooks: git ran its post-checkout hook
+    in this process, with its keys, when the worktree was made."""
+    root = projects(tmp_path)
+    marker = tmp_path / "hooked"
+    hook = root / "First" / ".git" / "hooks" / "post-checkout"
+    hook.write_text(f"#!/bin/sh\necho ran > '{marker.as_posix()}'\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    git(root / "First", "checkout", "-q", "-b", "probe")       # the hook runs in a plain checkout: it is live
+    assert marker.exists(), "fixture: the hook never runs, the test would prove nothing"
+    marker.unlink()
+    server = make_server(root / "First", workdirs={"projects": {"path": str(root / "*")}})
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello", workdir="first")
+    assert result["state"] == "done" and not marker.exists(), result
+
+
+async def test_a_resume_whose_name_now_opens_another_repository_is_refused(tmp_path):
+    """The run's project left one pattern's folder and a project of that name under another pattern took the
+    name: the resume would bring that workdir's settings to the old worktree."""
+    for side in ("a", "b"):
+        (tmp_path / side).mkdir()
+    fresh_repo(tmp_path / "a" / "proj")
+    server = make_server(tmp_path, workdirs={
+        "left": {"path": str(tmp_path / "a" / "*")}, "right": {"path": str(tmp_path / "b" / "*")}})
+    first, _ = await call(server, "run_task", task="WRITE b.txt hello", workdir="proj")
+    assert first["state"] == "done", first
+    (tmp_path / "a" / "proj").rename(tmp_path / "moved")
+    fresh_repo(tmp_path / "b" / "proj")
+    again, _ = await call(server, "run_task", task="x", resume=first["run_id"])
+    assert "another repository" in again["error"], again
+
+
+def test_a_configured_name_in_another_case_wins_and_says_what_it_hides(tmp_path, caplog):
+    """First is configured on another repository: the pattern's folder first is left out -- with a word in the
+    log, since a run asking for first now gets First."""
+    root = projects(tmp_path)
+    other = fresh_repo(tmp_path / "other")
+    server = make_server(root / "First", workdirs={"First": {"path": str(other)}, "projects": {"path": str(root / "*")}})
+    assert sorted(server._live_workdirs()) == ["First"] and server._live_workdirs()["First"]["path"] == other.resolve()
+    assert any("'first'" in r.getMessage() and "configured workdir has that name" in r.getMessage()
+               for r in caplog.records), caplog.text
+
+
+def test_a_configured_repository_is_known_by_the_folder_not_by_its_spelling(tmp_path):
+    """The configured path spelled another way (another case on macOS, a bind mount, a detour): the strings
+    differ, the folder is the same."""
+    root = projects(tmp_path)
+    server = make_server(root / "First", workdirs={
+        "secret": {"path": str(root / "First"), "exclude": ["a.txt"]}, "projects": {"path": str(root / "*")}})
+    server.workdirs["secret"]["path"] = root / "notes" / ".." / "First"
+    assert sorted(server._live_workdirs()) == ["secret"], server._live_workdirs()
