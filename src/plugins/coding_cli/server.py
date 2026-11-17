@@ -24,6 +24,7 @@ import collections
 import concurrent.futures
 import contextlib
 import functools
+import glob
 import hashlib
 import json
 import logging
@@ -533,53 +534,30 @@ class CodingCliServer(SchemaBasedToolServer):
         if self.cli not in CLIS:
             logger.warning("coding_cli: %s: cli %r is none of %s -- no tools", name, self.cli, ", ".join(CLIS))
         remote = getattr(getattr(system_config, "external_servers", None), "remote_servers", None) or {}
+        # Workdirs by name; a path with a * names every git repository it matches, looked up at each call: a
+        # project made after the start is a workdir at once, without a line of configuration for each.
         self.workdirs: dict[str, dict] = {}
+        self._workdir_patterns: list[tuple[str, dict]] = []
+        self._ambiguous: set[str] = set()       # names warned about once
         for wname, entry in (getattr(server_config, "workdirs", None) or {}).items():
             entry = entry if isinstance(entry, dict) else {"path": entry}
-            path = Path(str(entry.get("path") or ""))
+            spec = self._workdir_spec(str(wname), entry, remote)
+            if spec is None:
+                continue
+            raw = str(entry.get("path") or "")
+            if "*" in raw:
+                pattern = (Path(raw) if Path(raw).is_absolute() else PROJECT_ROOT / raw).as_posix()
+                cut = pattern.index("*")
+                # only the * is a wildcard: a [ or ? in the installation's own path matched nothing
+                head, tail = pattern[:cut].rsplit("/", 1)
+                self._workdir_patterns.append((glob.escape(head) + "/" + tail + pattern[cut:], spec))
+                continue
+            path = Path(raw)
             path = (path if path.is_absolute() else PROJECT_ROOT / path).resolve()
-            plain = re.fullmatch(r"[A-Za-z0-9_-]{1,40}", str(wname))
-            if not plain or not _scratch_repo(path) or not (path / ".git").exists():
+            if not _scratch_repo(path) or not (path / ".git").exists():
                 logger.warning("coding_cli: workdir %r skipped -- a plain name and a git repository are needed", wname)
                 continue
-            names = entry.get("mcp_servers") or []
-            # `mcp_servers: remote_mcp` is one server, not ten letters.
-            names = [str(n) for n in ([names] if isinstance(names, str) else names)]
-            gateway, problem = _gateway(entry.get("gateway"))
-            if problem or cli.GATEWAY_SERVER in names:
-                logger.warning("coding_cli: workdir %r skipped -- %s", wname,
-                               problem or f"mcp_servers names {cli.GATEWAY_SERVER!r}, the gateway's server")
-                continue
-            if gateway and entry.get("web") is True and not (gateway["read_only"] or gateway["confined"]):
-                # As with mcp_servers below: a page could steer what the tools write. The operator vouches that
-                # the tools and allowed values only read -- or that the run's bindings hold every write to what
-                # the run writes anyway (its own file), where a page could steer no more than the answer.
-                logger.warning("coding_cli: workdir %r skipped -- web and a gateway neither read_only nor "
-                               "confined: a page the run reads could steer its tools", wname)
-                continue
-            if self.agy and (names or entry.get("web") is not True):
-                # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
-                logger.warning("coding_cli: workdir %r skipped -- an Antigravity run searches the web whatever it "
-                               "is told and takes no mcp_servers: its workdirs say web: true and name none", wname)
-                continue
-            if names and entry.get("web") is True:
-                # A page can tell the model what to do; a server's tools would do it with its token.
-                logger.warning("coding_cli: workdir %r skipped -- web and mcp_servers together: a page the run "
-                               "reads could steer the servers' tools; give research a workdir of its own", wname)
-                continue
-            files = entry.get("files") is not False
-            if not files and self.agy:
-                logger.warning("coding_cli: workdir %r skipped -- files: false is for Claude Code: agy reads its "
-                               "task as it is and keeps no room", wname)
-                continue
-            unusable = [n for n in names if not _usable_mcp(n, remote.get(n))]
-            if unusable:
-                logger.warning("coding_cli: workdir %r skipped -- MCP server(s) %s unknown, disabled, stdio, without "
-                               "a url or not a plain name (external_servers.remote_servers)", wname, unusable)
-                continue
-            self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []],
-                                         "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True,
-                                         "gateway": gateway, "files": files}
+            self.workdirs[str(wname)] = {"path": path, **spec}
         # The subscription belongs to one person (concept §7).
         users = getattr(server_config, "allowed_users", None) or ()
         # `allowed_users: admin` is one user, not five letters.
@@ -590,7 +568,7 @@ class CodingCliServer(SchemaBasedToolServer):
         if self.agy and self.allowed_commands:
             logger.warning("coding_cli: %s: allowed_commands unused -- an Antigravity run has no shell, headless it "
                            "refuses every command", name)
-        if self.allowed_commands and any(w["mcp_servers"] or w["gateway"] for w in self.workdirs.values()):
+        if self.allowed_commands and any(w["mcp_servers"] or w["gateway"] for w in self._all_specs()):
             logger.warning("coding_cli: %s allows shell commands and gives runs MCP servers -- every allowed "
                            "command inherits the environment that holds the servers' tokens", name)
         self.pass_env = [str(v) for v in getattr(server_config, "pass_env", None) or ()]
@@ -659,9 +637,78 @@ class CodingCliServer(SchemaBasedToolServer):
 
         if self.command is None:
             logger.info("coding_cli: no %s executable found -- %s offers no tools", self.label, name)
-        elif not self.workdirs:
+        elif not self._live_workdirs() and not self._workdir_patterns:
             # info, like no executable: an instance whose workdirs a user registers later starts this way
             logger.info("coding_cli: no usable workdir -- %s offers no tools", name)
+
+    def _live_workdirs(self) -> dict[str, dict]:
+        """`workdirs` (the configured ones and those a caller adds at run time) and, for each pattern, the git
+        repositories it matches now, named by their folder in lower case; a name in `workdirs` wins."""
+        matched: dict[str, list[dict]] = {}
+        for pattern, spec in self._workdir_patterns:
+            for path in sorted(glob.glob(pattern)):
+                name = Path(path).name.lower()
+                if re.fullmatch(r"[a-z0-9_-]{1,40}", name) and (Path(path) / ".git").exists():
+                    matched.setdefault(name, []).append({"path": Path(path).resolve(), **spec})
+        found = dict(self.workdirs)
+        for name, specs in matched.items():
+            # Foo and foo, or one name under two patterns: which one a run would open is a guess -- neither
+            if name not in found and len(specs) == 1:
+                found[name] = specs[0]
+            elif name not in found and name not in self._ambiguous:
+                self._ambiguous.add(name)
+                logger.warning("coding_cli: %s: workdir %r left out -- %d repositories match it: %s", self.name,
+                               name, len(specs), ", ".join(str(s["path"]) for s in specs))
+        return found
+
+    def _all_specs(self) -> list[dict]:
+        """The settings of every workdir and every pattern, matched by a repository yet or not: what the schema
+        offers (pin) and the start warns about must hold for a project made later too."""
+        return [*self.workdirs.values(), *(spec for _, spec in self._workdir_patterns)]
+
+    def _workdir_spec(self, wname: str, entry: dict, remote: dict) -> Optional[dict]:
+        """A workdir's settings without its path, or None (logged) where they cannot be used."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", wname):
+            logger.warning("coding_cli: workdir %r skipped -- a plain name and a git repository are needed", wname)
+            return None
+        names = entry.get("mcp_servers") or []
+        # `mcp_servers: remote_mcp` is one server, not ten letters.
+        names = [str(n) for n in ([names] if isinstance(names, str) else names)]
+        gateway, problem = _gateway(entry.get("gateway"))
+        if problem or cli.GATEWAY_SERVER in names:
+            logger.warning("coding_cli: workdir %r skipped -- %s", wname,
+                           problem or f"mcp_servers names {cli.GATEWAY_SERVER!r}, the gateway's server")
+            return None
+        if gateway and entry.get("web") is True and not (gateway["read_only"] or gateway["confined"]):
+            # As with mcp_servers below: a page could steer what the tools write. The operator vouches that
+            # the tools and allowed values only read -- or that the run's bindings hold every write to what
+            # the run writes anyway (its own file), where a page could steer no more than the answer.
+            logger.warning("coding_cli: workdir %r skipped -- web and a gateway neither read_only nor "
+                           "confined: a page the run reads could steer its tools", wname)
+            return None
+        if self.agy and (names or entry.get("web") is not True):
+            # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
+            logger.warning("coding_cli: workdir %r skipped -- an Antigravity run searches the web whatever it "
+                           "is told and takes no mcp_servers: its workdirs say web: true and name none", wname)
+            return None
+        if names and entry.get("web") is True:
+            # A page can tell the model what to do; a server's tools would do it with its token.
+            logger.warning("coding_cli: workdir %r skipped -- web and mcp_servers together: a page the run "
+                           "reads could steer the servers' tools; give research a workdir of its own", wname)
+            return None
+        files = entry.get("files") is not False
+        if not files and self.agy:
+            logger.warning("coding_cli: workdir %r skipped -- files: false is for Claude Code: agy reads its "
+                           "task as it is and keeps no room", wname)
+            return None
+        unusable = [n for n in names if not _usable_mcp(n, remote.get(n))]
+        if unusable:
+            logger.warning("coding_cli: workdir %r skipped -- MCP server(s) %s unknown, disabled, stdio, without "
+                           "a url or not a plain name (external_servers.remote_servers)", wname, unusable)
+            return None
+        return {"exclude": [str(e) for e in entry.get("exclude") or []],
+                "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True,
+                "gateway": gateway, "files": files}
 
     def _find(self, command: str) -> Optional[list[str]]:
         """The CLI's executable, looked up at each call: one installed after the start is found by the next run."""
@@ -669,12 +716,18 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def get_template_vars(self) -> dict[str, Any]:
         template_vars = super().get_template_vars()
-        template_vars["configured"] = bool(self.command and self.workdirs)
+        template_vars["configured"] = bool(self.command and (self._live_workdirs() or self._workdir_patterns))
         # windows: Claude Code reports the subscription's, agy none -- no quota tool, no threshold to ask.
         template_vars["cli_name"], template_vars["windows"] = self.label, not self.agy
-        template_vars["workdirs"] = sorted(self.workdirs)
+        template_vars["workdirs"] = sorted(self._live_workdirs())
+        # the schema is rendered once: with a pattern the list stays open, a project made later is one too
+        patterns = ", ".join(Path(p).relative_to(PROJECT_ROOT).as_posix() if Path(p).is_relative_to(PROJECT_ROOT)
+                             else Path(p).as_posix() for p, _ in self._workdir_patterns)
+        template_vars["workdirs_open"] = patterns and (
+            f"The repository to work on: a folder's name in lower case, of the git repositories in {patterns}"
+            + (f" (now: {', '.join(sorted(self._live_workdirs()))})" if self._live_workdirs() else ""))
         # pins: a workdir's gateway fixes values -- only then run_task offers pin.
-        template_vars["pins"] = any(w["gateway"] and w["gateway"]["pin"] for w in self.workdirs.values())
+        template_vars["pins"] = any(w["gateway"] and w["gateway"]["pin"] for w in self._all_specs())
         return template_vars
 
     async def start_plugin(self) -> None:
@@ -999,7 +1052,8 @@ class CodingCliServer(SchemaBasedToolServer):
             if self.command is None:
                 return await self._fail(status, _no_claude(self._command_name, self.label) if self.cli in CLIS
                                         else f"cli {self.cli!r} is none of {', '.join(CLIS)} (coding_cli cli)")
-        if not self.workdirs:
+        workdirs = self._live_workdirs()
+        if not workdirs and not self._workdir_patterns:
             # The same by-name call: every configured workdir was skipped at the start (the log says why).
             return await self._fail(status, "no usable workdir (coding_cli workdirs: a git repository each -- the "
                                             "log at the start says why)")
@@ -1053,10 +1107,17 @@ class CodingCliServer(SchemaBasedToolServer):
             if utilization is None and prior.get("asked_utilization"):
                 utilization = float(prior["asked_utilization"])     # and under the lower threshold, as asked
         else:
-            workdir = params.get("workdir") or (next(iter(self.workdirs)) if len(self.workdirs) == 1 else None)
-        if workdir not in self.workdirs:
-            return await self._fail(status, f"workdir: one of {', '.join(sorted(self.workdirs))}")
-        gateway, pin = self.workdirs[workdir]["gateway"], params.get("pin") or None
+            workdir = params.get("workdir") or (next(iter(workdirs)) if len(workdirs) == 1 else None)
+        if workdir not in workdirs:
+            if prior:
+                return await self._fail(status, f"resume: run {prior['run_id']}'s workdir {workdir!r} is no "
+                                                "workdir any more -- start a new run")
+            patterns = ", ".join(p for p, _ in self._workdir_patterns)
+            return await self._fail(status, f"workdir: one of {', '.join(sorted(workdirs))}" if workdirs else
+                                    f"workdir: no git repository matches {patterns} yet")
+        # One lookup for the whole run: a repository renamed while it starts must not mix two workdirs' settings.
+        spec = workdirs[workdir]
+        gateway, pin = spec["gateway"], params.get("pin") or None
         if prior:
             # The conversation goes on with the values it was given: other values make another run.
             if pin is not None and pin != prior.get("pin"):
@@ -1142,7 +1203,7 @@ class CodingCliServer(SchemaBasedToolServer):
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
                 self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
                 utilization, pin or None, str(params.get("_request_id") or run_id), gateway_url,
-                _session_vars(params.get("_agent"), session_id) if gateway_url else None, eager))
+                _session_vars(params.get("_agent"), session_id) if gateway_url else None, eager, spec))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -1390,10 +1451,12 @@ class CodingCliServer(SchemaBasedToolServer):
                  user_id: str, session_id: str, schema: Optional[dict] = None,
                  asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
                  pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
-                 session_vars: Optional[dict] = None, eager: Sequence[str] = ()) -> dict:
-        """Worktree, command line and record, then the process (sync, off the loop)."""
+                 session_vars: Optional[dict] = None, eager: Sequence[str] = (),
+                 spec: Optional[dict] = None) -> dict:
+        """Worktree, command line and record, then the process (sync, off the loop). `spec`: the workdir as
+        run_task found it."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
-        spec = self.workdirs[workdir]
+        spec = spec if spec is not None else self._live_workdirs()[workdir]
         # A caller may add a workdir of its own at run time, without the key: one with files.
         room = _in_room(spec, prior)
         if prior:
@@ -1418,7 +1481,7 @@ class CodingCliServer(SchemaBasedToolServer):
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
                                asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url, session_vars,
-                               eager)
+                               eager, spec)
         except BaseException:
             issued = run_id in _GRANTS
             _revoke(run_id)
@@ -1437,10 +1500,12 @@ class CodingCliServer(SchemaBasedToolServer):
                session_id: str, worktree: Path, branch: str, made: cli.Worktree, schema: Optional[dict] = None,
                asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
                pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
-               session_vars: Optional[dict] = None, eager: Sequence[str] = ()) -> dict:
+               session_vars: Optional[dict] = None, eager: Sequence[str] = (),
+               spec: Optional[dict] = None) -> dict:
+        spec = spec if spec is not None else self._live_workdirs()[workdir]
         resume = prior["claude_session"] if prior else ""
         # Where the run started, not what the workdir says now: a resume goes on in the room, file tools or not.
-        room = _in_room(self.workdirs[workdir], prior)
+        room = _in_room(spec, prior)
         unsafe = cli.agy_unsafe(worktree) if self.agy else []
         if unsafe:
             # agy would run them, hooks without asking (run.py, AGY_SETTINGS).
@@ -1452,8 +1517,8 @@ class CodingCliServer(SchemaBasedToolServer):
         if resume and not _SESSION.fullmatch(resume):
             raise OSError(f"run {prior['run_id']} holds no usable session id")
         # Plan mode only reads: no server whose tools could write.
-        servers = self.workdirs[workdir]["mcp_servers"] if mode != "plan" else {}
-        gateway = self.workdirs[workdir]["gateway"] if mode != "plan" else None
+        servers = spec["mcp_servers"] if mode != "plan" else {}
+        gateway = spec["gateway"] if mode != "plan" else None
         token, url = None, ""
         if gateway:
             from plugins.mcp_gateway import grants
@@ -1509,7 +1574,7 @@ class CodingCliServer(SchemaBasedToolServer):
                                                  **({cli.GATEWAY_SERVER: []} if token else {})},
                                     model=self.model, effort=self.effort,
                                     resume=resume, rules=rules if rules.is_file() else None, json_schema=schema,
-                                    web=self.workdirs[workdir]["web"], web_with_shell=self.web_with_shell,
+                                    web=spec["web"], web_with_shell=self.web_with_shell,
                                     files=not room)
         record = {"run_id": run_id, "instance_name": self.name, "cli": self.cli,
                   "max_run_s": max_run_s, "asked_run_s": asked_run_s,

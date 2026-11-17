@@ -1,4 +1,4 @@
-# Jinja2 variables: {{ name }}, {{ configured }}, {{ workdirs }}
+# Jinja2 variables: {{ name }}, {{ configured }}, {{ workdirs }}, {{ workdirs_open }}
 # Without the Claude Code executable or a usable workdir nothing here can work,
 # so nothing is offered.
 tools:
@@ -16,8 +16,12 @@ tools:
             description: "The complete task: the goal, where in the code, the constraints, how to check the result"
           workdir:
             type: string
+{% if workdirs_open %}
+            description: {{ workdirs_open | tojson }}
+{% else %}
             enum: {{ workdirs | tojson }}
             description: "The repository to work on"
+{% endif %}
           mode:
             type: string
             enum: ["edit", "plan"]
