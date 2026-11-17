@@ -414,3 +414,19 @@ class TestCreateGeminiParts:
 # hardcoded a provider list in core code and had no production caller — each
 # client calls the injection helper matching its own wire format. The tests
 # made the dead code look alive, which is why it survived so long.
+
+
+def test_an_item_with_a_non_string_key_is_dropped_not_raised(tmp_path):
+    """``MultimodalToolContent(**item)`` raises TypeError, not ValidationError,
+    on such a key. Raised, it cost tool_preload the pair of a call that had run."""
+    from agent_system.servers.agent.components.tool_call_contract import pop_multimodal_content
+    image = tmp_path / "ok.png"
+    image.write_bytes(b"\x89PNG")
+    result = {"status": "ok", "_multimodal_content": [
+        {1: "x", "type": "image", "path": "/x/bad.png", "mime_type": "image/png"},
+        {"type": "image", "path": str(image), "mime_type": "image/png"}]}
+
+    items = pop_multimodal_content(result, "render")
+
+    assert [item.path for item in items] == [str(image)]
+    assert result == {"status": "ok"}

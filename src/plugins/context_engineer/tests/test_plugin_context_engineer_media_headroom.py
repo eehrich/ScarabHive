@@ -147,6 +147,28 @@ class TestTheWindow:
         assert url in str(result.modified_messages[0]), result.modified_messages[0]
 
     @pytest.mark.asyncio
+    async def test_the_media_event_keeps_images_preloaded_behind_the_turn(self, tmp_path):
+        """tool_preload answers the new message with pairs of its own in the same
+        pass. The event kept only the newest message: of two preloaded images the
+        first went before the model ever saw it. An older image still goes."""
+        strategy = _strategy(tmp_path, compact_media_after_user_message=True)
+        messages = _run(tmp_path, 1)
+        messages += [{"role": "assistant", "content": "seen"},
+                     {"role": "user", "content": "compare the two invoices"}]
+        for n in (1, 2):
+            path = tmp_path / f"invoice_{n}.png"
+            path.write_bytes(bytes([n]) * 1000)
+            step = _image_step(n, str(path))
+            step[0]["injected_by"] = "tool_preload"
+            messages += step
+        with_media = _with_media(messages)
+
+        result = await strategy.compact(messages, current_tokens=100, force=True,
+                                        trigger_event="user_message")
+
+        assert _with_media(result.modified_messages) == with_media[1:]
+
+    @pytest.mark.asyncio
     async def test_an_image_it_cannot_evict_takes_no_slot(self, tmp_path):
         """A remote reference image in the request is never evicted; counted as
         media, it held the window one over the limit and every step broke again."""

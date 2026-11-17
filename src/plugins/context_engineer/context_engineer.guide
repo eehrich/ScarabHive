@@ -505,7 +505,8 @@ each of them once.
 file or the same bytes twice -- every copy but the newest goes.
 @{bullet}@{b}After a new message from a person@{ub}
 (@{tt}compact_media_after_user_message@{utt}, only while M is off): all
-media outside the newest message and the current request.
+media outside the newest message, the current request and what arrived
+since the model's last answer (tool_preload's results).
 @{bullet}@{b}B@{ub}: still over @{tt}max_request_bytes@{utt}, every item
 of 10 KB or more outside the last two messages.
 

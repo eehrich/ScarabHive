@@ -674,7 +674,8 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
         its rule's chain. Once ``deadline`` has passed no call starts; each one left
         gets a "not run" answer instead.
         """
-        from agent_system.servers.agent.components.tool_execution import ToolDispatchError
+        from agent_system.servers.agent.components.tool_execution import (
+            ToolDispatchError, pop_multimodal_content)
 
         # HookContext carries no user_id -- and without one inject_runtime_params
         # leaves _user_id unset, so a preloaded call ran with less identity than
@@ -738,6 +739,11 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             # default=str, so this is belt and braces; it is here because the
             # consequence of being wrong is a double execution.
             try:
+                # As the loop's own answer does (tool_invocation): an image the
+                # tool loaded rides on the message as a real part. Left in the
+                # result it reached the model as a JSON path, and a vision
+                # model made up what the picture showed.
+                multimodal_content = pop_multimodal_content(result, tool)
                 now = datetime.now(timezone.utc)
                 pair = [
                     ChatMessage(
@@ -769,6 +775,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                         content=sanitize_json_content(
                             json.dumps(result, ensure_ascii=False, default=str)),
                         timestamp=now,
+                        multimodal_content=multimodal_content,
                     ),
                 ]
             except Exception as e:  # noqa: BLE001

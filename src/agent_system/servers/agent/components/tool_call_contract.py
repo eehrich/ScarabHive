@@ -174,6 +174,8 @@ def pop_multimodal_content(tool_result: Any, tool_name: str) -> Optional[List[An
                     "Dropping invalid multimodal item from tool %s: %s",
                     tool_name, exc.errors(include_url=False),
                 )
+            except TypeError as exc:  # a key that is no string: **item refuses it
+                logger.warning("Dropping invalid multimodal item from tool %s: %s", tool_name, exc)
         elif isinstance(item, MultimodalToolContent):
             multimodal_content.append(item)
     for item in multimodal_content:

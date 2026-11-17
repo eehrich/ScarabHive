@@ -244,6 +244,7 @@ class TestEveryEvictedAttachmentLeavesATrace:
                  {"type": "audio", "path": "/x/one.wav"},
                  {"type": "image", "path": "/x/two.png"},
              ]},
+            {"role": "assistant", "content": "got it"},
             {"role": "user", "content": "and?"},
         ]
 
@@ -344,6 +345,7 @@ class TestTheSubjectSurvivesAnUnexpectedType:
         messages = [
             {"role": "tool", "tool_call_id": "c", "name": "g", "content": "{}",
              "multimodal_content": [{"type": {"weird": 1}, "path": "/x/a.bin"}]},
+            {"role": "assistant", "content": "got it"},
             {"role": "user", "content": "and?"},
         ]
 

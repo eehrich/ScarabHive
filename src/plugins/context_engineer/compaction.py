@@ -1799,8 +1799,9 @@ class LayeredCompactionStrategy:
         result: CompactionResult,
         trigger: str = "user_message"
     ) -> None:
-        """Compact all media items except those in the most recent message.
-        
+        """Compact all media items except those in the most recent message
+        (and, on a user message, the request and what the model has not seen).
+
         This is triggered by config options:
         - compact_media_after_user_message: When a new user message arrives
         - compact_media_after_final_response: When agent sends final response
@@ -1819,6 +1820,10 @@ class LayeredCompactionStrategy:
         keep = {len(messages) - 1}
         if trigger == "user_message":
             keep.update(_request_user_indices(messages))
+            # and what the model has not seen yet: tool_preload's results sit
+            # behind the person's message, and of two preloaded images the
+            # first went before the model ever saw it.
+            keep.update(_arrival_indices(messages))
         picks = []
         for msg_idx, item_idx, item, in_mm in self._iter_media(messages):
             if msg_idx in keep:

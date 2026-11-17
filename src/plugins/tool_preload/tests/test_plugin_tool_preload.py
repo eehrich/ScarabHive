@@ -365,6 +365,32 @@ class TestMessageShape:
         assert payload["status"] == "error"
         assert payload["hint"] == "1 scene exists"
 
+    @pytest.mark.asyncio
+    async def test_a_loaded_image_rides_on_the_message_not_in_its_text(self, plugin, tmp_path):
+        """media_ops' <inst>_load answers with ``_multimodal_content``. Dumped
+        into the text, the model got a path instead of the picture -- a vision
+        model invented an invoice it never saw."""
+        image = tmp_path / "rechnung.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n not really a png")
+        agent = FakeAgent(results={"media_load": {
+            "status": "success", "message": "loaded",
+            "_multimodal_content": [{"type": "image", "path": str(image),
+                                     "mime_type": "image/png"}]}})
+        rules = [{"match": "Rechnung", "tool": "media_load",
+                  "params": {"path": str(image)}}]
+
+        result = await plugin.preload(
+            make_context([user("Lies die Rechnung")], rules, agent))
+
+        tool = result.context.messages[-1]
+        assert tool.role == "tool"
+        assert "_multimodal_content" not in tool.content
+        assert json.loads(tool.content) == {"status": "success", "message": "loaded"}
+        assert [(m.type, m.path, m.mime_type) for m in tool.multimodal_content] == [
+            ("image", str(image), "image/png")]
+        # the content hash the loop's own answer carries (pop_multimodal_content)
+        assert tool.multimodal_content[0].sha256
+
 
 # ---------------------------------------------------------------------------
 # Chains and ordering
