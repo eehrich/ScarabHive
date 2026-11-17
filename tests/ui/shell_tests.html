@@ -3449,6 +3449,147 @@
     }
   });
 
+  await check('a run that starts in the open session long after its last one is joined by the activity tick', async () => {
+    // A session the API wakes long after its last turn -- a background command that ran an hour -- is a job like
+    // any run, but the chat's own watch for a successor gives up after a minute: the turn showed on the next load
+    // only, and nothing in the chat could stop it or write to it. The pane's activity tick joins it.
+    const pane = win().sessionManager;
+    const tick = pane.refreshActivity;
+    pane.refreshActivity = async () => {};   // the shell's own tick holds still: this check says when one comes
+    try {
+      await stub('/__stub/active-runs', {});
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await tick.call(pane);   // a tick with the session open and idle
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      await tick.call(pane);
+      await until('the woken run followed', () => win().chatModule.hasActiveRequest()
+        && sessionStorage.getItem('activeRequestId') === 'r-live', 6000);
+      return need(await hits('catch-up:r-live') === 'replay/-', 'the woken run was not joined from its start');
+    } finally {
+      delete pane.refreshActivity;
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the activity tick asks about the open session past the cap of a long list', async () => {
+    // A session opened from a link or a search can sit past the first 200 of the list; woken, its run was never
+    // asked about, and so never joined.
+    const pane = win().sessionManager;
+    const tick = pane.refreshActivity;
+    const shown = pane.sessions;
+    pane.refreshActivity = async () => {};
+    try {
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      pane.sessions = Array.from({ length: 250 }, (_, i) => ({ session_id: `s-shown-${i}` }));
+      await stub('/__stub/active-runs', { 's-1': 'r-live~' });   // past its answer: marked, not joined
+      await tick.call(pane);
+      return need(pane.active.has('s-1'), 'the open session was left out of the question');
+    } finally {
+      pane.sessions = shown;
+      delete pane.refreshActivity;
+      await stub('/__stub/active-runs', {});
+      await pane.loadSessions();
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run the chat lost the stream of in the session does not keep the activity tick from joining the next one', async () => {
+    // The lost run stays stored for a reload to rejoin (an API restart cut its stream); the run woken after it
+    // is another one, and nothing else would show it.
+    const pane = win().sessionManager;
+    const tick = pane.refreshActivity;
+    pane.refreshActivity = async () => {};
+    try {
+      await stub('/__stub/active-runs', {});
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      sessionStorage.setItem('activeRequestId', 'r-cut-off');
+      sessionStorage.setItem('activeRequestSession', 's-1');
+      need(win().chatModule.lostRunIn('s-1') === 'r-cut-off', 'fixture: no lost run in the session');
+      await tick.call(pane);
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      await tick.call(pane);
+      await until('the next run followed', () => win().chatModule.hasActiveRequest()
+        && sessionStorage.getItem('activeRequestId') === 'r-live', 6000);
+      return true;
+    } finally {
+      delete pane.refreshActivity;
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('the activity tick leaves the run to the chat while the chat asks for it itself', async () => {
+    // The chat's own question -- a load's, the successor watch's -- joins the run by how much of it is on
+    // screen; a tick answering first replayed it whole beside that.
+    const pane = win().sessionManager;
+    const tick = pane.refreshActivity;
+    pane.refreshActivity = async () => {};
+    try {
+      await stub('/__stub/active-runs', {});
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await tick.call(pane);
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      cookie('stub_active', 'slow');   // every question answered 1.2 s late
+      const asked = await hits('sessions-active');
+      const ticked = tick.call(pane);
+      await sleep(300);
+      win().chatModule.followRunOfOpenSession({ session_id: 's-1' }, { catchUp: 'skip', seen: 3 });
+      await ticked;   // answered while the chat's question is still on its way
+      await until('the run followed', () => win().chatModule.hasActiveRequest()
+        && sessionStorage.getItem('activeRequestId') === 'r-live', 6000);
+      await sleep(1500);   // a question of the tick's own would have arrived by now
+      // Its question races the chat's: whichever answer comes first joins, and the tick's replays the run whole.
+      need(await hits('sessions-active') - asked === 2, 'the tick asked for the run while the chat was asking');
+      return need(await hits('catch-up:r-live') === 'skip/3', 'the tick joined the run before the chat could');
+    } finally {
+      cookie('stub_active', null);
+      delete pane.refreshActivity;
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('a run in a session opened since the last activity tick is left to its load for one tick', async () => {
+    // Its load joins the run it finds, by how much of it is on screen; a tick in between would replay the run
+    // whole beside it. A run the load did not find is joined by the tick after.
+    const pane = win().sessionManager;
+    const tick = pane.refreshActivity;
+    pane.refreshActivity = async () => {};
+    try {
+      await stub('/__stub/active-runs', {});
+      sessionButton('s-2', 'open').click();
+      await until('the other session', () => $('#headerSessionId').textContent === 'Fresh session');
+      await tick.call(pane);   // the tick saw s-2 open
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      await sleep(300);   // its load has asked for its run: there was none
+      const joins = await hits('reconnects:r-live');
+      await stub('/__stub/active-runs', { 's-1': 'r-live' });
+      await tick.call(pane);
+      await sleep(800);
+      need(!win().chatModule.hasActiveRequest() && await hits('reconnects:r-live') === joins,
+        'a tick joined a run in a session opened since the last one');
+      await tick.call(pane);
+      await until('the run joined on the next tick', () => win().chatModule.hasActiveRequest()
+        && sessionStorage.getItem('activeRequestId') === 'r-live', 6000);
+      return true;
+    } finally {
+      delete pane.refreshActivity;
+      await stub('/__stub/active-runs', {});
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('a session loaded twice joins its run by what the later load has shown', async () => {
     // The first load's question about the session's run can come back after the second
     // load: joined with that load's count, the run sends again what the later one shows.

@@ -1358,6 +1358,24 @@ async def test_a_long_run_answers_with_its_id_and_wakes_the_session(repo, monkey
     assert final["state"] == "done" and rings[0][2]() is False
 
 
+async def test_a_turn_the_api_woke_is_promised_a_wake(repo, monkeypatch):
+    """A turn woken inside the API carries its depth in the chain (woken_at), and its process goes on: unlike
+    a woken process, it is rung when its run ends."""
+    from agent_system.core.session_presence import woken_at
+
+    monkeypatch.delenv("HIVE_WAKE_DEPTH", raising=False)
+    monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "")
+    monkeypatch.setattr(server_module, "presence_for", lambda cfg: None)
+    server = make_server(repo, wait_s=0.2)
+    woken_at(1)
+    try:
+        result, _ = await call(server, "run_task", session="s1", task="SLEEP 30")
+    finally:
+        woken_at(0)
+    assert result["wake"] is True, result["wake_note"]
+    await call(server, "cancel_run", run_id=result["run_id"])
+
+
 class SubAgentPresence:
     def get(self, session_id, user_id):
         return {"sub_agent": True}
@@ -1369,7 +1387,7 @@ class SubAgentPresence:
 async def test_a_woken_run_or_a_sub_agent_is_not_promised_a_wake(repo, monkeypatch, woken, sub_agent, session, reason):
     """wake_blocked checks neither (core/session_presence/wake.py)."""
     monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "")
-    monkeypatch.setattr(server_module, "wake_depth", lambda: woken)
+    monkeypatch.setattr(server_module, "woken_process", lambda: woken)
     monkeypatch.setattr(server_module, "presence_for", lambda cfg: SubAgentPresence() if sub_agent else None)
     server = make_server(repo, wait_s=0.2)
     result, _ = await call(server, "run_task", session=session, task="SLEEP 30")
@@ -2094,7 +2112,7 @@ async def test_a_process_that_cannot_ring_leaves_the_ring_to_one_that_can(repo, 
     # As if the ring had not got through yet.
     server._file(record["run_id"], "wake").write_text(json.dumps({"session_id": "s1", "user_id": "admin"}))
     if why == "woken":
-        monkeypatch.setattr(server_module, "wake_depth", lambda: 1)
+        monkeypatch.setattr(server_module, "woken_process", lambda: 1)
     elif why == "blocked":
         monkeypatch.setattr(server_module, "wake_blocked", lambda *a, **k: "waking is switched off")
     else:

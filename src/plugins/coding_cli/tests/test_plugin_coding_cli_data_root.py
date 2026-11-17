@@ -59,7 +59,7 @@ def rings(monkeypatch):
 
     monkeypatch.setattr(server_module, "wake_session", wake)
     monkeypatch.setattr(server_module, "wake_blocked", lambda *args, **k: "")
-    monkeypatch.setattr(server_module, "wake_depth", lambda: 0)
+    monkeypatch.setattr(server_module, "woken_process", lambda: 0)
     return rung
 
 

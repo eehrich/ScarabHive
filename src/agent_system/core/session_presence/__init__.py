@@ -16,14 +16,17 @@ notify() is for input that waits for a session -- a direct message, say. A
 held session reads it on its next step; input that arrives after its last
 LLM call leaves <session>.pending, and letting go of the session wakes it. A
 session nobody holds is woken right away: agent-cli continues it from its
-file, on its stored agent and profile. The marker stays until that run takes
+file, on its stored agent and profile -- or, where an API rings, the API runs
+the woken turn as a job of its own (set_local_waker, api/woken_runs.py), which
+the chat can follow, stop and write to. The marker stays until that run takes
 it, so a run that finds none knows somebody else got there first. A turn
 started BECAUSE input waits -- a woken run, a woken agent-cli chat prompt --
 takes it and changes <session>.woken: that turn is told, so whoever still
 rings for news that was there before it stops (wake_session).
 
-A woken run carries its depth in HIVE_WAKE_DEPTH; at max_wake_depth nobody is
-woken, so sessions that answer each other cannot start each other forever.
+A woken run carries its depth in HIVE_WAKE_DEPTH -- one woken inside the API in
+its task's context (woken_at), which its tool calls and their work inherit; at
+max_wake_depth nobody is woken, so sessions that answer each other cannot start each other forever.
 Sub-agents' sessions are never woken and never listed: they belong to the run
 that spawned them.
 
@@ -53,9 +56,10 @@ from .presence import (
     note_stop,
     presence_for,
     sessions_dir,
+    set_local_waker,
     stopped_by_user,
 )
-from .process import WAKE_DEPTH_ENV, WAKE_TASK, alive, spawn_wake, wake_command, wake_depth
+from .process import WAKE_DEPTH_ENV, WAKE_TASK, alive, spawn_wake, wake_command, wake_depth, woken_at, woken_process
 from .wake import PRESENCE_OFF, process_ends_with_its_run, wake_blocked, wake_session
 
 __all__ = [
@@ -71,10 +75,13 @@ __all__ = [
     "presence_for",
     "process_ends_with_its_run",
     "sessions_dir",
+    "set_local_waker",
     "spawn_wake",
     "stopped_by_user",
     "wake_blocked",
     "wake_command",
     "wake_depth",
     "wake_session",
+    "woken_at",
+    "woken_process",
 ]

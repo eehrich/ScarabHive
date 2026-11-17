@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ...config.models import SessionPresenceConfig
 from ...paths import PROJECT_ROOT, data_path
@@ -305,11 +305,13 @@ class SessionPresence:
                 # the exception already in flight. hold() guards the same way.
                 logger.warning("Session presence: waking %s: %s", session_id, exc)
 
-    def _wake_refusal(self, user_id: str, stored: Optional[dict[str, Any]]) -> str:
+    def _wake_refusal(self, user_id: str, stored: Optional[dict[str, Any]],
+                      local_operator: Optional[bool] = True) -> str:
         """Why the woken run would be refused by its agent's role gate, or "".
 
-        Judged as the woken process will judge it (Agent._run_denial there):
-        agent-cli runs the agent it picks for the session -- the stored one,
+        Judged as the woken run will judge it (Agent._run_denial there). By
+        default as agent-cli does; ``local_operator=None`` as this process
+        does, for a turn it runs itself (set_local_waker). agent-cli runs the agent it picks for the session -- the stored one,
         or the config's default where the config no longer defines that one
         (cli_utils.session_defaults, the same two calls) -- as the session's
         user, and it trusts the local operator. The agent's gate is read from
@@ -335,7 +337,7 @@ class SessionPresence:
             logger.debug("Session presence: no gate for %s (%s)", agent_name, exc)
             return ""
         min_role = merged.metadata.min_role if merged is not None and merged.metadata is not None else None
-        reason = agent_run_denial(min_role, user_id, getattr(config, "auth", None), local_operator=True)
+        reason = agent_run_denial(min_role, user_id, getattr(config, "auth", None), local_operator=local_operator)
         return f"its agent '{agent_name}' may not be run by '{user_id}': {reason}" if reason else ""
 
     @staticmethod
@@ -453,6 +455,44 @@ class SessionPresence:
                              "agent": state["agent"] or (stored or {}).get("agent", "")})
         return sessions
 
+    def _wake_here(self, waker: "Waker", path: Path, fd: int,
+                   session_id: str, user_id: str, depth: int, agent: str) -> tuple[str, bool, bool]:
+        """Hand the session to a turn this process runs (set_local_waker): the locked handle becomes this
+        process's hold, and that turn lets go of it once more when it is over. A hold, not a wake marker: a marker
+        names a pid, and this one's lives on -- a turn that never started would leave the session "being woken"
+        until the process ends.
+
+        Returns why the waker did not take the turn ("" when it did); whether the handle is still the caller's
+        (a hold of this process that nested meanwhile keeps it, or that hold would run without its lock); and
+        whether the waker failed rather than refused.
+        """
+        try:
+            _write(fd, {"agent": agent, "since": time.time()})
+        except OSError:
+            pass  # the lock is what counts; the content only names the agent
+        with self._guard:
+            self._held[path] = _Hold(fd)
+        try:
+            refusal = waker(self, session_id, user_id, depth)
+        except Exception as exc:
+            return f"could not wake it ({exc}); it reads the input on its next run", self._give_back(path), True
+        except BaseException:
+            self._give_back(path)
+            raise
+        return refusal, (self._give_back(path) if refusal else False), False
+
+    def _give_back(self, path: Path) -> bool:
+        """Undo the hold _wake_here made; whether the handle is the caller's again (no hold nested meanwhile)."""
+        with self._guard:
+            entry = self._held.get(path)
+            if entry is None:
+                return True
+            entry.holds -= 1
+            if entry.holds:
+                return False
+            del self._held[path]
+            return True
+
     def notify(self, session_id: str, user_id: str) -> tuple[str, str]:
         """Input is waiting for the session. Returns (status, note), status one
         of delivered_next_step, being_woken, woke_session, queued (the note says
@@ -478,6 +518,7 @@ class SessionPresence:
             return "queued", STOPPED
         pending.touch()  # before the lock: a holder letting go right now still finds it
         keep = False     # the lock file stays: a run of this session is on its way
+        handed = False   # the locked handle is this process's hold now, for its woken run
         waiting = True   # the marker stays: that run has not taken the input yet
         try:
             fd = _open_locked(path)
@@ -513,6 +554,21 @@ class SessionPresence:
                     # ring wakes it.
                     logger.warning("Session presence: not waking %s: %s", session_id, refusal)
                     return "queued", refusal
+                waker = _local_waker
+                if (waker is not None and not getattr(waker, "refuses_all", False)
+                        and self._wake_refusal(user_id, stored, local_operator=None)):
+                    # This process may not run the agent for this user where agent-cli may (it trusts the local
+                    # operator: the CLI's own sessions on a gated agent). Woken in a process of its own, as ever.
+                    waker = None
+                if waker is not None:
+                    refusal, ours, failed = self._wake_here(waker, path, fd, session_id, user_id, depth + 1,
+                                                            (stored or {}).get("agent", ""))
+                    handed = not ours
+                    waiting = not failed   # as a process that will not start, below
+                    if refusal:
+                        # Refused, the marker stays: nobody is on the way, and the next run reads the input.
+                        return "queued", refusal
+                    return "woke_session", ""
                 # This process is the one holding the file now, and starting
                 # a run takes milliseconds: without the marker a run beginning
                 # in that window reads the locked file as a session that runs
@@ -531,7 +587,9 @@ class SessionPresence:
                 keep = True
                 return "woke_session", ""
             finally:
-                if keep:
+                if handed:
+                    pass   # the woken run lets go of it
+                elif keep:
                     _unlock_and_close(fd)
                 else:
                     _drop(fd, path)
@@ -540,6 +598,20 @@ class SessionPresence:
                 # Nobody is on the way for it, so the marker would outlive its
                 # reason; the input itself waits in the store that holds it.
                 _unlink(pending)
+
+
+#: Who runs a woken turn inside this process rather than in a process of its own (api/woken_runs.py, while an API
+#: serves): called as ``waker(presence, session_id, user_id, depth)`` with this process holding the session for
+#: that turn in ``presence``, which the turn lets go of; "" when it took the turn, else why not. None: a wake
+#: starts agent-cli (spawn_wake).
+Waker = Callable[["SessionPresence", str, str, int], str]
+_local_waker: Optional[Waker] = None
+
+
+def set_local_waker(waker: Optional[Waker]) -> None:
+    """Wake sessions inside this process from now on (``None``: in a process of their own again)."""
+    global _local_waker
+    _local_waker = waker
 
 
 _stores: dict[Path, SessionPresence] = {}

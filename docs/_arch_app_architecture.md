@@ -139,11 +139,16 @@ the whole server: starting a process with pipes, CPython asks the console,
 holding the GIL, whether a pipe is a console. The server's process is not the
 one that was started; it and what it starts die with that one (a job object
 the server joins before it starts anything), and Ctrl+C reaches it as before.
-What is meant to outlive the server -- a woken run (`session_presence`), a
-coding run (`coding_cli`) -- starts through `own_console.popen_outliving`.
+What is meant to outlive the server -- a run another process wakes
+(`session_presence`), a coding run (`coding_cli`) -- starts through
+`own_console.popen_outliving`. A session the server itself wakes runs its woken
+turn in the server, as a job like a detached `/run` (`api/woken_runs.py`): the
+chat follows it, stops it and writes to it, and it ends with the server.
 
-The lifespan (`custom_lifespan`, nested in `build_app`) sets up the executor
-and runs `_init_mcp_for_app`: it starts the batch queue manager, runs
+The lifespan (`custom_lifespan`, nested in `build_app`) sets up the executor,
+hands session presence the waker that runs woken turns in the server
+(`woken_runs.install`; a turn rung before the server is ready waits for it,
+one rung after the stop signal waits for the next run), and runs `_init_mcp_for_app`: it starts the batch queue manager, runs
 `initialize_tools()` (`ToolServerIntegration.initialize` -- its bootstrap is
 skipped because the registry is already filled -- then plugin discovery,
 plugin hooks, `start_all()`), injects the session service into the plugin

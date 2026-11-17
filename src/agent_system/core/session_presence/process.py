@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,7 +69,30 @@ def _own_start() -> float:
         return 0.0
 
 
+#: The depth of a run woken inside this process (api/woken_runs.py), and of every task it starts: its tool calls,
+#: sub-agents and the work they leave running inherit the context, so a ring for that work is judged at the depth
+#: of the run it came from. A woken PROCESS carries its depth in HIVE_WAKE_DEPTH instead.
+_WOKEN_DEPTH: ContextVar[int] = ContextVar("hive_woken_depth", default=0)
+
+
+def woken_at(depth: int) -> None:
+    """The run of the current task (and everything it starts) was woken at ``depth``."""
+    _WOKEN_DEPTH.set(depth)
+
+
+def woken_process() -> bool:
+    """Whether this PROCESS is a woken run (``agent-cli run --woken``): one that ends with its turn and takes the
+    work it starts with it. Not a turn woken inside the API (woken_at), whose process goes on."""
+    try:
+        return int(os.environ.get(WAKE_DEPTH_ENV) or 0) > 0
+    except ValueError:
+        return False
+
+
 def wake_depth() -> int:
+    inside = _WOKEN_DEPTH.get()
+    if inside:
+        return inside
     try:
         return int(os.environ.get(WAKE_DEPTH_ENV) or 0)
     except ValueError:

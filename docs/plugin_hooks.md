@@ -255,7 +255,8 @@ end of its caller, or if nobody reads the run's job any more (tab
 closed), nobody is asked any more. A sub-run asks in the stream of the run above
 it; a call inside a `tool_script` script never asks. Everything else (openai_api, agent-run, a one-shot
 agent-cli, a run woken in a process of its own, JSON `/run`) is unattended, and the
-hook decides without asking. The question itself is a status line under its
+hook decides without asking; a turn the API wakes asks like a web run, in the chat
+that follows it. The question itself is a status line under its
 own child ID with `meta.tool_approval`. The chat draws buttons for it, and
 the last line of the series (end/error) removes them again. The machinery
 for this is shared by `tool_approval`, the tool `ask_user` and stategraph's wait questions: open questions,

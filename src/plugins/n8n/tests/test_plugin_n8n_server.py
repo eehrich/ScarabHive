@@ -855,13 +855,35 @@ async def test_a_running_execution_is_found_and_watched(monkeypatch):
     assert "execution id 7" in result["wake_note"] and "one-shot" in result["wake_note"]
 
 
+async def test_a_turn_the_api_woke_arms_a_wake(monkeypatch):
+    """A turn woken inside the API (woken_at) carries its depth in the chain, and its process goes on: unlike
+    a woken process, it is rung when the execution ends."""
+    from agent_system.core.session_presence import woken_at
+
+    monkeypatch.delenv("HIVE_WAKE_DEPTH", raising=False)
+    server = make_server()
+    server._client.workflows["w1"] = published()
+    server._client.after_webhook = [running("7")]
+    server._client.executions["7"] = running("7")
+    watched = []
+    monkeypatch.setattr(server_module, "wake_blocked", lambda *args: "")
+    monkeypatch.setattr(server, "_watch", lambda *args: watched.append(args) or "")
+    monkeypatch.setattr(server_module, "presence_for", lambda cfg: None)   # no sub-agent's session
+    woken_at(1)
+    try:
+        result = await call(server, "trigger_workflow", workflow_id="w1", _session_id="s1", _user_id="u1")
+    finally:
+        woken_at(0)
+    assert result["wake"] is True and watched, result["wake_note"]
+
+
 async def test_a_woken_run_arms_no_wake_its_own_end_would_take_down(monkeypatch):
     server = make_server()
     server._client.workflows["w1"] = published()
     server._client.after_webhook = [running("7")]
     server._client.executions["7"] = running("7")
     watched = []
-    monkeypatch.setattr(server_module, "wake_depth", lambda: 1)
+    monkeypatch.setattr(server_module, "woken_process", lambda: 1)
     monkeypatch.setattr(server_module, "wake_blocked", lambda *args: "")
     monkeypatch.setattr(server, "_watch", lambda *args: watched.append(args))
     result = await call(server, "trigger_workflow", workflow_id="w1")

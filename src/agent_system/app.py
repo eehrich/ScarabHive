@@ -416,56 +416,68 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Create shutdown event for graceful SSE stream termination
         app_state.shutdown_event = _asyncio.Event()
 
-        logger.info("Lifespan startup: Initializing tool integration...")
-        await _init_mcp_for_app(app)
-        logger.info("tool integration initialized during lifespan startup")
+        # A session this API wakes runs its woken turn here, as a job the chat can follow and stop
+        # (api/woken_runs.py). Before the plugins: one rings as it starts; its turn waits for ready() below.
+        from .api import woken_runs
+        woken_runs.install(app)
 
-        # The archive sweep, now that there is a loop to run it in.
-        archive = getattr(app.state, "session_archive", None)
-        if archive is not None and config.session_archive.enabled:
-            _asyncio.create_task(archive.sweep_loop())
-            logger.info(
-                "SessionArchive sweep loop started: every %.1f h, first in %.0f s",
-                archive.sweep_interval_hours, archive.first_sweep_delay_seconds,
+        try:
+            logger.info("Lifespan startup: Initializing tool integration...")
+            await _init_mcp_for_app(app)
+            logger.info("tool integration initialized during lifespan startup")
+
+            # The archive sweep, now that there is a loop to run it in.
+            archive = getattr(app.state, "session_archive", None)
+            if archive is not None and config.session_archive.enabled:
+                _asyncio.create_task(archive.sweep_loop())
+                logger.info(
+                    "SessionArchive sweep loop started: every %.1f h, first in %.0f s",
+                    archive.sweep_interval_hours, archive.first_sweep_delay_seconds,
+                )
+
+            # Finished jobs keep only how their run ended once COMPLETED_JOB_TTL is past.
+            # Nothing else starts this: a module-level lifespan that did was never the
+            # app's, and every job kept its whole event buffer until the process ended.
+            await get_background_job_manager().start_cleanup_task()
+            woken_runs.ready()
+
+            # Log startup complete marker
+            logger.info("═" * 80)
+            logger.info("║  AgentSystem API Server READY - accepting connections")
+            logger.info("═" * 80)
+        
+            # Start profiling if enabled
+            from .utils.profiling import start_profiling, stop_profiling, PROFILING_ENABLED
+            if PROFILING_ENABLED:
+                await start_profiling()
+                logger.info("Performance profiling started")
+        
+            # Start memory profiling if enabled
+            from .utils.memory_profiling import (
+                start_memory_profiling, stop_memory_profiling, MEMORY_PROFILING_ENABLED
             )
+            if MEMORY_PROFILING_ENABLED:
+                # Setup profiling logger if not already done (e.g., if only memory profiling enabled)
+                if not PROFILING_ENABLED:
+                    from .utils.profiling import setup_profiling_logger
+                    setup_profiling_logger()
+                await start_memory_profiling()
+                logger.info("Memory profiling started")
 
-        # Finished jobs keep only how their run ended once COMPLETED_JOB_TTL is past.
-        # Nothing else starts this: a module-level lifespan that did was never the
-        # app's, and every job kept its whole event buffer until the process ended.
-        await get_background_job_manager().start_cleanup_task()
+            # The shutdown event is set as the stop signal arrives, not only in the shutdown below: uvicorn runs that
+            # after it waited for the open connections, and a browser's run-events stream ends only on this event.
+            # Here, last: uvicorn listens only once the startup is done, so no stream is open before.
+            from .services.lifecycle import announce_stop
+            undo_announce_stop = announce_stop(app_state.shutdown_event)
+        except BaseException:
+            woken_runs.close()   # a start that fails ends the app as well: nobody woken here, nor elsewhere
+            raise
 
-        # Log startup complete marker
-        logger.info("═" * 80)
-        logger.info("║  AgentSystem API Server READY - accepting connections")
-        logger.info("═" * 80)
-        
-        # Start profiling if enabled
-        from .utils.profiling import start_profiling, stop_profiling, PROFILING_ENABLED
-        if PROFILING_ENABLED:
-            await start_profiling()
-            logger.info("Performance profiling started")
-        
-        # Start memory profiling if enabled
-        from .utils.memory_profiling import (
-            start_memory_profiling, stop_memory_profiling, MEMORY_PROFILING_ENABLED
-        )
-        if MEMORY_PROFILING_ENABLED:
-            # Setup profiling logger if not already done (e.g., if only memory profiling enabled)
-            if not PROFILING_ENABLED:
-                from .utils.profiling import setup_profiling_logger
-                setup_profiling_logger()
-            await start_memory_profiling()
-            logger.info("Memory profiling started")
-
-        # The shutdown event is set as the stop signal arrives, not only in the shutdown below: uvicorn runs that
-        # after it waited for the open connections, and a browser's run-events stream ends only on this event.
-        # Here, last: uvicorn listens only once the startup is done, so no stream is open before.
-        from .services.lifecycle import announce_stop
-        undo_announce_stop = announce_stop(app_state.shutdown_event)
         try:
             yield
         finally:
             undo_announce_stop()  # the signal handlers as they were, also when the app ends by an error
+            woken_runs.close()    # nobody woken from here on, in this process or in one of its own
         # Shutdown
         logger.info("═" * 80)
         logger.info("║  AgentSystem API Server SHUTTING DOWN")

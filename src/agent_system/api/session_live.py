@@ -119,9 +119,10 @@ def _add_sessions_running_elsewhere(wanted: List[str], user_id: str, agent,
     """The runs this process cannot see, from the one place that spans processes.
 
     ``active_sessions()`` is process-internal by its own account -- background
-    jobs and this process's session trackers. A WOKEN run is neither: presence
-    starts it as ``agent-cli run --woken``, a process of its own
-    (``core/session_presence.spawn_wake``). So a session that is working hard
+    jobs and this process's session trackers. A run another process woke is neither:
+    presence starts it as ``agent-cli run --woken``, a process of its own
+    (``core/session_presence.spawn_wake``) -- only a wake this API rings runs here, as a
+    job (``api/woken_runs.py``). So a session that is working hard
     right after a wake answers this poll as idle, and the panel has no way to
     know the turn it is missing exists. That is what "the agent never wakes up"
     looked like from the outside: measured on session jrbqugnco7, 13 messages

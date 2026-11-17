@@ -3092,6 +3092,8 @@
   //: file says it is working, waiting is the right thing to do.
   const ELSEWHERE_WAIT = 4000;
   let successorWatch = 0;
+  //: attachRunOfOpenSession calls whose question about the session's run is on its way.
+  let askingForRun = 0;
 
   /**
    * A run ended; its SESSION may keep working. Watch for the run that follows.
@@ -5013,6 +5015,7 @@
       if (!sessionId || chatModule.hasActiveRequest()) return;
       const load = sessionLoads;
       let active = null;
+      askingForRun++;
       try {
         const response = await fetch(`/api/sessions/active?ids=${encodeURIComponent(sessionId)}`,
           { credentials: 'include', signal: AbortSignal.timeout(10000) });
@@ -5021,6 +5024,8 @@
       } catch (error) {
         console.warn('[chat_module] Could not ask whether the session has a run:', error);
         return;
+      } finally {
+        askingForRun--;
       }
       // Another session was opened while the server answered, or a run started here
       // meanwhile: that one is the chat's, not this answer.
@@ -5069,6 +5074,9 @@
     }
 
     chatModule.followRunOfOpenSession = attachRunOfOpenSession;
+    // Whether the chat is asking for the open session's run right now: its answer joins it, by how much of it a
+    // load shows -- the session pane's activity tick leaves the run to it (joinRunOfOpenSession).
+    chatModule.askingForRun = () => askingForRun > 0;
 
     return followRun(agentsLoaded);
   };

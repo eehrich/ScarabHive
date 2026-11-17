@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from agent_system.core.session_presence import presence_for, wake_blocked, wake_depth, wake_session
+from agent_system.core.session_presence import presence_for, wake_blocked, wake_session, woken_process
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.tools.status import current_request_id
 
@@ -80,7 +80,7 @@ class BasicOperationsServer(SchemaBasedToolServer):
         """Why this session cannot be woken when the wait is over, or ""."""
         if not session_id:
             return "this call has no session to wake"
-        if wake_depth():
+        if woken_process():
             return "this run was itself woken and ends with its turn"
         blocked = wake_blocked(self.system_config, session_id, user_id)
         if blocked:

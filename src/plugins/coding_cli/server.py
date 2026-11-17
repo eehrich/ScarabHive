@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from agent_system.utils.proctree import run_bounded
 from agent_system.core.cancellation import CancellationToken, get_cancellation_manager
-from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
+from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_session, woken_process
 from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.servers.agent.components.tool_call_contract import FRAMEWORK_REQUEST_ID_KEYS
@@ -1767,7 +1767,7 @@ class CodingCliServer(SchemaBasedToolServer):
         # wake_session judges the RINGER's depth: a woken process would take
         # the lease and wake nobody. Left untaken, a process that can ring does.
         # The run has ended: a one-shot process rings for it like any other.
-        if wake_depth() or wake_blocked(self.system_config, session_id, user_id, outlives_the_process=True):
+        if woken_process() or wake_blocked(self.system_config, session_id, user_id, outlives_the_process=True):
             return
         try:
             if lease.exists():
@@ -2047,7 +2047,7 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _arm_wake(self, run_id: str, session_id: str, user_id: str, sub_agent: bool) -> dict:
         """Whether the session is rung at the end. Every refusal says what to do instead."""
-        if wake_depth():
+        if woken_process():
             blocked = "this run was itself woken and ends with its turn"
         else:
             blocked = wake_blocked(self.system_config, session_id, user_id)

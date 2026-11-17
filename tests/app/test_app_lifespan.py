@@ -7,6 +7,7 @@ and all. This drives the real lifespan, with only the tool integration left out.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 
 import pytest
@@ -87,3 +88,23 @@ async def test_an_app_ending_by_an_error_leaves_no_handler_behind(app_without_to
         async with app.router.lifespan_context(app):
             raise RuntimeError("boom")
     assert signal.getsignal(signal.SIGINT) is recorder
+
+
+@pytest.mark.parametrize("ends", ["at its start", "while it serves", "by its shutdown"])
+async def test_an_app_that_has_ended_wakes_nobody_any_more(app_without_tools, monkeypatch, ends):
+    """A session the app wakes runs in the app (api/woken_runs.py). Once it has ended -- however -- a ring
+    neither hands a turn to a loop that is gone nor starts an agent-cli that would outlive the app."""
+    from agent_system.core.session_presence import presence
+
+    app = app_without_tools
+    if ends == "at its start":
+        async def broken():
+            raise RuntimeError("boom")
+        monkeypatch.setattr(bjm.get_background_job_manager(), "start_cleanup_task", broken)
+    with pytest.raises(RuntimeError, match="boom") if ends != "by its shutdown" else contextlib.nullcontext():
+        async with app.router.lifespan_context(app):
+            assert presence._local_waker is not None and not getattr(presence._local_waker, "refuses_all", False)
+            if ends == "while it serves":
+                raise RuntimeError("boom")
+    assert getattr(presence._local_waker, "refuses_all", False), "the ended app left a waker that takes turns"
+

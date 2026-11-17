@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlencode
 
-from agent_system.core.session_presence import presence_for, wake_blocked, wake_depth, wake_session
+from agent_system.core.session_presence import presence_for, wake_blocked, wake_session, woken_process
 from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.params import as_int, flag_param
@@ -909,7 +909,7 @@ class N8nServer(SchemaBasedToolServer):
             session_id, user_id = params.get("_session_id") or "", params.get("_user_id") or ""
             if not execution_id:
                 blocked = "no execution was found to watch"
-            elif wake_depth():
+            elif woken_process():
                 # A woken run is a one-shot process: its end takes the watch with it.
                 blocked = "this run was itself woken and ends with its turn"
             else:

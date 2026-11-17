@@ -374,7 +374,7 @@ class TestWaitWithWake:
             return "woke_session"
 
         monkeypatch.setattr(server_module, "wake_blocked", lambda *a: blocked)
-        monkeypatch.setattr(server_module, "wake_depth", lambda: 0)
+        monkeypatch.setattr(server_module, "woken_process", lambda: 0)
         monkeypatch.setattr(server_module, "wake_session", wake)
         monkeypatch.setattr(server_module, "WAKE_MIN_SECONDS", 0.05)
         return rings
@@ -412,7 +412,7 @@ class TestWaitWithWake:
             self, mock_system_config, mock_server_config, monkeypatch, blocked, depth, session, note):
         from plugins.basic_operations import server as server_module
         rings = self._recorder(monkeypatch, blocked=blocked)
-        monkeypatch.setattr(server_module, "wake_depth", lambda: depth)
+        monkeypatch.setattr(server_module, "woken_process", lambda: depth)
         server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
 
         result = await server.call("basic_ops_wait", {
@@ -422,6 +422,26 @@ class TestWaitWithWake:
 
         assert result["actual_seconds"] >= 0.1 and result.get("waiting") is None
         assert note in result["wake_note"] and rings == []
+
+    @pytest.mark.asyncio
+    async def test_a_turn_the_api_woke_is_woken_again(self, mock_system_config, mock_server_config, monkeypatch):
+        """A turn woken inside the API (woken_at) carries its depth in the chain, and its process goes on:
+        unlike a woken process, it is rung when the wait is over."""
+        from agent_system.core.session_presence import woken_at, woken_process
+        from plugins.basic_operations import server as server_module
+        rings = self._recorder(monkeypatch)
+        monkeypatch.setattr(server_module, "woken_process", woken_process)
+        monkeypatch.delenv("HIVE_WAKE_DEPTH", raising=False)
+        server = BasicOperationsServer("basic_ops", mock_system_config, mock_server_config)
+        woken_at(1)
+        try:
+            result = await server.call("basic_ops_wait", {
+                "seconds": 2, "wake": True, "_session_id": "s1", "_user_id": "u1", "_status": AsyncMock()})
+        finally:
+            woken_at(0)
+        assert result.get("waiting") is True, result.get("wake_note")
+        await asyncio.wait(server._wakes, timeout=10)
+        assert [(r[0], r[1]) for r in rings] == [("s1", "u1")]
 
     @pytest.mark.asyncio
     async def test_a_short_wait_is_not_worth_a_turn(

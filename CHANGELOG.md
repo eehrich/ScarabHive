@@ -238,6 +238,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A session the API wakes runs its woken turn in the API, as a job, instead of an `agent-cli run --woken` of its
+  own: the chat follows it, stops it and writes to it, and it ends with the API. Before, the session read "being
+  worked on in another process" for as long as the turn ran -- typing was refused, Stop could not reach it -- and the
+  process outlived a restart. A ring before the API is ready waits for it; after its stop signal nobody is woken and
+  the input waits for the next run. The wake chain's depth travels with the turn. The chat joins a run that starts in
+  the open session whenever it starts, not only within a minute of its last one. A turn woken in the API is no longer
+  refused a wake by basic_operations, coding_cli and n8n as a run "that ends with its turn".
 - file_ops: the ignore files of every folder apply to the searches and the index, not only the root's -- the deepest
   rule decides, as in git, and `.rgignore` counts too. `*.{ts,tsx}` and `[!a]*` are globs; they were taken
   literally. A line longer than 2000 characters is cut in a grep answer. A grep through the walk reads each file

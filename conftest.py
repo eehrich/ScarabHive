@@ -479,6 +479,10 @@ def never_wake_a_session_for_real():
         yield
     finally:
         presence.spawn_wake = original
+        # An app's lifespan installs a waker of its own (api/woken_runs.py), and one that ends early -- by an
+        # error, or a test that never runs its shutdown -- leaves it: the next test's notify() would hand its
+        # session to an app that is gone.
+        presence.set_local_waker(None)
 
 
 @pytest.fixture(autouse=True)
