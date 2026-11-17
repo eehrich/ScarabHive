@@ -344,7 +344,18 @@ config:
     default: 0.2
     minimum: 0
     maximum: 1
-    description: "A run of layers 1-3 is tried on a copy and kept only when it takes this share of the context; a shallower one is thrown away and the context goes out unchanged (every kept run breaks the prompt cache). Not for /compact, the byte limit, or a context past force_above_window_share. 0 keeps every run."
+    description: "A run of layers 1-3 is tried on a copy and kept only when it takes this share of the context; a shallower one is thrown away and the context goes out unchanged (every kept run breaks the prompt cache). Not for /compact, the byte limit, a context past force_above_window_share, or a call on a cold cache (compact_when_cache_cold). 0 keeps every run."
+
+  compact_when_cache_cold:
+    type: boolean
+    default: true
+    description: "A call after a pause longer than the provider keeps its prompt cache (the model's prompt_cache_ttl_minutes, else cache_cold_after_minutes) pays the whole context at the input price anyway, so compacting on it breaks nothing: Layer 1 runs whatever the token count, and neither min_reduction nor min_tokens_between_compactions holds it -- whoever opens the call (a person, a wake, a tool that ran long). Layers 2 and 3 keep their thresholds. The pause is read from the context_usage_tracker; without it nothing happens. Per agent overridable."
+
+  cache_cold_after_minutes:
+    type: number
+    default: 30
+    minimum: 1
+    description: "The pause after which the cache counts as cold for a model that names no prompt_cache_ttl_minutes. 30: on the OpenRouter routes a call read under 10 % from the cache past 30 minutes."
 
   layer1_window_share:
     type: number

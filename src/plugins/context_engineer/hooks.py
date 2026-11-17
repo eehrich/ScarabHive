@@ -195,6 +195,33 @@ def _context_window(context: HookContext) -> int | None:
     return window if isinstance(window, int) and window > 0 else None
 
 
+def _cache_ttl_minutes(context: HookContext) -> float | None:
+    """How long the provider keeps the prompt cache of the model this call goes to (prompt_cache_ttl_minutes).
+
+    The client's own first -- build_client sets it, None included, so an llm_profile override counts; the agent's
+    configured model for a client built elsewhere."""
+    if hasattr(context.llm, "prompt_cache_ttl_minutes"):
+        ttl = context.llm.prompt_cache_ttl_minutes
+    else:
+        agent = context.agent
+        if getattr(agent, "agent_config", None) is None or getattr(agent, "system_config", None) is None:
+            return None
+        try:
+            from agent_system.llm.factory import resolve_llm_config_for_agent
+            ttl = resolve_llm_config_for_agent(agent.system_config, agent.agent_config).spec.prompt_cache_ttl_minutes
+        except Exception as e:
+            logger.debug("[ContextEngineer] no prompt cache ttl for %s: %s", context.agent_name, e)
+            return None
+    return float(ttl) if isinstance(ttl, (int, float)) and ttl > 0 else None
+
+
+def _usage_tracker(context: HookContext) -> Any:
+    """The context_usage_tracker's tracker, None without one."""
+    registry = getattr(getattr(context.agent, "system_config", None), "tool_registry", None)
+    plugin = registry.get_server("context_usage_tracker") if registry else None
+    return getattr(plugin, "tracker", None)
+
+
 def _due_level(tokens: int, cfg: CompactionConfig) -> int:
     """The deepest layer whose threshold ``tokens`` has reached, 0 for none."""
     return max((level for level, threshold in ((1, cfg.layer1_threshold),
@@ -1050,6 +1077,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                         mark.tokens = gate_tokens
                         mark.provisional = True
 
+            # The provider's prompt cache expired since this session's last call: compacting now
+            # breaks nothing (compact_when_cache_cold).
+            cache_cold = cfg.compact_when_cache_cold and await asyncio.to_thread(self._cache_is_cold, context, cfg)
+
             # Estimate request bytes using strategy's method (for Gemini 100MB limit check)
             # — of the call as it will go out, like the token gates above.
             request_bytes = strategy._estimate_request_bytes(gate_messages)
@@ -1097,7 +1128,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Skip only if: not manual, below token threshold, below byte limit,
             # AND no event-based media compaction, AND always_compact_media disabled,
             # AND within the message limit
-            below_gate = (not is_manual and gate_tokens < cfg.layer1_threshold and not bytes_exceeded
+            below_gate = (not is_manual and not cache_cold and gate_tokens < cfg.layer1_threshold
+                          and not bytes_exceeded
                           and not event_media_compaction_needed and not always_compact_media_enabled
                           and not over_message_limit)
             if below_gate and not arrivals:
@@ -1149,7 +1181,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 # sets the mark too, and Pre-Layer P must run before the
                 # summarizer's message limit -- unless the run that set it was
                 # over the limit as well, and P could not get under it.
-                held = (not is_manual and not bytes_exceeded
+                held = (not is_manual and not bytes_exceeded and not cache_cold
                         and not (over_message_limit and not mark.over_limit)
                         and growth < hold
                         and _due_level(gate_tokens, cfg) <= mark.level
@@ -1176,7 +1208,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Force compaction if manually triggered, byte limit exceeded, event-based media compaction needed,
             # OR always_compact_media enabled
             # Byte limit MUST be enforced to avoid API errors (Gemini 100MB limit)
-            force = is_manual or bytes_exceeded or event_media_compaction_needed or always_compact_media_enabled
+            force = (is_manual or bytes_exceeded or event_media_compaction_needed or always_compact_media_enabled
+                     or cache_cold)
             
             # Apply compaction. Run it before emitting any status so we can
             # decide afterwards whether anything actually changed - this hook
@@ -1203,6 +1236,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     arrivals_only=below_gate or held_back,
                     tokens_after_arrivals=gate_tokens,
                     min_reduction=cfg.min_reduction,
+                    cache_cold=cache_cold,
                 )
             finally:
                 self._active_compactions.discard(session_id)
@@ -1254,7 +1288,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     status_bus,
                     "context_engineer",
                     status_id,
-                    start_msg=f"Engineering context: {current_tokens} tokens (target: {cfg.target_tokens}){' [MANUAL]' if is_manual else ''}",
+                    start_msg=f"Engineering context: {current_tokens} tokens (target: {cfg.target_tokens}){' [MANUAL]' if is_manual else ''}{' [CACHE COLD]' if cache_cold else ''}",
                 ) as scope:
                     await asyncio.sleep(0.01)  # Allow START message to be delivered
                     # The end line is what survives in the WebUI (it replaces
@@ -1581,35 +1615,23 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # This uses the previous LLM call's token count as baseline - if it was already high,
         # the next call will be at least as large (probably larger with new messages)
         try:
-            # Access the plugin registry via agent's system_config
-            if context.agent and hasattr(context.agent, 'system_config'):
-                system_config = context.agent.system_config
-                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
-                    registry = system_config.tool_registry
-
-                    # Get context_usage_tracker plugin
-                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
-                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
-                        tracker = usage_tracker_plugin.tracker
-
-                        # Get latest snapshot FOR THIS SESSION (not global _latest_snapshot!)
-                        # This filters by session_id to avoid interference from sub-agents
-                        latest = tracker.get_latest(session_id=context.session_id)
-                        if latest:
-                            # Check if data is stale (context was optimized since last LLM call)
-                            # Stale data doesn't reflect current message list, so ignore it
-                            if latest.get('is_stale'):
-                                stale = True
-                                logger.debug(
-                                    f"[ContextEngineer] Ignoring stale usage_tracker data for session "
-                                    f"{context.session_id} (context was already optimized)"
-                                )
-                            else:
-                                actual_tokens = latest.get('prompt_tokens', 0)
-                                logger.debug(
-                                    f"[ContextEngineer] Got actual tokens from usage_tracker: {actual_tokens} "
-                                    f"(estimated: {estimated_tokens})"
-                                )
+            tracker = _usage_tracker(context)
+            # The latest snapshot FOR THIS SESSION: sub-agents' calls stay out
+            latest = tracker.get_latest(session_id=context.session_id) if tracker is not None else None
+            if latest:
+                # Stale: the context was optimized since that call, its count is not the current list's
+                if latest.get('is_stale'):
+                    stale = True
+                    logger.debug(
+                        f"[ContextEngineer] Ignoring stale usage_tracker data for session "
+                        f"{context.session_id} (context was already optimized)"
+                    )
+                else:
+                    actual_tokens = latest.get('prompt_tokens', 0)
+                    logger.debug(
+                        f"[ContextEngineer] Got actual tokens from usage_tracker: {actual_tokens} "
+                        f"(estimated: {estimated_tokens})"
+                    )
         except Exception as e:
             logger.debug(f"[ContextEngineer] Could not get actual tokens from usage_tracker: {e}")
 
@@ -1624,6 +1646,29 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
         return max_tokens, not stale
     
+    def _cache_is_cold(self, context: HookContext, cfg: CompactionConfig) -> bool:
+        """Whether this session's last LLM call is longer ago than the provider keeps its prompt cache.
+
+        The last call is the usage tracker's latest snapshot of the session -- in its database, so a wake in a new
+        process reads it too. None there (no tracker, the session's first call): not cold -- nothing is cached,
+        and nothing says how long ago."""
+        try:
+            tracker = _usage_tracker(context)
+            latest = tracker.get_latest(session_id=context.session_id) if tracker is not None else None
+        except Exception as e:
+            logger.debug(f"[ContextEngineer] Could not read the last call from usage_tracker: {e}")
+            return False
+        last = (latest or {}).get("timestamp")
+        if not isinstance(last, (int, float)) or last <= 0:
+            return False
+        ttl = _cache_ttl_minutes(context) or cfg.cache_cold_after_minutes
+        pause = time.time() - last
+        if not ttl or ttl <= 0 or pause <= ttl * 60:
+            return False
+        logger.info(f"[ContextEngineer] Session {context.session_id}: prompt cache cold "
+                    f"({pause / 60:.0f} min since the last call, cache {ttl:g} min) - compacting before the call")
+        return True
+
     def _invalidate_usage_tracker_session(
         self, 
         context: HookContext, 
@@ -1641,13 +1686,9 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             reason: Reason for invalidation (for logging)
         """
         try:
-            if context.agent and hasattr(context.agent, 'system_config'):
-                system_config = context.agent.system_config
-                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
-                    registry = system_config.tool_registry
-                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
-                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
-                        usage_tracker_plugin.tracker.invalidate_session(session_id, reason)
+            tracker = _usage_tracker(context)
+            if tracker is not None:
+                tracker.invalidate_session(session_id, reason)
         except Exception as e:
             logger.debug(f"[ContextEngineer] Could not invalidate usage_tracker session: {e}")
     

@@ -90,6 +90,9 @@ class BatchLLMClient(LLMClient, LLMStatusMixin):
             self.context_window = underlying_client.context_window
         if hasattr(underlying_client, 'model'):
             self.model = underlying_client.model
+        # its prompt cache's lifetime: the context_engineer reads it off the client of the call
+        if hasattr(underlying_client, 'prompt_cache_ttl_minutes'):
+            self.prompt_cache_ttl_minutes = underlying_client.prompt_cache_ttl_minutes
 
     def set_app_title(self, title: str) -> None:
         """Pass through to underlying client (if it supports it)."""

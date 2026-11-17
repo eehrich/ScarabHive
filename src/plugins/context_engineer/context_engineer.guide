@@ -364,7 +364,7 @@ Every rewrite of old messages breaks the provider's prompt cache from
 there on, so after a run of Pre-Layer P or a layer the next such run waits
 until the reading has grown by @{tt}min_tokens_between_compactions@{utt}
 (20000) since -- unless a deeper layer has become due, the byte limit is
-exceeded, a person typed /compact, the conversation is over
+exceeded, a person typed /compact, the cache went cold during a pause, the conversation is over
 @{tt}max_messages@{utt} when the last run had left it under, or the
 reading is past @{tt}force_above_window_share@{utt} when the last run was
 not. After a run the window forced, the hold is at most half of what is
@@ -401,6 +401,25 @@ pass of the same call rewrote already. Of a run that is thrown away,
 Layer 1 still takes that part.
 The compact tool answers a run thrown away with @{tt}reason:
 not_worth_it@{utt}.
+
+@{h2}After a pause: the cache is cold
+
+A call after a pause longer than the provider keeps its prompt cache pays
+the whole context at the input price anyway -- compacting on it breaks
+nothing. With @{tt}compact_when_cache_cold@{utt} (on) such a call runs
+Layer 1 whatever the token count, as a /compact does, and neither the
+hysteresis nor @{tt}min_reduction@{utt} holds it. Whoever opens the call
+does not matter: a person, a wake, a tool that ran long. Layers 2 and 3
+keep their thresholds -- they take messages out of the view, cache or
+not.
+
+The pause is the time since the session's last call in the
+@{tt}context_usage_tracker@{utt} (its database: a wake in a new process
+reads it too); without the tracker nothing happens. The cache's lifetime
+is the model's @{tt}prompt_cache_ttl_minutes@{utt} in @{tt}llm.yaml@{utt},
+for a model that names none @{tt}cache_cold_after_minutes@{utt} (30: on
+the OpenRouter routes a call read under 10 % from the cache past half an
+hour). The log line says @{tt}CACHE_COLD@{utt}.
 
 @{h2}The window of the model
 
@@ -730,6 +749,8 @@ max_messages | 0 | Pre-Layer P: message limit; 0 off
 max_messages_prune_to | 0 | Pre-Layer P: messages kept; 0: half the limit
 min_tokens_between_compactions | 20000 | the hysteresis
 min_reduction | 0.2 | share of the context a run of layers 1-3 must take to be kept; 0: every run
+compact_when_cache_cold | true | Layer 1 on a call after a pause longer than the prompt cache lives
+cache_cold_after_minutes | 30 | that pause for a model without prompt_cache_ttl_minutes
 layer1_window_share | 0.55 | layer1_threshold as a share of the model's window, where that is less; 0 off
 layer2_window_share | 0.65 | the same for layer2_threshold
 layer3_window_share | 0.75 | the same for layer3_threshold

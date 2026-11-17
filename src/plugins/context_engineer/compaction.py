@@ -145,6 +145,19 @@ class CompactionConfig:
     # force_above_window_share. 0 keeps every run.
     min_reduction: float = 0.2
 
+    # A call after a pause longer than the provider keeps its prompt cache
+    # (the model's prompt_cache_ttl_minutes) pays the whole context at the
+    # input price anyway: compacting on it breaks nothing. Then Layer 1 runs
+    # whatever the token count, and neither min_reduction nor
+    # min_tokens_between_compactions holds it -- whoever opens the call: a
+    # person, a wake, a tool that ran long. Layers 2 and 3 keep their
+    # thresholds: they take messages out of the view, cache or not.
+    compact_when_cache_cold: bool = True
+    # The pause for a model that names no prompt_cache_ttl_minutes. 30:
+    # measured on the OpenRouter routes, past 30 min a call read under 10 %
+    # from the cache (backend_affinity).
+    cache_cold_after_minutes: float = 30.0
+
     # The thresholds as shares of the model's context window (for_window): each
     # lowers its token value to share x window where that is less. The token
     # values assume a 200k-1M model -- on a 128k model layer1_threshold 140000
@@ -970,6 +983,7 @@ class LayeredCompactionStrategy:
         arrivals_only: bool = False,
         tokens_after_arrivals: int | None = None,
         min_reduction: float = 0.0,
+        cache_cold: bool = False,
     ) -> CompactionResult:
         """Apply layered compaction to messages.
 
@@ -994,6 +1008,10 @@ class LayeredCompactionStrategy:
             min_reduction: The hook's yield gate (config.min_reduction): a run
                 of layers 1-3 that takes less than this share of the context is
                 thrown away -- see _apply_layers_if_worth_it. 0 keeps every run.
+            cache_cold: The provider's prompt cache has expired since the
+                session's last call (compact_when_cache_cold): a rewrite costs
+                no cache, so Layer 1 runs as on /compact and min_reduction does
+                not weigh it.
             trigger_event: Optional event that triggered compaction:
                 - 'user_message': New user message arrived
                 - 'final_response': Agent sent final response
@@ -1006,7 +1024,7 @@ class LayeredCompactionStrategy:
         # Store session_id for use in _compact_multimodal_content
         self._current_session_id = session_id
         self._checkpoint_budget = checkpoint_text.CHECKPOINT_BUDGET_S
-        force = force or manual
+        force = force or manual or cache_cold
         if current_tokens is None:
             current_tokens = self._estimate_messages_tokens(messages)
         
@@ -1102,6 +1120,8 @@ class LayeredCompactionStrategy:
         triggers = []
         if manual:
             triggers.append("MANUAL")
+        if cache_cold:
+            triggers.append("CACHE_COLD")
         if bytes_exceeded:
             triggers.append(f"BYTES({request_bytes / (1024*1024):.1f}MB>"
                             f"{self.config.max_request_bytes / (1024*1024):.0f}MB)")
@@ -1146,8 +1166,8 @@ class LayeredCompactionStrategy:
         forced_media = bytes_exceeded or self._media_past_cap(result.modified_messages)
         if not rewrite_layers and min_reduction > 0 and not forced_media:
             return self._finalize(result)
-        if manual or min_reduction <= 0 or self.window_is_tight(current_tokens, context_window):
-            await self._apply_rewrites(result, current_tokens, manual, bytes_exceeded,
+        if manual or cache_cold or min_reduction <= 0 or self.window_is_tight(current_tokens, context_window):
+            await self._apply_rewrites(result, current_tokens, manual or cache_cold, bytes_exceeded,
                                        media_event, rewrite_layers)
             return self._finalize(result)
         if forced_media:

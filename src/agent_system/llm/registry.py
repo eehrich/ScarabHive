@@ -410,6 +410,8 @@ def build_client(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "L
                         ssl_verify=ssl_verify)
     # Read by the agent loop, not by the client: set here, once for every provider
     client.rate_limit_retry_seconds = cfg.rate_limit_retry_seconds
+    # Read by whoever judges whether a paused session's prefix is still cached (context_engineer)
+    client.prompt_cache_ttl_minutes = cfg.prompt_cache_ttl_minutes
     return client
 
 
