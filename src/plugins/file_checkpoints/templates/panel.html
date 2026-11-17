@@ -8,6 +8,8 @@
   .fc-hide-reviewed .fc-group:not(:has(.pk-card:not(.fc-all-reviewed), .fc-counted)) { display: none; }
   .fc-counted { font-size: var(--text-sm); padding: var(--space-1) var(--space-3); }
   .fc-time { font-size: var(--text-xs); white-space: nowrap; }
+  /* A path has no break of its own: without this it ran over the time and the buttons beside it. */
+  .fc-path { overflow-wrap: anywhere; min-width: min(24ch, 100%); }
 </style>{% endblock %}
 {% block toolbar %}<pk-session></pk-session>
 <label class="pk-switch"><input type="checkbox" role="switch" id="hideReviewed"> Hide reviewed</label>
