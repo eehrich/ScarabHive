@@ -203,8 +203,8 @@ plugins:
         - "data/comfyui"
         - "data/writer/assets"
         - "data/writer/covers"
-        # the image agent's own drawings, as reference for img2img / IPAdapter
-        - "data/workspace/images"
+        # drawings in the workspace (the image agent's, a project's), as reference for img2img / IPAdapter
+        - "data/workspace"
       workflows:
         - id: stable_audio
           name: "Stable Audio Generation"
