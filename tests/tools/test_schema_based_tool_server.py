@@ -584,3 +584,25 @@ async def test_a_schema_tool_whose_call_is_async_is_awaited(system_config, serve
 
     server = TestServer("test", system_config, server_config)
     assert await server.call("test_greet", {"name": "Ada"}) == {"message": "Hello, Ada!"}
+
+
+def test_a_status_query_is_known_to_the_server_and_its_key_never_reaches_the_entry(system_config, server_config):
+    """`status_query: true` beside `type: function` goes to the loop detection, not to the provider: the entry is
+    sent as it is, and an unknown key there can be refused. The loaded schema stays as it was read."""
+    schema = {"tools": [
+        {"type": "function", "status_query": True,
+         "function": {"name": "test_get_run", "description": "x", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "test_run", "description": "y", "parameters": {"type": "object"}}},
+        {"type": "function", "status_query": {"ignore": ["running_s"]},
+         "function": {"name": "test_job", "description": "z", "parameters": {"type": "object"}}},
+    ]}
+
+    class TestServer(SchemaBasedToolServer):
+        def _load_schema(self):
+            return schema
+
+    server = TestServer("test", system_config, server_config)
+
+    assert server.status_query_tools == {"test_get_run": frozenset(), "test_job": frozenset({"running_s"})}
+    assert all("status_query" not in tool for tool in server.get_tools())
+    assert schema["tools"][0]["status_query"] is True, "the loaded schema was changed"

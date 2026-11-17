@@ -6,8 +6,10 @@ with identical or similar arguments. This is a common issue with LLMs,
 especially Gemini, which can get "stuck" repeating the same action.
 
 Detection strategies:
-1. Exact match: Same tool + identical arguments
-2. Sequence detection: Same sequence of tools repeated
+1. Exact match: Same tool + identical arguments -- for a tool that declared
+   itself a status query, answered the same too (one whose answer changes
+   follows something that moves)
+2. Sequence detection: Same sequence of calls (and those answers) repeated
 3. Similarity: Same tool with very similar arguments (fuzzy matching)
 
 Intervention strategies:
@@ -25,19 +27,45 @@ from ...utils.json_utils import repair_json
 import logging
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 
+def _content_hash(content: Any, ignore: frozenset = frozenset()) -> str:
+    """The answer's fingerprint; a JSON object answer without the top-level keys in *ignore* (a clock)."""
+    if ignore:
+        try:
+            parsed = json.loads(content) if isinstance(content, str) else content
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            content = {key: value for key, value in parsed.items() if key not in ignore}
+    text = content if isinstance(content, str) else json.dumps(content, sort_keys=True, default=str)
+    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
 @dataclass
 class ToolCallRecord:
-    """Record of a single tool call for loop detection."""
+    """Record of a single tool call for loop detection.
+
+    A status query (a run's progress, a job's state; ``status_query`` in its
+    schema) is asked the same way again and again by design: it repeats only
+    with the same arguments AND the same answer, its clock left out -- while
+    its answer changes, the agent follows something that moves, not stuck.
+    Until the call has run its answer is taken to be the one its last
+    identical call got (record_and_check), and record_results puts the real
+    one in (``answered``). Any other tool keeps an empty answer: the call alone
+    decides.
+    """
     tool_name: str
     arguments_hash: str
     arguments: Dict[str, Any]
     step: int
-    
+    call_id: str = ""
+    result_hash: str = ""
+    answered: bool = False
+
     @classmethod
     def from_tool_call(cls, tool_call: Dict[str, Any], step: int) -> "ToolCallRecord":
         """Create a record from a tool call dict."""
@@ -65,12 +93,17 @@ class ToolCallRecord:
             tool_name=tool_name,
             arguments_hash=args_hash,
             arguments=arguments,
-            step=step
+            step=step,
+            call_id=str(tool_call.get("id") or ""),
         )
-    
-    def signature(self) -> str:
-        """Return a signature for exact match detection."""
+
+    def call_key(self) -> str:
+        """The call alone: tool and arguments."""
         return f"{self.tool_name}:{self.arguments_hash}"
+
+    def signature(self) -> str:
+        """The call and its answer: what has to repeat for a loop."""
+        return f"{self.call_key()}:{self.result_hash}"
 
 
 @dataclass
@@ -194,8 +227,11 @@ class ToolCallLoopDetector:
             return LoopDetectionResult()
         self._current_step = step
         record = ToolCallRecord.from_tool_call(tool_call, step)
+        # Not run yet: taken to get the answer its last identical call got (record_results corrects it).
+        record.result_hash = next((r.result_hash for r in reversed(self._history)
+                                   if r.call_key() == record.call_key()), "")
         signature = record.signature()
-        
+
         # Add to history
         self._history.append(record)
         
@@ -272,7 +308,35 @@ class ToolCallLoopDetector:
                     worst_result = result
         
         return worst_result
-    
+
+    def record_results(self, tool_messages: List[Any],
+                       status_query: Callable[[str], Optional[frozenset]]) -> None:
+        """Put the answers the status queries of this step got into their records, matched by call id -- of this
+        step only: a provider that numbers its calls per answer (call_0, call_1) reuses the ids. A call without an
+        answer (a blocked one) keeps the one it was taken to get.
+
+        Only a tool that declared itself a status query: *status_query* gives the answer keys its comparison
+        leaves out, None for any other tool. Any other answer carries what changes on every run whether or not
+        anything moved -- the terminal's execution_time -- and the same failing command run five times would
+        never be a loop again."""
+        if not self.enabled:
+            return
+        answers = {}
+        for message in tool_messages:
+            call_id = (message.get("tool_call_id") if isinstance(message, dict)
+                       else getattr(message, "tool_call_id", None))
+            if call_id:
+                content = (message.get("content") if isinstance(message, dict)
+                           else getattr(message, "content", None))
+                answers[str(call_id)] = content
+        for record in self._history:
+            if record.step != self._current_step or record.call_id not in answers:
+                continue
+            ignore = status_query(record.tool_name)
+            if ignore is not None:
+                record.result_hash = _content_hash(answers[record.call_id], ignore)
+                record.answered = True
+
     def _check_sequence_pattern(self) -> Optional[Tuple[List[str], int]]:
         """Check for repeated sequences of tool calls.
         
@@ -299,7 +363,13 @@ class ToolCallLoopDetector:
                         count += 1
                     else:
                         break
-                
+
+                # A status query of the newest occurrence not answered yet is taken to get its predecessor's
+                # answer, so it always matches: no evidence. Two answered alike make the loop, or every second
+                # round of a poll (a wait, then a status query) would be one.
+                if any(r.result_hash and not r.answered for r in list(self._history)[-seq_len:]):
+                    count -= 1
+
                 if count >= self.sequence_threshold:
                     tool_names = [r.tool_name for r in list(self._history)[-seq_len:]]
                     return (tool_names, count)

@@ -1689,6 +1689,19 @@ async def my_tool(self, params: dict):
 
 ## Tools and Parameters
 
+### Status queries
+
+A tool the model asks the same way again and again by design (a run's state)
+declares `status_query: true` beside `type: function` in `schema.yaml`. The
+loop detection then counts a repeat of it only when the answer is the same
+too: a poll whose answer changes follows something that moves. An answer that
+carries a clock names it, `status_query: {ignore: [running_s]}` (top-level
+keys of a JSON object answer); otherwise every poll differs and a run that
+stands still is never a loop. Any other tool repeats on the call alone,
+whatever its answer carries. `get_tools()` of
+`SchemaBasedToolMixin` takes the key off the entry before the entry reaches a
+provider; a server that overrides `get_tools` has to do the same.
+
 ### Parameter Validation
 
 The framework does no JSON-schema validation of tool arguments — it only rejects

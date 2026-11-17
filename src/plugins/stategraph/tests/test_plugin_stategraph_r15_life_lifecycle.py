@@ -720,3 +720,11 @@ async def test_feat4_a_resume_says_the_companion_module_changed(servers, tmp_pat
     [changed] = [r["data"] for r in _lifecycle(second, run_id) if r["status"] == "code_changed"]
     assert "companion module hold.py differs from the run's snapshot" in changed["why"], changed
     assert any("code_changed" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+
+
+def test_get_run_is_a_status_query_with_its_clock_left_out(tmp_path):
+    """The loop detection reads this from the rendered schema: a poll of a run is no loop while the run moves,
+    and its heartbeat (updated_at, lease_until) moving is not the run moving."""
+    server = make_server(tmp_path)
+    assert server.status_query_tools == {"stategraph_get_run": frozenset({"updated_at", "lease_until"})}
+    assert all("status_query" not in tool for tool in server.get_tools())

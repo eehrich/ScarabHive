@@ -89,6 +89,10 @@ class ToolStepMixin:
             async for event in events:
                 yield event
 
+        # What the status queries were answered: a repeat of one counts towards a loop only with the same answer.
+        run.loop_detector.record_results(st.tool_messages,
+                                         functools.partial(self._status_query_ignores, run.tool_name_mapping))
+
         await self._count_all_error_step(run, st)
 
         self._merge_tool_results(run, st)
@@ -116,6 +120,18 @@ class ToolStepMixin:
 
         # Continue to next iteration to let LLM respond to tool results
         st.end = StepEnd.NEXT_STEP
+
+    def _status_query_ignores(self: Agent, tool_name_mapping: dict, called: str):
+        """The answer keys to leave out when the tool the model called by *called* declared itself a status query
+        (schema_mixin), None for any other tool. The mapping names the tool's SERVER (tool_schema_builder), the
+        server's declaration the tool."""
+        try:
+            server, _ = self._resolve_flat_tool_name(tool_name_mapping.get(called) or called)
+            declared = getattr(server, "status_query_tools", None)
+            return declared.get(called) if isinstance(declared, dict) else None
+        except Exception:  # noqa: BLE001 - a server whose schema fails to load is no status query; the step goes on
+            logger.debug("status_query lookup failed for %s", called, exc_info=True)
+            return None
 
     async def _police_tool_loop(self: Agent, run: LoopState, st: StepState):
         """Check the calls for repeated patterns that say the agent is stuck: an intervention note,

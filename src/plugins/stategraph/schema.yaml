@@ -151,6 +151,8 @@ tools:
         additionalProperties: false
 
   - type: function
+    # asked the same way again and again: a repeat is a loop only with the same answer, its clock left out
+    status_query: {ignore: [updated_at, lease_until]}
     function:
       name: "{{ name }}_get_run"
       description: "A run's status, frames (active states, context), output or error, what it waits for, and its last journal rows. An ended run read without steps, kinds, state or after comes brief: its output or error, its frames without context, its last 5 journal rows; with a cap, output_tokens against max_output_tokens."

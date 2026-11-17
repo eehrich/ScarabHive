@@ -8,6 +8,8 @@ Verifies that the ToolCallLoopDetector correctly identifies:
 5. Per-request isolation (no cross-contamination between requests)
 """
 
+import pytest
+
 from agent_system.servers.agent.loop_detection import (
     ToolCallLoopDetector,
     ToolCallRecord,
@@ -443,3 +445,161 @@ class TestPerRequestIsolation:
         assert det_x._history is not det_y._history, (
             "Instances must not share the same history deque"
         )
+
+
+class TestRepeatsWithAnswers:
+    """A call repeats only with the same answer: a status query asked the same way
+    again and again follows something that moves while its answer changes."""
+
+    @staticmethod
+    def _poll(detector, step, answer):
+        call = {"id": f"call_{step}", "function": {"name": "get_run", "arguments": '{"run_id": "r1"}'}}
+        result = detector.record_and_check(call, step=step)
+        detector.record_results([{"role": "tool", "tool_call_id": f"call_{step}", "content": answer}],
+                                lambda name: frozenset() if name == "get_run" else None)
+        return result
+
+    def test_a_query_answered_anew_each_time_is_no_loop(self):
+        detector = ToolCallLoopDetector(exact_match_threshold=3, block_after_threshold=5)
+        results = [self._poll(detector, step, f"running {step}s") for step in range(6)]
+        assert not any(r.is_loop for r in results), [r.intervention for r in results]
+        assert detector.get_blocked_tools() == set()
+
+    def test_a_query_answered_the_same_each_time_is_a_loop(self):
+        detector = ToolCallLoopDetector(exact_match_threshold=3)
+        results = [self._poll(detector, step, "running") for step in range(3)]
+        assert [r.is_loop for r in results] == [False, False, True]
+
+    def test_a_streak_of_the_same_answer_counts_from_the_last_change(self):
+        detector = ToolCallLoopDetector(exact_match_threshold=3)
+        answers = ["a", "b", "b", "b"]
+        results = [self._poll(detector, step, answer) for step, answer in enumerate(answers)]
+        assert [r.is_loop for r in results] == [False, False, False, True]
+
+    def test_a_sequence_whose_answers_change_is_no_loop(self):
+        """A wait between two polls: the pair repeats, the answers do not."""
+        detector = ToolCallLoopDetector(sequence_threshold=2)
+        results = []
+        for step in range(4):
+            calls = [{"id": "call_0", "function": {"name": "sleep", "arguments": '{"s": 30}'}},
+                     {"id": "call_1", "function": {"name": "get_run", "arguments": '{"run_id": "r1"}'}}]
+            results.append(detector.record_batch_and_check(calls, step=step))
+            detector.record_results([{"tool_call_id": "call_0", "content": "slept"},
+                                     {"tool_call_id": "call_1", "content": f"running {step}"}],
+                                    lambda name: frozenset() if name == "get_run" else None)
+        assert not any(r.is_loop for r in results), [r.intervention for r in results]
+
+    def test_a_sequence_answered_alike_is_a_loop_once_two_rounds_are_answered(self):
+        detector = ToolCallLoopDetector(sequence_threshold=2)
+        results = []
+        for step in range(3):
+            calls = [{"id": "call_0", "function": {"name": "sleep", "arguments": '{"s": 30}'}},
+                     {"id": "call_1", "function": {"name": "get_run", "arguments": '{"run_id": "r1"}'}}]
+            results.append(detector.record_batch_and_check(calls, step=step))
+            detector.record_results([{"tool_call_id": "call_0", "content": "slept"},
+                                     {"tool_call_id": "call_1", "content": "running"}],
+                                    lambda name: frozenset() if name == "get_run" else None)
+        assert [r.is_loop for r in results] == [False, False, True]
+        assert results[-1].loop_type == "sequence"
+
+    def test_a_poll_whose_clock_alone_changes_is_a_loop(self):
+        """The answer's clock, declared, is left out: a run that stands still repeats."""
+        detector = ToolCallLoopDetector(exact_match_threshold=3)
+        results = []
+        for step in range(3):
+            call = {"id": f"call_{step}", "function": {"name": "get_run", "arguments": '{"run_id": "r1"}'}}
+            results.append(detector.record_and_check(call, step=step))
+            detector.record_results([{"tool_call_id": f"call_{step}",
+                                      "content": '{"state": "running", "running_s": %d}' % (10 * step)}],
+                                    lambda name: frozenset({"running_s"}) if name == "get_run" else None)
+        assert [r.is_loop for r in results] == [False, False, True]
+
+    def test_a_sequence_answered_in_full_counts_without_a_discount(self):
+        """One call per step: the pair is answered in full when the next one is asked -- two answered alike
+        are a loop then, not one call later."""
+        detector = ToolCallLoopDetector(sequence_threshold=2)
+        loops = []
+        for step in range(4):
+            name = "sleep" if step % 2 == 0 else "get_run"
+            call = {"id": f"call_{step}", "function": {"name": name, "arguments": "{}"}}
+            loops.append(detector.record_and_check(call, step=step).is_loop)
+            detector.record_results([{"tool_call_id": f"call_{step}", "content": "A"}],
+                                    lambda n: frozenset() if n == "get_run" else None)
+        # sleep, get_run(A), sleep, then get_run predicted A -- not answered yet, no evidence
+        assert loops == [False, False, False, False]
+        call = {"id": "call_4", "function": {"name": "sleep", "arguments": "{}"}}
+        assert detector.record_and_check(call, step=4).is_loop, "two answered pairs alike went unseen"
+
+    def test_an_id_used_again_in_a_later_step_leaves_the_earlier_answer(self):
+        """A provider numbering its calls per answer (call_0 every step) must not
+        write the new answer into the old calls: that made the answers alike."""
+        detector = ToolCallLoopDetector(exact_match_threshold=3)
+        for step, answer in enumerate(["a", "b"]):
+            detector.record_and_check({"id": "call_0", "function": {"name": "t", "arguments": "{}"}}, step=step)
+            detector.record_results([{"tool_call_id": "call_0", "content": answer}], lambda name: frozenset())
+        result = detector.record_and_check({"id": "call_0", "function": {"name": "t", "arguments": "{}"}}, step=2)
+        assert not result.is_loop
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_query, changing", [(True, True), (True, False), (False, True)])
+async def test_the_agent_loop_hands_the_answers_to_the_detector(caplog, monkeypatch, status_query, changing):
+    """Through the real step loop and the real lookup: the run's tool-name mapping names the tool's SERVER, the
+    server's declaration the tool. The same call every step, answered anew each time, is no loop for a tool its
+    server declares a status query; answered alike it is, and so is any other tool whatever its answers -- those
+    cases show the fixture reaches the detector at all."""
+    import itertools
+    from types import SimpleNamespace
+
+    import test_agent_max_steps_final_call as final_call
+    from agent_system.llm.models import ChatMessage
+    from agent_system.servers.agent.tool_schema_builder import ToolSchemaBuilder
+    from test_reasoning_loop_wiring import _real_agent
+
+    tool = "statusy_get_run"
+    monkeypatch.setattr(final_call, "_tool_call", lambda n, args: {
+        "id": f"call_{n}", "type": "function", "function": {"name": tool, "arguments": args}})
+
+    async def schemas(self, usable_tools, **kwargs):
+        entry = {"type": "function", "function": {"name": tool, "description": "x",
+                                                  "parameters": {"type": "object", "properties": {}}}}
+        return [entry], {tool: "statusy"}, [tool], [tool]
+    monkeypatch.setattr(ToolSchemaBuilder, "build_schemas", schemas)
+
+    llm = final_call._LLM(same_args=True, text_on_final="done")
+    agent = _real_agent()
+    server = SimpleNamespace(status_query_tools={tool: frozenset()} if status_query else {})
+    # Only the server's own name finds it, as the registry does.
+    agent._get_server_from_any_registry = lambda name: server if name == "statusy" else None
+    agent.agent_config.max_steps = 5
+    agent._loop_detection_config = {"history_size": 20, "exact_match_threshold": 3, "sequence_threshold": 2,
+                                    "block_after_threshold": 5, "auto_unblock_after_steps": 3}
+    agent.llm = llm
+    llm.agent = agent
+    count = itertools.count()
+
+    async def answering(**kwargs):
+        call = kwargs["tool_calls"][0]
+        content = f"running {next(count)}s" if changing else "running"
+        yield {"type": "complete", "messages": [ChatMessage(role="tool", tool_call_id=call["id"],
+                                                            name=tool, content=content)]}
+    agent._tool_execution_manager.execute_tools_streaming = answering
+    with caplog.at_level("WARNING"):
+        [event async for event in agent.run_events("poll it", request_id="loop_answers", session_id="loop_answers")]
+
+    assert ("Tool loop detected" in caplog.text) is not (status_query and changing), caplog.text[-2000:]
+
+
+def test_a_tool_that_is_no_status_query_loops_whatever_its_answer_carries():
+    """The terminal answers with its execution_time, different every run: the same failing command five times
+    is still a loop -- the answer counts only for a declared status query."""
+    detector = ToolCallLoopDetector(exact_match_threshold=3, block_after_threshold=5)
+    results = []
+    for step in range(5):
+        call = {"id": f"call_{step}", "function": {"name": "terminal_run", "arguments": '{"command": "pytest"}'}}
+        results.append(detector.record_and_check(call, step=step))
+        detector.record_results([{"tool_call_id": f"call_{step}",
+                                  "content": '{"exit_code": 1, "execution_time": %f}' % (1.5 + step)}],
+                                lambda name: frozenset() if name == "get_run" else None)
+    assert [r.is_loop for r in results] == [False, False, True, True, True]
+    assert results[-1].should_block_tool

@@ -67,6 +67,15 @@ web_ui: {}      # optional, see skill panel-authoring
 - Descriptions are the contract with the model: what, when, return value, write
   protection, recovery (example `json_store/schema.yaml`). Overridable per instance
   via `self_tool_descriptions` (server level).
+- **`status_query: true`** beside `type: function`: a tool the model asks the same way
+  again and again by design (a run's state, `coding_cli`'s `get_run`). The loop
+  detection then counts a repeat only with the same answer; any other tool repeats on
+  the call alone, whatever its answer carries (the terminal's `execution_time`).
+  An answer with a clock names it: `status_query: {ignore: [running_s]}` (top-level
+  keys of a JSON object answer) -- else every poll differs and a run that stands
+  still is never a loop. `SchemaBasedToolMixin.get_tools()` takes the key off the
+  entry -- the entry goes to the provider as it is. A server that overrides
+  `get_tools` loses that.
 
 ## Handler contract
 

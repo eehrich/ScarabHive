@@ -87,8 +87,30 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
                 f"{self.name} plugin schema 'tools' must be a list"
             )
 
+        # `status_query: true` beside `type: function`: the tool is asked the same way again and again by design (a
+        # run's state); the loop detection counts a repeat only with the same answer (loop_detection.py).
+        # `status_query: {ignore: [running_s]}` names the top-level keys of its answer that change on every call
+        # whether or not anything moved (a clock) -- left out, a poll of a run that stands still repeats.
+        # Taken off the entry here: the entry goes to the provider as it is, and an unknown key there can be
+        # refused. Copies: the loaded schema itself stays as it was read.
+        self._status_query_tools = {}
+        for tool in tools:
+            declared = tool.get("status_query") if isinstance(tool, dict) else None
+            if declared:
+                ignore = declared.get("ignore") if isinstance(declared, dict) else None
+                self._status_query_tools[str((tool.get("function") or {}).get("name"))] = frozenset(
+                    str(key) for key in (ignore if isinstance(ignore, list) else ()))
+        tools = [{k: v for k, v in tool.items() if k != "status_query"} if isinstance(tool, dict) else tool
+                 for tool in tools]
         self._tools_cache = tools
         return tools
+
+    @property
+    def status_query_tools(self) -> dict[str, frozenset[str]]:
+        """The tools of this server that declared ``status_query`` (get_tools), each with the answer keys its
+        comparison leaves out."""
+        self.get_tools()
+        return getattr(self, "_status_query_tools", {})
 
     def clear_schema_cache(self) -> None:
         """Clear the cached schema and tools data.

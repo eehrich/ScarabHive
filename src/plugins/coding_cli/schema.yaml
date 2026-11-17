@@ -53,6 +53,8 @@ tools:
         additionalProperties: false
 
   - type: function
+    # asked the same way again and again: a repeat is a loop only with the same answer, its clock left out
+    status_query: {ignore: [running_s]}
     function:
       name: "{{ name }}_get_run"
       description: "A run's state: while it runs, its latest actions; once it ended, the same answer run_task gives. wait_s waits up to that long for the end -- use it when you cannot be woken, instead of asking again and again."
