@@ -355,7 +355,7 @@ config:
     type: number
     default: 30
     minimum: 1
-    description: "The pause after which the cache counts as cold for a model that names no prompt_cache_ttl_minutes. 30: on the OpenRouter routes a call read under 10 % from the cache past 30 minutes."
+    description: "The pause after which the cache counts as cold for a model that names no prompt_cache_ttl_minutes. 30: measured, most routes keep a session's prefix 15-30 minutes (0-3 % read from the cache past 30); a route that keeps it longer names its own prompt_cache_ttl_minutes."
 
   layer1_window_share:
     type: number

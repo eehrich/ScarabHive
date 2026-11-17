@@ -417,9 +417,10 @@ The pause is the time since the session's last call in the
 @{tt}context_usage_tracker@{utt} (its database: a wake in a new process
 reads it too); without the tracker nothing happens. The cache's lifetime
 is the model's @{tt}prompt_cache_ttl_minutes@{utt} in @{tt}llm.yaml@{utt},
-for a model that names none @{tt}cache_cold_after_minutes@{utt} (30: on
-the OpenRouter routes a call read under 10 % from the cache past half an
-hour). The log line says @{tt}CACHE_COLD@{utt}.
+for a model that names none @{tt}cache_cold_after_minutes@{utt} (30:
+measured, most routes keep a session's prefix 15 to 30 minutes, past 30
+a call read 0-3 % from the cache; a route that keeps it longer names its
+own value). The log line says @{tt}CACHE_COLD@{utt}.
 
 @{h2}The window of the model
 

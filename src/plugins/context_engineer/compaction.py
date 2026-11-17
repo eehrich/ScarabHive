@@ -154,8 +154,10 @@ class CompactionConfig:
     # thresholds: they take messages out of the view, cache or not.
     compact_when_cache_cold: bool = True
     # The pause for a model that names no prompt_cache_ttl_minutes. 30:
-    # measured on the OpenRouter routes, past 30 min a call read under 10 %
-    # from the cache (backend_affinity).
+    # measured on the server (27.08.-17.11.2026), most routes keep a
+    # session's prefix 15-30 min (DeepSeek V4 Flash on OpenRouter 7 % cached
+    # after 15-30 min, Gemini Flash 11 %, both 0-3 % past 30); a route that
+    # keeps it longer names its own (DeepSeek V4.1 Flash: 120).
     cache_cold_after_minutes: float = 30.0
 
     # The thresholds as shares of the model's context window (for_window): each
