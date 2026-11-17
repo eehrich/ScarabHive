@@ -1592,6 +1592,84 @@ async def test_a_stopped_turn_stops_the_run_it_waits_for(repo):
     assert not alive(record["pid"])
 
 
+@pytest.mark.parametrize("turn", ["the caller's", "a sub-agent's under it"])
+async def test_a_stopped_turn_stops_the_run_it_was_handed(repo, monkeypatch, turn):
+    """The call answered with the run id and the turn went on: a stop of that turn takes the run along, and its
+    wake does not ring for the turn the viewer just stopped. A sub-agent's call goes the same way when its caller
+    is stopped (the manager cancels by prefix)."""
+    from agent_system.core.cancellation import get_cancellation_manager
+
+    rings = ring_recorder(monkeypatch)
+    manager = get_cancellation_manager()
+    root = "turnstop1"
+    owner = root if turn == "the caller's" else f"{root}_003_async_x1"
+    manager.create_token(root)
+    if owner != root:
+        manager.create_token(owner)
+    try:
+        server = make_server(repo, wait_s=0.2)
+        result, _ = await call(server, "run_task", task="SLEEP 30", _request_id=f"{owner}_007")
+        assert result["state"] == "running" and result["wake"] is True
+        manager.cancel_request(root)
+        await ended(server, result["run_id"])
+        final, _ = await call(server, "get_run", run_id=result["run_id"])
+        assert final["state"] == "cancelled" and "stopped with the turn it was handed to" in final["note"], final
+        assert rings == [] and not server._file(result["run_id"], "wake").exists()
+    finally:
+        manager.unregister_request(root)
+        manager.unregister_request(owner)
+
+
+async def test_a_turn_stopped_while_its_run_is_being_stopped_is_not_woken(repo, monkeypatch):
+    """The run was being stopped already (a cancel, the time limit) when its turn was stopped: the loop looks
+    no more, the end must -- else the session the viewer just stopped is woken."""
+    rings = ring_recorder(monkeypatch)
+    server = make_server(repo, wait_s=0.2)
+    result, _ = await call(server, "run_task", task="SLEEP 30")
+    pid = server._load(result["run_id"])["pid"]
+    monkeypatch.setattr(server, "_turn_stopped", lambda run_id: not alive(pid))   # stopped as it goes
+    server._stop(result["run_id"], "cancelled on request")
+    await ended(server, result["run_id"])
+    assert server._load(result["run_id"])["state"] == "cancelled"
+    assert rings == [] and not server._file(result["run_id"], "wake").exists()
+
+
+async def test_a_caller_without_a_wake_says_itself_whether_its_stop_is_the_runs(repo):
+    """A state machine (wake false) waits with get_run and its stop_if_cancelled: its cancel is not handed on."""
+    from agent_system.core.cancellation import get_cancellation_manager
+
+    manager = get_cancellation_manager()
+    manager.create_token("turnsm1")
+    try:
+        server = make_server(repo, wait_s=0.2)
+        result, _ = await call(server, "run_task", task="SLEEP 3\nWRITE b.txt x", wake=False, _request_id="turnsm1_002")
+        manager.cancel_request("turnsm1")
+        await ended(server, result["run_id"])
+        final, _ = await call(server, "get_run", run_id=result["run_id"])
+        assert final["state"] == "done", final
+    finally:
+        manager.unregister_request("turnsm1")
+
+
+async def test_a_turn_that_ended_leaves_the_run_it_was_handed_on_its_own(repo, monkeypatch):
+    """Over, the turn has no say: a stop of the session later is a stop of another turn."""
+    from agent_system.core.cancellation import get_cancellation_manager
+
+    rings = ring_recorder(monkeypatch)
+    manager = get_cancellation_manager()
+    token = manager.create_token("turnover1")
+    server = make_server(repo, wait_s=0.2)
+    # Longer than the wait below: a run that ended before the cancel would pass this test whatever the code did.
+    result, _ = await call(server, "run_task", task="SLEEP 6\nWRITE b.txt x", _request_id="turnover1_004")
+    manager.unregister_request("turnover1")
+    await asyncio.sleep(3 * server_module.POLL_S)      # the watch sees the turn gone
+    token.cancel()
+    await ended(server, result["run_id"])
+    final, _ = await call(server, "get_run", run_id=result["run_id"])
+    assert final["state"] == "done", final
+    assert [r[:2] for r in rings] == [("s1", "admin")]
+
+
 @pytest.mark.parametrize("age_s, taken_over", [(3600, True), (0, False)])
 async def test_a_claim_left_by_a_dead_process_is_taken_over(repo, age_s, taken_over):
     """An API restart while a run was being finalized left its claim behind."""
@@ -2936,3 +3014,11 @@ async def test_a_runs_answer_carries_its_token_counts_numbers_only(repo, log):
     assert result["state"] == "done", result
     assert result["usage"] == {"input_tokens": 18, "cache_creation_input_tokens": 661,
                                "cache_read_input_tokens": 5963, "output_tokens": 291}
+
+
+def test_get_run_is_a_status_query_with_its_clock_left_out(repo):
+    """The loop detection reads this from the rendered schema: a poll of a run is no loop while the run moves,
+    and running_s alone moving is not the run moving."""
+    server = make_server(repo)
+    assert server.status_query_tools == {"coding_cli_get_run": frozenset({"running_s"})}
+    assert all("status_query" not in tool for tool in server.get_tools())

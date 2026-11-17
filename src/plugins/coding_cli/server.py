@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from agent_system.utils.proctree import run_bounded
+from agent_system.core.cancellation import CancellationToken, get_cancellation_manager
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
 from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
@@ -503,6 +504,20 @@ def _session_vars(agent: Any, session_id: str) -> Optional[dict]:
     return dict(tracker.get_session_template_vars(session_id) or {}) or None
 
 
+def _turn_token(request_id: Any) -> Optional[CancellationToken]:
+    """The cancellation token of the turn that made a call. A call's request id is its turn's with a suffix (``abc_007``,
+    a sub-agent's ``abc_007_async_x1_003``), so the nearest id up the chain that holds a token is that turn's; a stop
+    of a turn above it reaches it too, the manager cancels by prefix. None for a caller without one (a state machine)."""
+    manager = get_cancellation_manager()
+    rid = str(request_id or "")
+    while rid:
+        token = manager.get_token(rid)
+        if token is not None:
+            return token
+        rid = rid.rpartition("_")[0]
+    return None
+
+
 class CodingCliServer(SchemaBasedToolServer):
     """Claude Code runs. Offered only when the executable and a workdir are there."""
 
@@ -628,6 +643,8 @@ class CodingCliServer(SchemaBasedToolServer):
         # while the call that started it waits.
         self._live: dict[str, LiveRun] = {}
         self._rings: dict[str, asyncio.Task] = {}
+        # run id -> the cancellation token of the turn that was handed the run, while that turn goes on (_turn_stopped).
+        self._turns: dict[str, CancellationToken] = {}
         self._starting: set[str] = set()
         self._sweeper: Optional[asyncio.Task] = None
         self._stopped = False
@@ -1225,6 +1242,12 @@ class CodingCliServer(SchemaBasedToolServer):
         # marked, the run is stopped should its owner die.
         with contextlib.suppress(OSError):
             self._file(run_id, "answered").touch()
+        # A stop of the turn now handed the run takes the run along (_monitor); its watch is still on, or the run
+        # has ended and nothing is left to stop. Only for a caller with a wake, a turn somebody can stop: one
+        # without (a state machine) says with get_run's stop_if_cancelled whether its stop is the run's.
+        token = _turn_token(request_id) if wake else None
+        if token is not None and not monitor.done():
+            self._turns[run_id] = token
         return answer
 
     def _ended(self, run_id: str) -> bool:
@@ -1561,6 +1584,11 @@ class CodingCliServer(SchemaBasedToolServer):
                     # A stop sent while the run had no process yet (cancel_run).
                     await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
                     stopped = True
+                elif not stopped and self._turn_stopped(run_id):
+                    # Its wake first: the turn that would be woken is the one the viewer stopped.
+                    self._drop_wake(run_id)
+                    await self._stop_run(record, "stopped with the turn it was handed to")
+                    stopped = True
                 elif time.time() > deadline:
                     limit = self._limit_s(record) / 60
                     await self._stop_run(record, f"stopped after the time limit of {limit:.0f} min")
@@ -1596,6 +1624,10 @@ class CodingCliServer(SchemaBasedToolServer):
                 lines = [line for event in found for line in cli.actions(event, root, tools=live is None)]
                 if lines:
                     await listener.progress(lines[-1] if len(lines) == 1 else f"{lines[-1]} (+{len(lines) - 1})")
+            if self._turn_stopped(run_id):
+                # Ended on its own -- the run was being stopped already (a cancel, the time limit), and the loop
+                # looked no more when its turn was stopped: no wake for that turn either.
+                self._drop_wake(run_id)
             # What the process wrote between the last poll and its exit.
             found = cli.events_from(self._file(run_id, "jsonl"), offset)[0]
             if not adopted:
@@ -1618,6 +1650,21 @@ class CodingCliServer(SchemaBasedToolServer):
             logger.exception("coding_cli: watching run %s failed", run_id)
         finally:
             self._live.pop(run_id, None)
+            self._turns.pop(run_id, None)
+
+    def _turn_stopped(self, run_id: str) -> bool:
+        """Whether the turn the run was handed to has been stopped. Once that turn is over (its token is gone from
+        the cancellation manager) the run is on its own and this forgets it: a stop of a later turn is not one of
+        the turn that started the run."""
+        token = self._turns.get(run_id)
+        if token is None:
+            return False
+        if token.is_cancelled:
+            self._turns.pop(run_id, None)
+            return True
+        if get_cancellation_manager().get_token(token.request_id) is not token:
+            self._turns.pop(run_id, None)
+        return False
 
     async def _settle(self, run_id: str, reader: str = "") -> dict:
         """The record, finalized first when its process is gone or past its

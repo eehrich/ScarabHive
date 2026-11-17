@@ -115,9 +115,16 @@ plugin stopped while the call waits stops the run as well -- unless its
 process has ended already, whose own end stands -- and that call answers
 with the run as it ended (waiting for a finalize already under way) instead
 of failing. Once the
-call has answered, only @{tt}cancel_run@{utt}, the time limit or a
+call has answered, @{tt}cancel_run@{utt}, the time limit or a
 @{tt}get_run@{utt} with @{tt}stop_if_cancelled: true@{utt} cancelled while
-it waits stops it.
+it waits stops it -- and, for a call with a wake, a stop of the turn it
+answered while that turn still goes on (it polls the run, a sub-agent waits
+for it): "stopped with the turn it was handed to", and no wake rings for the
+turn just stopped. A stop of the caller above a sub-agent is one of the
+sub-agent's turn too, and so is a turn that fails: the core cancels what
+runs under a failed turn, its sub-agents as well. Once that turn is over,
+the run is on its own: a stop of a later turn of the session leaves it
+running.
 
 @{h2}The end
 
