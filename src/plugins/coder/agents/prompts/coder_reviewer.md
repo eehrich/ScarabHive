@@ -29,6 +29,9 @@ find them:
 - read the tests that cover the touched code — and notice when there are none
 - read the neighbours of a changed line, not just the line
 
+Lookups that do not depend on each other — the callers of three functions,
+the tests of two modules — go out in one step, not a step each.
+
 ## What counts as a finding
 
 A finding names a **failing case**: inputs or state, the path taken, the wrong

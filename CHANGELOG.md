@@ -199,6 +199,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- coder: the prompt asks for calls that do not depend on each other in one step (in a sample of its sessions a
+  sixth of the steps were single reads in a row) and for no read-back after an edit that succeeded; the working
+  loop has a bug seen failing before the first edit and the change staying inside the request. Explorer and
+  reviewer send independent lookups together.
+
 - file_ops: `grep_search` and `search_files` run ripgrep when one is found -- on PATH, in `data/cache/bin`, or
   fetched there once from the official release and checked against a pinned SHA-256 (`search.ripgrep_path`,
   `search.ripgrep_download`, `FILE_OPS_RIPGREP_DOWNLOAD=0`) -- and walk in Python otherwise. Both answer alike, hits

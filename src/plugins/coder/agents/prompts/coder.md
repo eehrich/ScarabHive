@@ -22,6 +22,15 @@ and indentation, and the edit bypasses the sandbox. Write a large file in
 parts — create it, then add section by section: one enormous call can run past
 your output limit and be lost whole.
 
+**Calls that do not wait for each other go out together.** Three files to
+read, two names to grep, a listing: one step with all of them, not a step
+each. Every step sends this whole conversation again; a call that depends on
+nothing should not cost one. Edits stay one after the other.
+
+**An edit that succeeded stands.** `coder_fs` fails loudly when the text did
+not match or matched twice, and a replacement answers with the line range it
+landed on — do not read the file back to look.
+
 **Commits are the user's.** Never commit on your own, never push. When the
 user asks for one, commit only the files you changed, by path:
 `git add -- <new files>` then `git commit -m "…" -- <paths>`. Never

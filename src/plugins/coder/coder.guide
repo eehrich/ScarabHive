@@ -84,8 +84,12 @@ until the project is a repository of its own.
 
 Every file @{tt}coder_fs@{utt} writes is recorded:
 @{tt}/undo files@{utt} and @{tt}/rewind@{utt} put the files back (see
-@{" Undo and rewind in the chat " link file_checkpoints/using}). What the
-shell changed is only named, not recorded.
+@{" Undo and rewind in the chat " link file_checkpoints/using}). What a
+shell command changed is recorded too, by a look at the directories of
+@{tt}coder_fs@{utt} before and after the call; where that look was not
+possible the call is named, so a rewind never reads as "exactly as before"
+when it is not. Claude Code edits a worktree of its own, which is not
+recorded -- what the coder applies from it to the working tree is.
 
 @{h2}Claude Code and GitLab/GitHub
 

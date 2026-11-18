@@ -2,7 +2,7 @@
 name: coding-harness
 description: The working loop for a coding change — understand the real flow before editing, plan as a task list, fix the root cause rather than the reported symptom, verify what you claim, and have the finished change attacked before calling it done. Use for any request to write, fix, refactor or review code.
 metadata:
-  version: '1.2.0'
+  version: '1.3.0'
 ---
 
 # The loop
@@ -17,6 +17,11 @@ finally writes. Read the callers of what you are about to change.
 
 A small diff in the wrong place is a second bug. Read fully, then be brief —
 brevity belongs to the solution, never to the reading.
+
+**A bug: see it fail first.** One command or test that goes red on *this*
+bug, run before the first edit — without it "fixed" only means "changed". The
+same command going green is your proof at the end. Hard to make it fail →
+that is what your `diagnosing-bugs` skill is for.
 
 **Answer your own questions first.** One real exploration pass before you ask
 anything. Then ask only what reading cannot settle: which behaviour they
@@ -52,6 +57,12 @@ codebase → standard library → a dependency already installed → the smalles
 thing that works.
 
 A re-implementation of what sits a few files over will drift from it.
+
+**Stay inside the request.** Write like the file you are in — its naming, its
+error handling, its imports — and leave alone what is a matter of taste: no
+drive-by refactor, no reformatting, no renaming, no file beyond the change
+and its check. A real bug next door is not taste — section 3 holds for it;
+fix it and name it in your report as a change of its own.
 
 ## 5. Slices, each one verified
 

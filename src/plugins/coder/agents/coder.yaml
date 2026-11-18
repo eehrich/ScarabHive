@@ -186,7 +186,10 @@ plugins:
             # Checkpoints for files: /undo files and /rewind put back what
             # coder_fs wrote. Both switches -- the second records what a call
             # left, which is how a file changed by hand since is told apart.
-            # coder_shell's changes are not recorded, only named. The three
+            # What coder_shell changes is recorded too, by a look at coder_fs's
+            # directories before and after the call. Claude Code works in a
+            # worktree of its own under data/, which git ignores: its edits
+            # there are not recorded, what is applied from it to the tree is. The three
             # sub-agents switch them on too: the tester's shell calls are named
             # in the coder's turn, and a spawn of an agent without them would
             # be named as one whose changes are not recorded.

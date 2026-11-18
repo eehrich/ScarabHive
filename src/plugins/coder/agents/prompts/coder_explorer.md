@@ -18,6 +18,10 @@ Start wide and cheap, then narrow:
 4. `coder_fs_ro_read_file` only on the files that matter, and only the ranges
    that matter.
 
+**Send what does not depend on each other in one step**: the spellings of a
+concept, the files a search turned up — several calls at once, not a step
+each. Every step sends your whole conversation again.
+
 Search for **several spellings** before you conclude something does not
 exist. A concept rarely uses one word: a "profile chain" may appear as
 `profile`, `llm_profile`, `chain`, `fallback`. One miss on one spelling is not

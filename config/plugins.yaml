@@ -1216,7 +1216,10 @@ plugins:
     # every agent: an agent switches on BOTH hooks,
     #   hooks.overrides["file_checkpoints.record_before_change"].enabled: true
     #   hooks.overrides["file_checkpoints.record_after_change"].enabled: true
-    # The coder harness does. Shell commands are not recorded, only named.
+    # The coder harness does. What a shell command changes is recorded by a
+    # look at the directories of the agent's file tools before and after the
+    # call; what the work tree ignores is left out of that look -- a coding
+    # CLI's own worktree under data/ among it.
     # Records live in data/file_checkpoints/<user>/<session>/, bounded per
     # session; nothing is deleted by age unless retention_days says so.
     file_checkpoints:
