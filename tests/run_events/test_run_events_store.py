@@ -1,6 +1,7 @@
 """Run events (agent_system.run_events): a run's events are numbered without gaps, carry its state and its step in
 plain words, end once, and show a run that went quiet as silent."""
 import asyncio
+import os
 import time
 
 import pytest
@@ -185,7 +186,8 @@ async def test_a_new_store_ends_the_runs_whose_process_is_gone(tmp_path, monkeyp
     assert RunEventStore(path).swept == []
     # the next interpreter -- here one that re-executed in place (os.execv: same id, same start time): what was at
     # work or asking is cut off; a result to check and an end stay
-    monkeypatch.setattr(run_events, "OWNER", run_events.OWNER.rsplit(":", 1)[0] + ":another")
+    pid, since, _mark, space = run_events.OWNER.split(":")
+    monkeypatch.setattr(run_events, "OWNER", f"{pid}:{since}:another:{space}")
     swept = RunEventStore(path).swept
     assert sorted(e["run_id"] for e in swept) == ["asking", "background", "working"]
     assert [e["needs_you"] for e in swept if e["run_id"] == "background"] == [False],         "a background run about to be taken over raised an alarm"
@@ -372,6 +374,43 @@ async def test_a_question_waits_with_the_run_and_its_answer_puts_it_back_to_work
     assert await run.needs_input("Too late?", question_id="q2", answer_url="/x") is None
 
 
+async def test_a_run_held_where_this_process_cannot_look_ends_only_once_it_went_quiet(tmp_path, bus, monkeypatch):
+    """A server in a container and an agent-cli beside it share the run store, not their process ids: the id a run
+    names counts where it was written. Looked for here it names nothing -- and the first told turn of the agent-cli
+    ended every run of the server as interrupted. Such a run is gone once it gave no sign of life for a while."""
+    from agent_system.plugins.sqlite_guard import connection
+
+    path = tmp_path / "run_events.db"
+    here = run_events.OWNER
+    assert run_events.owner_visible(here) and run_events.owner_visible("4242:1700000000.000:theirs")
+    with monkeypatch.context() as there:      # as a process of another container reads this one's runs
+        there.setattr(run_events, "NAMESPACE", "elsewhere")
+        assert not run_events.owner_visible(here), "this process's runs do not say where its id counts"
+    with monkeypatch.context() as there:
+        # no such process here, and none it could be mistaken for
+        there.setattr(run_events, "OWNER", "999999:1.000:theirs:elsewhere")
+        first = RunEventStore(path)
+        await RunReporter("far", "coder", who="alice", source="chat", task="turn", store=first, bus=bus).started()
+        await RunReporter("far-quiet", "coder", who="alice", source="chat", task="turn", store=first, bus=bus).started()
+    assert not run_events.owner_visible("999999:1.000:theirs:elsewhere")
+    assert run_events.OWNER == here
+    assert RunEventStore(path).swept == [], "a run of a process that cannot be seen from here was ended on a guess"
+    with connection(path) as db:
+        db.execute("UPDATE agent_runs SET updated_mono = updated_mono - ? WHERE run_id = 'far-quiet'",
+                   (run_events.ORPHAN_S + 1,))
+    assert [e["run_id"] for e in RunEventStore(path).swept] == ["far-quiet"]
+    runs = {r["run_id"]: r["state"] for r in RunEventStore(path, sweep=False).runs("alice")}
+    assert runs == {"far": "working", "far-quiet": "failed"}
+
+
+async def test_the_store_says_whether_this_process_holds_a_run(store, bus, monkeypatch):
+    await reporter(store, bus).started()
+    with monkeypatch.context() as other:
+        other.setattr(run_events, "OWNER", "999999:1.000:theirs:" + run_events.NAMESPACE)
+        await RunReporter("theirs", "coder", who="alice", store=store, bus=bus).started()
+    assert store.held_here("s1") and not store.held_here("theirs") and not store.held_here("nobody")
+
+
 def test_a_run_of_another_process_lives_as_long_as_that_process():
     import subprocess
     import sys
@@ -422,3 +461,207 @@ async def test_an_end_the_store_refused_once_is_kept_at_the_next_try(bus, tmp_pa
     await run.done("3 issues")
     assert store.refused == 1, "fixture: the store never refused"
     assert store.run("s1")["state"] == "done"
+
+
+def _as_another_process(monkeypatch):
+    """What is written from here on is another process's, as the store names its runs' owners."""
+    from agent_system import run_events
+    monkeypatch.setattr(run_events, "OWNER", f"{os.getpid()}:1.000:another")
+
+
+async def test_a_run_begun_again_starts_its_clock_and_is_named_anew(store, bus, monkeypatch):
+    """A session's next turn is the same run: how long it has been at it is this turn's time, what it is about
+    this turn's question -- and its events do not pile up for the life of the session."""
+    from agent_system import run_events
+    monkeypatch.setattr(run_events, "KEEP_EVENTS", 2)
+    first = RunReporter("s1", "coder", who="alice", title="the first question", source="chat", task="turn",
+                        store=store, bus=bus)
+    await first.started()
+    for label in ("a", "b", "c"):
+        await first.step(label)
+    await first.done("one")
+    before = store.run("s1")
+    await asyncio.sleep(0.01)
+    again = RunReporter("s1", "reviewer", who="alice", title="the second question", source="sub_agent", task="step",
+                        parent="above", store=store, bus=bus)
+    await again.started()
+    run = store.run("s1")
+    assert (run["title"], run["agent"], run["state"]) == ("the second question", "reviewer", "working")
+    assert (run["source"], run["task"], run["parent_session"]) == ("sub_agent", "step", "above")
+    assert run["started"] > before["started"]
+    assert [e["seq"] for e in store.events("s1")] == [5, 6], "the run kept every event of every turn"
+    await again.done("two")
+    # gone on in the chat by its person: a turn of its own, no longer below the session that once called it
+    own = RunReporter("s1", "reviewer", who="alice", title="the third", source="chat", task="turn", store=store, bus=bus)
+    await own.started()
+    assert store.run("s1")["parent_session"] == ""
+    await own.done("three")
+    # any other run keeps what it works below where its restart does not say (a panel's task begun again)
+    work = RunReporter("w1", "claude_code", who="alice", source="background", task="background", parent="s1", store=store, bus=bus)
+    await work.started()
+    await work.done("ok")
+    more = RunReporter("w1", "claude_code", who="alice", source="background", task="background", store=store, bus=bus)
+    await more.started()
+    assert store.run("w1")["parent_session"] == "s1"
+    await more.done("ok")
+
+
+async def test_turns_and_the_other_runs_are_kept_apart_and_none_at_work_is_dropped(store, bus, monkeypatch):
+    """The newest runs are kept: counted together, a day of chat turns pushed out the panel run that waited for
+    its person -- and a run pruned while it worked said the rest of its life to nobody."""
+    from agent_system import run_events
+    monkeypatch.setattr(run_events, "MAX_RUNS", 2)
+    held = RunReporter("held", "coder", who="alice", source="chat", task="turn", store=store, bus=bus)
+    await held.started()
+    waits = RunReporter("panel-0", "code_analyst", who="alice", source="code_audit", task="assess", store=store,
+                        bus=bus)
+    await waits.started()
+    await waits.review_ready("please check")      # ended? no: it waits for its person, and stays
+    for n in range(4):
+        turn = RunReporter(f"turn-{n}", "coder", who="alice", source="chat", task="turn", store=store, bus=bus)
+        await turn.started()
+        await turn.done("ok")
+        await asyncio.sleep(0.005)
+    for n in range(1, 4):
+        panel = RunReporter(f"panel-{n}", "code_analyst", who="alice", source="code_audit", task="assess",
+                            store=store, bus=bus)
+        await panel.started()
+        await panel.done("ok")
+        await asyncio.sleep(0.005)
+    last = RunReporter("turn-9", "coder", who="alice", source="chat", task="turn", store=store, bus=bus)
+    await last.started()
+    kept = {run["run_id"] for run in store.runs(None, 50)}
+    assert kept == {"held", "turn-9", "turn-2", "turn-3", "panel-0", "panel-2", "panel-3"}, sorted(kept)
+    assert await held.step("still here") is not None
+    await held.done("ok")
+    await last.done("ok")
+
+
+async def test_a_run_another_process_holds_gives_its_sign_of_life(store, bus, monkeypatch):
+    """A heartbeat goes to the streams of the process that sends it, and is not kept: a stream elsewhere reads
+    that the run is alive from the run itself -- only of those at work, and not of its own."""
+    mine = reporter(store, bus, "mine")
+    await mine.started()
+    _as_another_process(monkeypatch)
+    theirs = RunReporter("theirs", "coder", who="alice", title="their turn", source="chat", task="turn",
+                         parent="above", store=store, bus=bus)
+    await theirs.started()
+    await theirs.step("Thinking")
+    gone = RunReporter("gone", "coder", who="alice", store=store, bus=bus)
+    await gone.started()
+    monkeypatch.undo()
+    after = time.time()
+    await asyncio.sleep(0.02)
+    assert store.beats("alice", after) == [], "a run that said nothing since gave a sign of life"
+    await mine.heartbeat()
+    _as_another_process(monkeypatch)
+    await theirs.heartbeat()
+    await gone.done("ok")
+    monkeypatch.undo()
+    [beat] = store.beats("alice", after)
+    assert (beat["run_id"], beat["type"], beat["state"], beat["cursor"]) == ("theirs", "run.heartbeat", "working", None)
+    assert beat["step"]["label"] == "Thinking" and beat["parent_session"] == "above"
+    assert store.beats("someone else", after) == []
+    await mine.done("ok")
+
+
+async def test_an_end_that_cannot_wait_is_written_by_a_thread_of_its_own(bus, tmp_path, monkeypatch):
+    from agent_system import run_events
+
+    class Busy(RunEventStore):
+        refused = 0
+
+        def append(self, run_id, type_, **kwargs):
+            if type_ == "run.failed" and not self.refused:
+                self.refused += 1
+                raise OSError("database is locked")
+            return super().append(run_id, type_, **kwargs)
+
+    monkeypatch.setattr(run_events, "END_RETRY_S", 0.01)
+    store = Busy(tmp_path / "busy.db")
+    run = reporter(store, bus)
+    await run.started()
+    run.keep_alive()
+    queue = bus.subscribe()
+    thread = run.end_detached(*run.ended_payload("failed", "the model is down"), seen=True)
+    thread.join(5)
+    assert store.refused == 1, "fixture: the store never refused"
+    row = store.run("s1")
+    assert (row["state"], row["needs_you"]) == ("failed", False)
+    assert store.events("s1")[-1]["payload"] == {"reason": "the model is down"}
+    assert (await asyncio.wait_for(queue.get(), 2))["type"] == "run.failed", "the end never reached the streams"
+    assert run.ended and run._alive is None and reporter_for("s1") is None
+    assert run.end_detached("run.done") is None, "a run ended twice"
+
+
+async def test_a_reporter_that_is_not_listed_is_found_by_nobody(store, bus):
+    own = reporter(store, bus, "s1", listed=False)
+    await own.started()
+    assert reporter_for("s1") is None
+    await own.done("ok")
+
+
+async def test_a_failure_nobody_saw_stays_at_the_top_of_the_list(store, bus):
+    """The list a page starts with is cut: a failure not seen yet has ended, and among the ended runs it went out
+    of the list with the next few turns -- gone from the pill and from what needs you after a reload."""
+    failed = reporter(store, bus, "old-failure")
+    await failed.started()
+    await failed.failed("no access")
+    seen = reporter(store, bus, "seen-failure")
+    await seen.started()
+    await seen.failed("no access")
+    store.acknowledge("seen-failure", "alice")
+    for n in range(3):
+        await asyncio.sleep(0.005)
+        run = reporter(store, bus, f"later-{n}")
+        await run.started()
+        await run.done("ok")
+    at_work = reporter(store, bus, "at-work")
+    await at_work.started()
+    listed = [run["run_id"] for run in store.runs("alice", 3)]
+    assert listed == ["at-work", "old-failure", "later-2"], listed
+    await at_work.done("ok")
+
+
+async def test_a_turn_stays_in_the_list_whatever_it_called(store, bus):
+    """The list a page starts with is cut. A turn that called many sub-agents began before all of them: counted
+    with them, it was cut -- and they are shown nowhere once they have ended."""
+    turn = RunReporter("turn", "coder", who="alice", source="chat", task="turn", store=store, bus=bus)
+    await turn.started()
+    for n in range(4):
+        await asyncio.sleep(0.005)
+        sub = RunReporter(f"sub-{n}", "explorer", who="alice", source="sub_agent", task="turn", parent="turn",
+                          store=store, bus=bus)
+        await sub.started()
+        if n in (1, 2):
+            await sub.done("ok")
+    await asyncio.sleep(0.005)
+    later = RunReporter("later", "coder", who="alice", source="chat", task="turn", store=store, bus=bus)
+    await later.started()
+    await later.done("ok")
+    await asyncio.sleep(0.005)
+    await sub.done("ok")      # the last sub-agent ends after that turn: counted, it would stand before it
+    await asyncio.sleep(0.005)
+    await turn.done("ok")
+    # at work first (the sub-agent still going), then what ended -- the one that ended last first, whenever it began
+    assert [run["run_id"] for run in store.runs("alice", 3)] == ["sub-0", "turn", "later"]
+    assert store.run("sub-1")["state"] == "done", "an ended sub-agent is still there to be read by its id"
+
+
+async def test_a_run_that_waits_says_why_and_since_when(store, bus):
+    """What needs its person is listed with what it wants -- after a reload too, when the event that said so is
+    long past: the question and since when, why a run failed."""
+    asks = reporter(store, bus, "asks")
+    await asks.started()
+    asked = await asks.needs_input("Which branch?", question_id="q1", answer_url="/answer")
+    await asks.heartbeat()
+    failed = reporter(store, bus, "failed")
+    await failed.started()
+    await failed.failed("the model is down")
+    listed = {run["run_id"]: run for run in store.runs("alice")}
+    assert listed["asks"]["question"]["question"] == "Which branch?" and listed["asks"]["asked"] == asked["ts"]
+    assert listed["failed"]["reason"] == "the model is down" and store.run("failed")["reason"] == "the model is down"
+    store.acknowledge("failed", "alice")
+    assert store.run("failed")["reason"] == "the model is down", "seen, it no longer says why"
+    await asks.answered("alice")
+    await asks.done("ok")

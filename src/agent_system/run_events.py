@@ -17,17 +17,20 @@ nothing else is said (``HEARTBEAT_S``) and ends a run exactly once. Whoever star
 States (``STATES``): queued, working, needs_input, review, done, handed_over, cancelled, failed -- the last four end
 a run. A run that is not ended and has said nothing for ``SILENT_S`` seconds is shown ``silent``: it hangs, or its
 process stopped. Each run names the process that reports it (``owner``); a store opened by a later process ends the
-runs whose process is gone as ``failed`` (``sweep``), so a restart leaves none at work for good. A heartbeat only
-marks the run alive: it goes out live and is not kept as an event. ``needs_input``: the agent asked its person something (``ask_user`` in a panel run) and
+runs whose process is gone as ``failed`` (``sweep``), so a restart leaves none at work for good -- a process of
+another container or host is not looked for, its run ends once it gave no sign of life for ``ORPHAN_S``. A
+heartbeat only marks the run alive: it goes out live and is not kept as an event. ``needs_input``: the agent asked its person something (``ask_user`` in a panel run) and
 waits; the run's view carries the ``question`` until ``run.answered`` puts it back to work.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import socket
 import threading
 import time
 from collections.abc import Iterable
@@ -68,6 +71,10 @@ ACTIVE = frozenset({"queued", "working"})
 HEARTBEAT_S = 5.0
 #: A run not ended that has said nothing this long is shown silent, in seconds.
 SILENT_S = 30.0
+#: How long a run held by a process this one cannot see (another container or host: its id says nothing here) may
+#: give no sign of life before the sweep takes its process for gone, in seconds. Its process marks it alive every
+#: HEARTBEAT_S; a process stopped for a while (a machine asleep) is not ended for that.
+ORPHAN_S = 300.0
 #: Why the sweep ends a run whose process is gone.
 INTERRUPTED = "interrupted: the process that ran it has ended"
 #: A run's end is tried this often to be kept, this many seconds apart (a store another writer holds).
@@ -77,8 +84,14 @@ END_RETRY_S = 1.0
 MAX_LABEL = 80
 #: Texts in a payload (a summary, a reason) at most this long.
 MAX_TEXT = 4000
-#: The runs kept, the newest; older ones go with their events.
+#: The runs kept, the newest that have ended; older ones go with their events.
 MAX_RUNS = 500
+#: The sources of the runs that are agents' turns (core/turn_runs.py): a session's turn, a sub-agent's. Counted
+#: apart from the others (MAX_RUNS of each): a day of chat turns must not push out a panel run that waits for
+#: its person.
+TURN_SOURCES = ("chat", "sub_agent")
+#: The events a run keeps when it begins again (a session's next turn): its newest.
+KEEP_EVENTS = 300
 #: Files or objects named in one event at most.
 MAX_TOUCHING = 5
 
@@ -106,15 +119,34 @@ def _process_key(pid: int) -> str:
         return ""
 
 
-#: This process, as the runs it reports name it: id and start time, and this interpreter's own mark -- a restart
-#: that re-executes in place (os.execv) keeps the id and the start time, not the runs.
-OWNER = f"{_process_key(os.getpid())}:{os.urandom(4).hex()}"
+def _namespace() -> str:
+    """Where a process id means what it means here: this host and, on Linux, its pid namespace -- a container has
+    its own, and a server in one and an agent-cli beside it share a data directory, not their process ids."""
+    try:
+        space = os.readlink("/proc/self/ns/pid")
+    except OSError:      # no such thing here
+        space = ""
+    return hashlib.sha1(f"{socket.gethostname()}|{space}".encode()).hexdigest()[:8]
+
+
+NAMESPACE = _namespace()
+#: This process, as the runs it reports name it: id and start time, this interpreter's own mark -- a restart
+#: that re-executes in place (os.execv) keeps the id and the start time, not the runs -- and where the id counts.
+OWNER = f"{_process_key(os.getpid())}:{os.urandom(4).hex()}:{NAMESPACE}"
+
+
+def owner_visible(owner: str) -> bool:
+    """Whether the process a run names as its owner is one this process could see: one of its own namespace. An
+    owner written before the mark names none and is taken for one of here."""
+    parts = (owner or "").split(":")
+    return len(parts) < 4 or parts[3] == NAMESPACE
 
 
 def owner_alive(owner: str) -> bool:
-    """Whether the process a run names as its owner still runs; a run without one (an older store) has none. A
-    process this one may not inspect counts as alive (nothing is ended on a guess); the start time is compared with
-    a second's slack (a clock step moves it a little)."""
+    """Whether the process a run names as its owner still runs -- asked of an owner this process can see
+    (``owner_visible``); a run without one (an older store) has none. A process this one may not inspect counts as
+    alive (nothing is ended on a guess); the start time is compared with a second's slack (a clock step moves it a
+    little)."""
     if owner == OWNER:
         return True
     pid, _, rest = (owner or "").partition(":")
@@ -145,7 +177,10 @@ def _cut(text: str, limit: int) -> str:
 class RunEventStore:
     """The runs and their events in one SQLite file; thread safe, safe between processes (sqlite_guard)."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, sweep: bool = True):
+        """``sweep``: end the runs whose process is gone, as every process that tells runs does when it opens the
+        store. Not for one that only reads (``agent-cli runs``): it judges by the processes IT sees, and from
+        outside a container none of the server's is one."""
         self.path = path
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,7 +203,7 @@ class RunEventStore:
                        "event_id TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL, seq INTEGER NOT NULL, who TEXT NOT NULL, "
                        "body TEXT NOT NULL, UNIQUE (run_id, seq))")
             db.execute("CREATE INDEX IF NOT EXISTS agent_run_events_who ON agent_run_events (who, cursor)")
-        self.swept = self.sweep()
+        self.swept = self.sweep() if sweep else []
 
     # ── writing ──────────────────────────────────────────────────────────────
 
@@ -176,11 +211,16 @@ class RunEventStore:
         """End as ``failed`` every run still held (queued, working, asking) whose process is gone -- a restart, a
         crash: nothing will say anything for it again, and its person sees that it stopped. Answers the events."""
         with self._lock, connection(self.path) as db:
-            held = db.execute("SELECT run_id, owner, parent_session FROM agent_runs "
+            held = db.execute("SELECT run_id, owner, parent_session, updated_mono FROM agent_runs "
                               f"WHERE state IN ({', '.join('?' for _ in HELD)})", tuple(HELD)).fetchall()
         ended = []
-        for run_id, owner, parent in held:
-            if not owner_alive(owner):
+        now = time.time()
+        for run_id, owner, parent, alive_at in held:
+            # A process of another container or host is not this one's to look for: there its id names nothing,
+            # or somebody else. It is gone once its run gave no sign of life for ORPHAN_S.
+            gone = (not owner_alive(owner) if owner_visible(owner)
+                    else alive_at is None or now - alive_at > ORPHAN_S)
+            if gone:
                 # Work below a session (core/background_runs) needs nobody for that: its session shows how it
                 # stands, and whoever started it takes it over (a coding CLI outlives the API) -- an alarm for a run
                 # about to go on would be a false one.
@@ -205,6 +245,7 @@ class RunEventStore:
             row = db.execute(f"SELECT {', '.join(RUN_FIELDS)} FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
             run = dict(zip(RUN_FIELDS, row)) if row else None
             starts = type_ in ("run.queued", "run.started")
+            again = False
             if run is None:
                 if not starts:
                     return None
@@ -221,9 +262,16 @@ class RunEventStore:
             elif run["state"] in FINAL:
                 if not starts:
                     return None
-                # the same run goes on (a person answered it): a new turn, the step count starts over
-                run.update(ended=None, step_index=None, step_total=None, step_label="", step_key="", step_labels="",
-                           progress=None, eta_s=None, acked=0)
+                # The same run goes on (a person answered it, a session's next turn): the step count and its
+                # clock start over, and it is named as whoever begins it names it now.
+                again = True
+                run.update(started=stamp, ended=None, step_index=None, step_total=None, step_label="", step_key="",
+                           step_labels="", progress=None, eta_s=None, acked=0, agent=agent or run["agent"],
+                           title=_cut(title, 120) if title else run["title"], source=source or run["source"],
+                           task=task or run["task"],
+                           # a turn says what it works below each time: a sub-agent's session gone on in the chat
+                           # by its person is a turn of its own, not one below the session that once called it
+                           parent_session=parent if source in TURN_SOURCES else parent or run["parent_session"])
             if starts:
                 run["owner"] = OWNER   # the process that (re)starts a run holds it
             if seen:
@@ -263,6 +311,9 @@ class RunEventStore:
                        (*(run[key] for key in RUN_FIELDS), time.time()))
             cursor = db.execute("INSERT INTO agent_run_events (event_id, run_id, seq, who, body) VALUES (?, ?, ?, ?, ?)",
                                 (event["event_id"], run_id, event["seq"], run["who"], json.dumps(event))).lastrowid
+            if again:
+                db.execute("DELETE FROM agent_run_events WHERE run_id = ? AND seq <= ?",
+                           (run_id, int(run["last_seq"]) - KEEP_EVENTS))
             if starts and run["last_seq"] == 1:
                 self._prune(db)
         return {**event, "cursor": cursor, "who": run["who"]}
@@ -277,9 +328,13 @@ class RunEventStore:
 
     @staticmethod
     def _prune(db: Any) -> None:
-        old = "SELECT run_id FROM agent_runs ORDER BY started DESC LIMIT -1 OFFSET ?"
-        db.execute(f"DELETE FROM agent_run_events WHERE run_id IN ({old})", (MAX_RUNS,))
-        db.execute(f"DELETE FROM agent_runs WHERE run_id IN ({old})", (MAX_RUNS,))
+        marks = ", ".join("?" for _ in TURN_SOURCES)
+        for turns in ("", "NOT "):
+            # only what has ended: a run still held that was pruned would say the rest of its life to nobody
+            old = (f"SELECT run_id FROM agent_runs WHERE source {turns}IN ({marks}) AND ended IS NOT NULL "
+                   "ORDER BY started DESC LIMIT -1 OFFSET ?")
+            db.execute(f"DELETE FROM agent_run_events WHERE run_id IN ({old})", (*TURN_SOURCES, MAX_RUNS))
+            db.execute(f"DELETE FROM agent_runs WHERE run_id IN ({old})", (*TURN_SOURCES, MAX_RUNS))
 
     # ── reading ──────────────────────────────────────────────────────────────
 
@@ -291,6 +346,12 @@ class RunEventStore:
         run["needs_you"] = needs_you(run["state"], run["acked"])
         del run["owner"]   # the server's own business: which process holds the run
         return run
+
+    def held_here(self, run_id: str) -> bool:
+        """Whether this process holds the run: it reports it, and only it can stop it."""
+        with self._lock, connection(self.path) as db:
+            row = db.execute("SELECT owner FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+        return row is not None and row[0] == OWNER
 
     def acknowledge(self, run_id: str, who: str) -> dict[str, Any] | None:
         """A person has dealt with a run that needed them: a result checked ends the run as done, a failure or
@@ -305,11 +366,19 @@ class RunEventStore:
 
     @staticmethod
     def _with_question(db: Any, run: dict[str, Any]) -> dict[str, Any]:
-        """A run that waits for an answer, with the question it waits for (its last ``run.needs_input``)."""
+        """A run that waits for an answer, with the question it waits for (its last ``run.needs_input``) and
+        since when (``asked``); one that failed or was handed over, with why (``reason``)."""
+        def last(*types: str) -> dict[str, Any]:
+            like = " OR ".join("body LIKE ?" for _ in types)
+            row = db.execute(f"SELECT body FROM agent_run_events WHERE run_id = ? AND ({like}) ORDER BY seq DESC LIMIT 1",
+                             (run["run_id"], *(f'%"{type_}"%' for type_ in types))).fetchone()
+            return json.loads(row[0]) if row else {}
+
         if run["state"] == "needs_input":
-            row = db.execute("SELECT body FROM agent_run_events WHERE run_id = ? AND body LIKE '%\"run.needs_input\"%' "
-                             "ORDER BY seq DESC LIMIT 1", (run["run_id"],)).fetchone()
-            run["question"] = (json.loads(row[0]).get("payload") or None) if row else None
+            asked = last("run.needs_input")
+            run["question"], run["asked"] = asked.get("payload") or None, asked.get("ts")
+        elif run["state"] in ("failed", "handed_over"):
+            run["reason"] = (last("run.failed", "run.handed_over").get("payload") or {}).get("reason")
         return run
 
     def run(self, run_id: str) -> dict[str, Any] | None:
@@ -319,11 +388,17 @@ class RunEventStore:
             return self._with_question(db, self._shown(tuple(row)[:-1], row[-1], time.time())) if row else None
 
     def runs(self, who: str | None, limit: int = 20) -> list[dict[str, Any]]:
-        """The runs of ``who`` (all with None) -- those not ended first, then the newest."""
-        where, args = ("WHERE who = ?", (who,)) if who is not None else ("", ())
+        """The runs of ``who`` (all with None), as a page starts with them: those not ended, the newest started
+        first; then those that wait for their person though they ended (a failure not seen yet); then the ones
+        that ended last. A sub-agent that ended and needs nobody is not among them -- nothing shows it, and sixty
+        of them would be the whole list while the turn that called them, begun before all of them, was cut."""
+        waits = "state IN ('failed', 'handed_over') AND acked = 0"
+        where, args = ("AND who = ?", (who,)) if who is not None else ("", ())
         with self._lock, connection(self.path) as db:
-            rows = db.execute(f"SELECT {', '.join(RUN_FIELDS)}, updated_mono FROM agent_runs {where} "
-                              "ORDER BY ended IS NOT NULL, started DESC LIMIT ?", (*args, limit)).fetchall()
+            rows = db.execute(f"SELECT {', '.join(RUN_FIELDS)}, updated_mono FROM agent_runs "
+                              f"WHERE NOT (source = 'sub_agent' AND ended IS NOT NULL AND NOT ({waits})) {where} "
+                              f"ORDER BY CASE WHEN ended IS NULL THEN 0 WHEN {waits} THEN 1 ELSE 2 END, "
+                              "COALESCE(ended, started) DESC LIMIT ?", (*args, limit)).fetchall()
             now = time.time()
             return [self._with_question(db, self._shown(tuple(row)[:-1], row[-1], now)) for row in rows]
 
@@ -351,6 +426,28 @@ class RunEventStore:
             found.setdefault(parent, []).append({"run_id": run_id, "agent": agent, "state": state,
                                                  "step_label": label, "seq": seq})
         return found
+
+    def beats(self, who: str | None, after: float) -> list[dict[str, Any]]:
+        """The signs of life of the runs of ``who`` at work that ANOTHER process holds, said since ``after`` (seconds,
+        ``time.time()``), each as the heartbeat its process sent to its own streams only: what a stream here tells
+        its client so that a run held elsewhere -- an agent-cli's turn -- is not shown silent."""
+        where, args = ("AND who = ?", (who,)) if who is not None else ("", ())
+        with self._lock, connection(self.path) as db:
+            rows = db.execute(f"SELECT {', '.join(RUN_FIELDS)} FROM agent_runs WHERE updated_mono > ? AND owner != ? "
+                              f"AND state IN ({', '.join('?' for _ in ACTIVE)}) {where}",
+                              (after, OWNER, *ACTIVE, *args)).fetchall()
+        beats = []
+        for row in rows:
+            run = dict(zip(RUN_FIELDS, row))
+            beats.append({
+                "v": SCHEMA_VERSION, "event_id": _event_id(), "run_id": run["run_id"], "seq": run["last_seq"],
+                "ts": run["updated"], "type": "run.heartbeat", "agent": run["agent"], "source": run["source"],
+                "task": run["task"], "subject": {"title": run["title"]}, "parent_session": run["parent_session"],
+                "state": run["state"], "needs_you": False,
+                "step": self._step(run) if run["state"] == "working" and run["step_label"] else None,
+                "progress": run["progress"], "eta_s": run["eta_s"], "touching": [], "payload": None,
+                "cursor": None, "who": run["who"]})
+        return beats
 
     def cursor_of(self, event_id: str) -> int | None:
         with self._lock, connection(self.path) as db:
@@ -428,6 +525,15 @@ def run_event_store() -> RunEventStore:
         return _STORE
 
 
+def run_event_reader() -> RunEventStore:
+    """The store for one that only reads the runs (``agent-cli runs``): the process's where it has one open, else
+    one opened without ending anybody's runs (``RunEventStore(sweep=False)``)."""
+    with _STORE_LOCK:
+        if _STORE is not None:
+            return _STORE
+    return RunEventStore(data_path("run_events", "run_events.db"), sweep=False)
+
+
 def run_event_bus() -> RunEventBus:
     return _BUS
 
@@ -458,8 +564,11 @@ class RunReporter:
 
     def __init__(self, run_id: str, agent: str, *, who: str = "", title: str = "", source: str = "", task: str = "",
                  parent: str = "", store: RunEventStore | None = None, bus: RunEventBus | None = None,
-                 heartbeat_s: float = HEARTBEAT_S):
+                 heartbeat_s: float = HEARTBEAT_S, listed: bool = True):
         self.run_id, self.agent, self.who, self.title, self.source, self.task = run_id, agent, who, title, source, task
+        #: Whether ``reporter_for`` finds it: a turn's own reporter (core/turn_runs.py) is nobody else's to speak
+        #: through -- a tool that asks its person through the run, a hook that names its steps.
+        self.listed = listed
         #: The session this run works below (a background run's: the session whose turn started it).
         self.parent = parent
         self._store, self._bus = store, bus
@@ -506,7 +615,8 @@ class RunReporter:
         ended as it ended)."""
         self.plan = [_cut(label, MAX_LABEL) for label in plan]
         self.index, self.label, self.ended = 0, "", False
-        _REPORTERS[self.run_id] = self
+        if self.listed:
+            _REPORTERS[self.run_id] = self
         return await self._emit("run.started", tries=tries, payload={"plan": self.plan} if self.plan else None)
 
     async def step(self, label: str, *, index: int | None = None, total: int | None = None, key: str = "",
@@ -559,15 +669,49 @@ class RunReporter:
             payload["by"] = by
         return await self._emit("run.answered", payload=payload)
 
-    async def _end(self, type_: str, payload: dict[str, Any] | None) -> dict[str, Any] | None:
-        if self.ended:
+    async def _end(self, type_: str, payload: dict[str, Any] | None, seen: bool = False) -> dict[str, Any] | None:
+        if not self._ending():
             return None
+        # An end that was not kept leaves the run at work for as long as its process lives: nothing says it again.
+        return await self._emit(type_, tries=END_TRIES, payload=payload, seen=seen)
+
+    def _ending(self) -> bool:
+        if self.ended:
+            return False
         self.ended = True
         self.stop_keep_alive()
         if _REPORTERS.get(self.run_id) is self:
             del _REPORTERS[self.run_id]
-        # An end that was not kept leaves the run at work for as long as its process lives: nothing says it again.
-        return await self._emit(type_, tries=END_TRIES, payload=payload)
+        return True
+
+    def end_detached(self, type_: str, payload: dict[str, Any] | None = None, seen: bool = False,
+                     ) -> threading.Thread | None:
+        """An end that cannot wait on the task that says it: a turn ends in the ``finally`` of a task that may be
+        being cancelled, where an await is cut off before the write starts. Written by a thread of its own (the
+        process waits for it at its exit), tried as any end is. Answers the thread, None when the run had ended."""
+        if not self._ending():
+            return None
+
+        def write() -> None:
+            for left in range(END_TRIES, 0, -1):
+                try:
+                    event = self.store.append(self.run_id, type_, agent=self.agent, who=self.who, title=self.title,
+                                              source=self.source, task=self.task, parent=self.parent, seen=seen,
+                                              payload=payload)
+                    break
+                except Exception:
+                    logger.exception("run %s: event %s not kept", self.run_id, type_)
+                    if left == 1:
+                        return
+                    time.sleep(END_RETRY_S)
+            if event is not None:
+                self.bus.publish(event)
+
+        store, bus = self.store, self.bus      # as they are now: the thread may run after a test pointed elsewhere
+        self._store, self._bus = store, bus
+        thread = threading.Thread(target=write, name=f"run-end-{self.run_id}")
+        thread.start()
+        return thread
 
     async def review_ready(self, summary: str, check_in: str = "") -> dict[str, Any] | None:
         """The agent's work is done and waits for its person to check it (``check_in``: where, in plain words);
@@ -583,6 +727,15 @@ class RunReporter:
     async def failed(self, reason: str) -> dict[str, Any] | None:
         """A technical failure; the panel shows it as a handover to a person (spec: never fail silently)."""
         return await self._end("run.failed", {"reason": _cut(reason, MAX_TEXT)})
+
+    def ended_payload(self, state: str, text: str = "") -> tuple[str, dict[str, Any] | None]:
+        """The event type and payload of an end in ``state`` (done, cancelled, failed), as ``done``, ``cancelled``
+        and ``failed`` write them -- for ``end_detached``."""
+        if state == "done":
+            return "run.done", ({"summary": _cut(text, MAX_TEXT)} if text else None)
+        if state == "cancelled":
+            return "run.cancelled", None
+        return "run.failed", {"reason": _cut(text or "the run failed", MAX_TEXT)}
 
     async def cancelled(self, by: str = "") -> dict[str, Any] | None:
         return await self._end("run.cancelled", {"by": by} if by else None)

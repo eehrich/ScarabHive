@@ -1,19 +1,30 @@
 // What the agent runs say while they work (agent_system/run_events.py, docs/run_events.md): one stream of Server-Sent
 // Events for every page of the origin (run-events-worker.js; without a SharedWorker one per tab), and the words to show
-// a run's state in. Used by the panels' "Agent runs" sheet (ai-tasks.js)
-// and by the shell's status pill.
+// a run's state in. Used by the panels' "Agent runs" sheet (ai-tasks.js),
+// by the shell's status pill and by the activity tree above its sessions (shell/activity.js).
 //   GET /api/agent-runs/stream  -> first {type: "runs.snapshot", runs: [...]}, then each event, its SSE id the event_id
 // The browser reconnects by itself and sends Last-Event-ID; the server reads on from there.
 
 /** The states that end a run, and those in which it is at work (only these can go quiet). */
 export const FINAL = new Set(['done', 'handed_over', 'cancelled', 'failed']);
 export const ACTIVE = new Set(['queued', 'working']);
+/** The sources of the runs that are agents' turns (core/turn_runs.py): a chat's, and a sub-agent's below it. */
+export const TURNS = new Set(['chat', 'sub_agent']);
+/** The events by which a run comes to wait for its person. */
+const WAITS = new Set(['run.needs_input', 'run.review_ready', 'run.failed', 'run.handed_over']);
+/** The events a run begins with: with one of them its count of events may start again (the store let go of the
+ * run it knew by that id, and a new one took it). */
+const BEGINS = new Set(['run.queued', 'run.started']);
 /** How long a run may say nothing before it is shown silent, and when a run counts as long, in ms (tests set them). */
 export const LIVE = { silentMs: 30000, longMs: 120000 };
 
 /** A run as the page keeps it: from a snapshot row or an event, with the time this page last heard of it. */
 export function liveRun(data, previous = null) {
   const fromEvent = 'event_id' in data;
+  // An event from before what is known of the run says nothing: a step written as the run ended is read from the
+  // store after its end was told (seq counts a run's events up; a sign of life repeats the last, and a run that
+  // begins may count from one again).
+  if (fromEvent && previous && data.type !== 'run.heartbeat' && !BEGINS.has(data.type) && data.seq < previous.seq) return previous;
   const step = fromEvent ? data.step
     : (data.step_label ? { index: data.step_index, total: data.step_total, label: data.step_label, labels: data.step_labels || {} } : null);
   return {
@@ -30,12 +41,20 @@ export function liveRun(data, previous = null) {
     // a new turn (a person answered) counts from its own start
     started: (fromEvent && data.type === 'run.started' ? data.ts : previous?.started || (fromEvent ? '' : data.started)) || '',
     seen: Date.now(),
+    // how far the run's events are known (liveRun leaves an older one out)
+    seq: (fromEvent ? data.seq : data.last_seq) || previous?.seq || 0,
+    // since when it waits for its person: its question, its end, a result to check -- not its last sign of life
+    waits: (fromEvent ? (WAITS.has(data.type) ? data.ts : previous?.waits) : data.asked || data.ended || data.updated) || '',
+    // when it ended, '' while it has not (a run begun again has not)
+    ended: FINAL.has(data.state) ? (fromEvent ? previous?.ended || data.ts : data.ended) || '' : '',
     silentAtStart: !fromEvent && Boolean(data.silent),
     // waits for its person: a result to check, or a failure or handover not seen yet
     needsYou: Boolean(data.needs_you),
-    // a heartbeat says nothing new: the question a run waits with stays; a row brings the question it waits for
-    payload: fromEvent ? (data.type === 'run.heartbeat' ? previous?.payload || null : data.payload)
-      : data.question || previous?.payload || null,
+    // a heartbeat says nothing new, nor does "seen": the question a run waits with stays, and why it failed; a row
+    // brings the question it waits for, or why it failed
+    payload: fromEvent
+      ? (data.type === 'run.heartbeat' || data.type === 'run.acknowledged' ? previous?.payload || null : data.payload)
+      : data.question || (data.reason ? { reason: data.reason } : null) || previous?.payload || null,
   };
 }
 

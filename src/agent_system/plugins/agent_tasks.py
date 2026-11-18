@@ -325,14 +325,17 @@ async def launch(request: Request, agent: str, task: str, title: str, wait: floa
 async def cancel_run(session_id: str, who: str) -> bool:
     """Stop the run of this process working in ``session_id``, as the app stops any run (the background job of its
     request id), else its job itself -- or the background run whose sub-session it is, through whoever started it
-    (core/background_runs.py); False when no run of this process works there."""
+    (core/background_runs.py), or the turn of an agent that works there (core/turn_runs.py); False when no run of
+    this process works there."""
     from agent_system.core import background_runs
 
     if await background_runs.cancel(session_id):
         return True
     request_id = _REQUESTS.get(session_id)
     if request_id is None:
-        return False
+        # no panel's task: an agent's turn told as a run (core/turn_runs.py), stopped as the chat stops it
+        from agent_system.core import turn_runs
+        return await turn_runs.cancel(session_id)
     _CANCELLED_BY[session_id] = who
     from agent_system.services.background_job_manager import get_background_job_manager
 

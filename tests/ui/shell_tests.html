@@ -93,6 +93,15 @@
     if (body.getClientRects().length === 0) section.querySelector(':scope > .container-header').click();
     return body.getClientRects().length > 0;
   };
+  // Two runs as the run events tell them: a chat's turn, and a sub-agent below it.
+  const atWork = (session) => [
+    { run_id: session, agent: 'coder', source: 'chat', task: 'turn', title: 'Profile the import path', state: 'working',
+      started: new Date(Date.now() - 12 * 60000).toISOString(), step_index: 4, step_label: 'Thinking', step_labels: {},
+      parent_session: '', needs_you: false },
+    { run_id: `${session}-sub`, agent: 'explorer', source: 'sub_agent', task: 'turn', title: 'Read the parser code',
+      state: 'working', started: new Date(Date.now() - 40000).toISOString(), step_index: 2,
+      step_label: 'file_ops: read_file · parser.c', step_labels: {}, parent_session: session, needs_you: false }];
+
   const stub = (path, json) => fetch(path, json === undefined ? {} : {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) });
   const withWidth = async (width, fn) => {
@@ -3698,6 +3707,118 @@
       await stub('/__stub/background', { runs: {} });
       cookie('stub_stream', null);
       forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('what works now stands above the sessions with the step it is on, and a click opens it in the chat', async () => {
+    // Which agent was at work, and at what, showed only inside the chat of its session, at the place of the call:
+    // the pane said that a session ran, with a dot.
+    try {
+      await stub('/__stub/sessions', { session_id: 's-act', title: 'Import path' });
+      await stub('/__stub/agent-runs', { runs: atWork('s-act') });
+      await loadShell();
+      const item = (id) => $(`#sessionsPane .sessions-activity .activity-item[data-run="${id}"]`);
+      await until('the turn at work', () => item('s-act'), 5000);
+      const activity = $('#sessionsPane .sessions-activity');
+      need(!activity.hidden && (activity.compareDocumentPosition($('#sessionsPane .sessions-list')) & 4) !== 0,
+        'what works now does not stand above the sessions');
+      need(item('s-act').querySelector('.activity-line').textContent.trim() === 'Thinking'
+        && item('s-act').querySelector('.activity-time').textContent.trim() === '12 min',
+      `the turn says "${item('s-act').textContent.replace(/\s+/g, ' ').trim()}"`);
+      need(item('s-act-sub').style.getPropertyValue('--depth').trim() === '1'
+        && item('s-act-sub').querySelector('.activity-line').textContent.trim() === 'file_ops: read_file · parser.c',
+      'the sub-agent does not stand below its turn with its step');
+      await until('the pill counts both', () => $('#agentRunsPill').textContent.includes('2 agents at work'), 3000);
+      item('s-act').querySelector('[data-act="open"]').click();
+      await until('its session in the chat', () => $('#headerSessionId').textContent === 'Import path', 3000);
+      // at once: the session opened says so, the tree does not wait for its next look at the clock
+      need(item('s-act').getAttribute('aria-current') === 'true', 'the open one is not marked');
+      // work that outlived its turn has no chat of its own: it is followed in the session whose turn started it
+      await stub('/__stub/sessions', { session_id: 's-check', title: 'To check' });
+      await stub('/__stub/agent-runs', { runs: [{ ...atWork('sub-work')[0], agent: 'claude_code', source: 'background',
+        task: 'background', parent_session: 's-check' }] });
+      await loadShell();
+      await until('the work', () => item('sub-work'), 5000);
+      item('sub-work').querySelector('[data-act="open"]').click();
+      return Boolean(await until('the session it works below', () => $('#headerSessionId').textContent === 'To check', 3000));
+    } finally {
+      await stub('/__stub/agent-runs', { runs: [] });
+      await loadShell();
+    }
+  });
+
+  await check('a failure nobody saw is seen once its session is opened; a result to check is not', async () => {
+    try {
+      const waits = (run_id, state) => ({ ...atWork(run_id)[0], state, needs_you: true, step_label: '',
+        ended: state === 'failed' ? new Date().toISOString() : null });
+      await stub('/__stub/sessions', { session_id: 's-act', title: 'Import path' });
+      await stub('/__stub/sessions', { session_id: 's-check', title: 'To check' });
+      await stub('/__stub/sessions', { session_id: 's-ask', title: 'A question' });
+      await stub('/__stub/agent-runs', { runs: [waits('s-act', 'failed'), waits('s-check', 'review'),
+        waits('s-ask', 'needs_input'), waits('s-nowhere', 'failed')] });
+      await loadShell();
+      const item = (id) => $(`#sessionsPane [data-activity="needs"] .activity-item[data-run="${id}"]`);
+      await until('all four wait', () => item('s-act') && item('s-check') && item('s-ask') && item('s-nowhere'), 5000);
+      item('s-check').querySelector('[data-act="open"]').click();
+      await until('the session to check', () => $('#headerSessionId').textContent === 'To check', 3000);
+      await sleep(300);   // its load is through: a click that overtakes it would leave it unfinished, and unjudged
+      item('s-ask').querySelector('[data-act="open"]').click();
+      await until('the session that asks', () => $('#headerSessionId').textContent === 'A question', 3000);
+      await sleep(300);
+      // a session that cannot be read here (another user's, deleted) showed nothing: its failure is not seen
+      item('s-nowhere').querySelector('[data-act="open"]').click();
+      await sleep(400);
+      item('s-act').querySelector('[data-act="open"]').click();
+      await until('the failed session', () => $('#headerSessionId').textContent === 'Import path', 3000);
+      await until('the failure seen', async () => await hits('ack-run:s-act') === 1, 3000);
+      need(await hits('ack-run:s-check') === 0, 'opening it said a result was checked');
+      need(await hits('ack-run:s-ask') === 0, 'opening it said a question was answered');
+      return need(await hits('ack-run:s-nowhere') === 0, 'a failure whose session did not open was said seen');
+    } finally {
+      await stub('/__stub/agent-runs', { runs: [] });
+      await loadShell();
+    }
+  });
+
+  await check('/runs says in the chat what works now, in the terminal\'s words', async () => {
+    // One command on both surfaces: the terminal prints the runs, the browser's chat shows the same lines.
+    const notes = () => [...doc().querySelectorAll('#chat .msg.note .note-text')].map((note) => note.textContent);
+    const before = notes().length;
+    $('#task').value = '/runs';
+    $('#f').requestSubmit();
+    await until('the note', () => notes().length === before + 1, 3000);
+    return need(notes().pop() === 'At work (0)\n  as a terminal 90 wide reads them', `it says "${notes().pop()}"`);
+  });
+
+  await check('the list of every session folds away below what works now, as the person left it', async () => {
+    const shown = (selector) => win().getComputedStyle($(selector)).display !== 'none';
+    try {
+      // nothing at work: the pane is the list, and no head stands over it
+      need(!shown('#sessionsPane .sessions-archive') && shown('#sessionsPane .sessions-list'),
+        'with nothing at work the list has a fold of its own');
+      await stub('/__stub/agent-runs', { runs: atWork('s-act') });
+      await loadShell();
+      await until('the tree', () => $('#sessionsPane .activity-item'), 5000);
+      const fold = $('#sessionsPane .sessions-archive');
+      need(shown('#sessionsPane .sessions-archive') && fold.getAttribute('aria-expanded') === 'true'
+        && shown('#sessionsPane .sessions-list') && shown('#sessionsPane .sessions-filter'), 'the list is not open at first');
+      fold.click();
+      need(fold.getAttribute('aria-expanded') === 'false' && !shown('#sessionsPane .sessions-list')
+        && !shown('#sessionsPane .sessions-filter'), 'the fold leaves the list in view');
+      await loadShell();
+      await until('the tree again', () => $('#sessionsPane .activity-item'), 5000);
+      need($('#sessionsPane .sessions-archive').getAttribute('aria-expanded') === 'false'
+        && !shown('#sessionsPane .sessions-list'), 'a reload opened the list again');
+      // folded away, and then nothing is at work any more: the list is the pane again
+      await stub('/__stub/agent-runs', { runs: [] });
+      await loadShell();
+      await until('the list', () => $('#sessionsPane .sessions-list .session-item'), 5000);
+      return need(shown('#sessionsPane .sessions-list') && !shown('#sessionsPane .sessions-archive'),
+        'folded away under a tree that is gone, the list stays hidden');
+    } finally {
+      win().localStorage.removeItem('scarabhive.sessions.archive.v1');
+      await stub('/__stub/agent-runs', { runs: [] });
       await loadShell();
     }
   });

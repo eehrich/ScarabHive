@@ -313,6 +313,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     app_state.initialization_service = InitializationService(config)
     app_state.session_manager = app_state.initialization_service.session_manager
     app_state.session_service = app_state.initialization_service.session_service
+    # A person may be at this process: its turns are told as runs (who works, on which step, below whom).
+    from .core.turn_runs import report_turns
+    report_turns()
     logger.info("InitializationService created (SessionManager and SessionService ready)")
 
     # Initialize tool integration

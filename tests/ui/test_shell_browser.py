@@ -1573,6 +1573,39 @@ def stub_app() -> FastAPI:
     background_runs: dict[str, list] = {}
     background_unread: list[bool] = []
 
+    # The runs the person's stream of run events starts with (static/kit/run-events.js): what works now, drawn
+    # above the sessions (static/js/shell/activity.js) and counted by the pill in the head.
+    agent_runs: list[dict] = []
+
+    @app.post("/__stub/agent-runs")
+    async def set_agent_runs(payload: dict):
+        """A test says which runs there are, as rows of GET /api/agent-runs."""
+        agent_runs[:] = payload.get("runs") or []
+        return {"ok": True}
+
+    @app.get("/api/agent-runs")
+    async def list_agent_runs():
+        return {"runs": agent_runs}
+
+    @app.post("/api/agent-runs/{run_id}/ack")
+    async def ack_agent_run(run_id: str):
+        hits[f"ack-run:{run_id}"] = hits.get(f"ack-run:{run_id}", 0) + 1
+        return {"run": {"run_id": run_id}}
+
+    @app.get("/api/agent-runs/text")
+    async def agent_runs_text(width: int = 100):
+        return {"text": f"At work ({len(agent_runs)})\n  as a terminal {width} wide reads them"}
+
+    @app.get("/api/agent-runs/stream")
+    async def agent_runs_stream():
+        async def stream():
+            # what there is, then quiet for a while; the browser comes again by itself
+            yield f"data: {json.dumps({'type': 'runs.snapshot', 'runs': agent_runs})}\n\n"
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                yield ": keepalive\n\n"
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
     @app.post("/__stub/background")
     async def set_background(payload: dict):
         """A test says which background runs are at work below which session, and whether sub-bg has ended: with
@@ -1841,6 +1874,10 @@ EXPECTED = [
     'the activity tick starts no second watch beside one still asking',
     'work a turn started that goes on after it shows at work under its call, with its step and a Stop, and its end once it has one',
     'work that goes on after the turn that started it is not marked unfinished when that turn ends',
+    'what works now stands above the sessions with the step it is on, and a click opens it in the chat',
+    'the list of every session folds away below what works now, as the person left it',
+    'a failure nobody saw is seen once its session is opened; a result to check is not',
+    '/runs says in the chat what works now, in the terminal\'s words',
     'a run in a session opened since the last activity tick is left to its load for one tick',
     'the activity tick asks about the open session past the cap of a long list',
     'a run the chat lost the stream of in the session does not keep the activity tick from joining the next one',

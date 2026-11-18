@@ -557,3 +557,106 @@ async def test_the_machine_run_stays_the_owners_when_the_sessions_metadata_is_re
 
     assert final_of(events)["type"] == "final", events
     assert [row["user_id"] for row in env.runs()] == ["root"]
+
+
+# ------------------------------------------------------------------ told as a run (core/turn_runs.py)
+
+@pytest.fixture
+def told(tmp_path):
+    """Run events of their own, in a process that tells its turns as runs -- those a person started, as the
+    requests of these tests are marked."""
+    from agent_system import run_events
+    from agent_system.core import turn_runs
+    from agent_system.core.request_context import release_run_attended, set_run_attended
+    from agent_system.run_events import RunEventBus, RunEventStore
+
+    store = RunEventStore(tmp_path / "run_events.db")
+    run_events.use_run_events(store, RunEventBus())
+    turn_runs.report_turns()
+    for request_id in ("req1", "book-9_sub_ab12"):
+        set_run_attended(request_id, True)
+    yield store
+    for request_id in ("req1", "book-9_sub_ab12"):
+        release_run_attended(request_id)
+    turn_runs.settle()
+    turn_runs._ENDING.clear()
+    run_events.use_run_events(None)
+
+
+def _settled(store, session_id="sess1"):
+    from agent_system.core import turn_runs
+
+    turn_runs.settle()
+    return store.run(session_id)
+
+
+async def test_a_machines_turn_is_a_run_with_its_states_as_its_steps(env, told):
+    """A machine addressed as an agent skips the agent's own turn: what works in its session, and at which state
+    it stands, was told nowhere but in the machine's own panel."""
+    from agent_system.core.cancellation import get_cancellation_manager
+
+    assert final_of(await env.ask("Nachtzug|a thriller"))["type"] == "final"
+    run = _settled(told)
+    assert (run["state"], run["agent"], run["source"]) == ("done", "story_machine", "chat")
+    assert run["title"] == "Nachtzug|a thriller" and run["parent_session"] == ""
+
+    def steps():
+        return [e["step"]["label"] for e in told.events("s2") if e["type"] == "run.step"]
+
+    task = asyncio.ensure_future(env.ask("hold on", request_id="book-9_sub_ab12", session_id="s2"))
+    await until(lambda: "m: hold" in steps(), what="the state it waits in is its step")
+    assert told.run("s2")["state"] == "working"
+    get_cancellation_manager().cancel_request("book-9")
+    assert final_of(await asyncio.wait_for(task, 10))["type"] == "cancelled"
+    assert _settled(told, "s2")["state"] == "cancelled"
+
+
+async def test_a_machine_that_failed_ends_its_run_failed(env, told):
+    final_of(await env.ask("fail please"))
+    failed = _settled(told)
+    assert failed["state"] == "failed" and "failed in broken" in told.events("sess1")[-1]["payload"]["reason"]
+
+
+async def test_what_a_machine_starts_knows_the_session_it_works_in(env, tmp_path):
+    """An agent a step runs is told as a run below the machine's: the session the context names while the machine
+    works is the machine's, and the caller's again once it is through."""
+    from agent_system.core.request_context import current_run_session
+
+    (tmp_path / "machines" / "m.py").write_text(COMPANION.replace(
+        'return {"story_id": 812, "title": task.split("|")[0]}',
+        'from agent_system.core.request_context import current_run_session\n'
+        '    return {"story_id": 812, "title": current_run_session.get()}'), encoding="utf-8")
+    answer = final_of(await env.ask("Nachtzug|a thriller"))
+    assert json.loads(answer["summary"])["title"] == "sess1", answer
+    assert current_run_session.get() is None
+
+
+async def test_a_machine_another_turn_called_runs_below_it(env, told):
+    from agent_system.core import turn_runs
+    from agent_system.core.request_context import current_run_session
+
+    above = await turn_runs.started(agent="coder", system_config=None, session_id="the-caller", user_id="alice",
+                                    task="design a story", parent="", attended=True)
+    current_run_session.set("the-caller")
+    try:
+        final_of(await env.ask("Nachtzug|a thriller", request_id="tool-call-7"))   # no person's own request
+        assert current_run_session.get() == "the-caller"
+    finally:
+        current_run_session.set(None)
+        turn_runs.ended(above, "the-caller", {"summary": "ok"}, False)
+    run = _settled(told)
+    assert (run["source"], run["parent_session"]) == ("sub_agent", "the-caller")
+
+
+async def test_a_machine_that_broke_ends_its_run_failed(env, told, monkeypatch):
+    """Not an answer that says "failed": the facade itself raised. The run is not left at work, nor called
+    cancelled."""
+    async def broken(*args, **kwargs):
+        raise RuntimeError("the store is gone")
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(env.agent, "_drive", broken)
+    with pytest.raises(RuntimeError):
+        await env.ask("Nachtzug|a thriller")
+    run = _settled(told)
+    assert run["state"] == "failed" and "the store is gone" in told.events("sess1")[-1]["payload"]["reason"]

@@ -36,11 +36,14 @@ import asyncio
 import json
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Union
 
+from agent_system.core import turn_runs
 from agent_system.core.cancellation import get_cancellation_manager
-from agent_system.core.request_context import get_request_user, register_request_user
+from agent_system.core.request_context import (current_run_session, get_request_user, register_request_user,
+                                               run_is_attended)
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
 from agent_system.servers.agent.server import SESSION_LOCKED, Agent
@@ -135,13 +138,24 @@ class MachineAgent(Agent):
         cancellation = get_cancellation_manager()
         token = cancellation.create_token(request_id)  # a cancel of the caller's prefix reaches us here
         reset = current_request_id.set(request_id)
+        # The session this run works in, for what it starts: an agent a step runs is told as a run below this one
+        # (core/turn_runs.py), as a sub-agent is below the turn that called it.
+        above = current_run_session.get()
+        current_run_session.set(session_id)
+        turn: Optional[turn_runs.Turn] = None
         forwarder = StatusEventForwarder()
         outcome: dict[str, Any] = {"type": "error", "request_id": request_id,
                                    "message": f"{self.name}: ended without an answer"}
+        unanswered = outcome
         try:
             await forwarder.start_forwarding(request_id)
             yield {"type": "start", "task": text, "request_id": request_id, "session_id": session_id}
             self._presence_hold(session_id, request_id)
+            turn = await turn_runs.started(
+                agent=self.name, system_config=self.system_config, session_id=session_id,
+                user_id=str(get_request_user(request_id) or ""), task=text,
+                parent=above or "", attended=run_is_attended(request_id),
+                request_id=request_id)
             async with status_scope(status_bus, self.name, request_id) as status:
                 async for event in self._drive(text, request_id, session_id, token, entry, status, forwarder):
                     if event.get("type") == "_outcome":
@@ -159,6 +173,18 @@ class MachineAgent(Agent):
             self._request_manager.unregister_active_request(request_id)
             self._session_tracker.unregister_request(request_id)
             self._presence_release(request_id)
+            # The run's end as its answer says it: an answer or an error. Without one it was cancelled, its reader
+            # left -- or it broke, which is what is being raised here.
+            broke = sys.exc_info()[1]
+            if outcome is not unanswered:
+                told = ({"summary": outcome.get("summary")} if outcome.get("type") == "final"
+                        else {"errors": [outcome.get("message")]} if outcome.get("type") == "error" else {})
+            elif broke is not None and not isinstance(broke, (GeneratorExit, asyncio.CancelledError)):
+                told = {"errors": [f"{type(broke).__name__}: {broke}"]}
+            else:
+                told = {}
+            turn_runs.ended(turn, session_id, told, token.is_cancelled)
+            current_run_session.set(above)
             try:
                 current_request_id.reset(reset)
             except ValueError:  # closed from another task (a consumer that stopped early): nothing to restore
@@ -277,6 +303,7 @@ class MachineAgent(Agent):
                 if state and state != last_state:
                     last_state = state
                     await status.progress(f"{self.machine_id} {run_id}: {state}"[:140])
+                    turn_runs.step(session_id, f"{self.machine_id}: {state}")
         finally:
             await asker.close()
         yield {"type": "_outcome", "event": {"request_id": request_id,

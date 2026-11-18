@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .hook_integration import HookIntegrationManager
     from .status_forwarding import StatusEventForwarder
 
+from ....core import turn_runs
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....hooks.plugin_hook import HookType
 from ....llm.caller_llm import context_for_tool
@@ -213,6 +214,9 @@ class ToolExecutionManager:
 
         # Execute all valid tools in parallel with real-time status streaming
         if calls.valid_tool_executions:
+            # the step the turn is on, where its turn is told as a run
+            turn_runs.tool_step(calls.session_id, [(server, tool, params) for _call, server, tool, params
+                                                   in calls.valid_tool_executions])
             tasks = await self._start_calls(calls, assistant_message, llm_profile)
             async with aclosing(self._stream_until_done(calls, tasks)) as phase:
                 async for item in phase:

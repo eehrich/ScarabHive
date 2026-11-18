@@ -7,6 +7,8 @@ import { Palette } from './palette.js';
 import { Picker } from './picker.js';
 import { ServerControls } from './server.js';
 import { AgentRunsPill } from './agent_runs.js';
+import { ActivityTree } from './activity.js';
+import { TURNS } from '/static/kit/run-events.js';
 import { FULL_VIEW, loadView, shownCatalog, shownPanels, viewMenu } from './views.js';
 
 const SESSIONS_OPEN_KEY = 'scarabhive.sessionsOpen';
@@ -378,23 +380,35 @@ async function start() {
     onBusy: (busy) => { serverBusy = busy; },
   });
   server.show(user?.role === 'admin');  // without authentication there are no admin routes, and no buttons
-  // the agents at work, on every tab: a click opens the panel that started the newest one
-  new AgentRunsPill({
-    button: $('agentRunsPill'),
-    bell: $('agentRunsBell'),
-    onOpen: (run) => {
-      const panel = run.source && workspace.panelAt(`/plugins/${run.source}/`);
-      if (panel) workspace.open(panel.id);
-      else if (run.parent) {
-        // work a turn started that goes on after it: its box is in that session's chat, and its end has been seen
-        window.sessionManager?.loadSession?.(run.parent);
-        if (run.needsYou) {
-          fetch(`/api/agent-runs/${encodeURIComponent(run.run_id)}/ack`, { method: 'POST', credentials: 'include' })
-            .catch(() => { /* still listed: the next click tries again */ });
-        }
-      } else showToast(document, `${run.agent || 'The agent'} was started outside a panel; follow it in its session`, 'info');
-    },
-  }).start();
+  // Where a run is followed: a panel's task in its panel; an agent's turn in its own session; work a turn started
+  // that goes on after it in the session of that turn, where its box is. Opened, an end that waited to be seen
+  // has been seen.
+  const openRun = async (run) => {
+    const panel = run.source && workspace.panelAt(`/plugins/${run.source}/`);
+    if (panel) return workspace.open(panel.id);
+    const session = TURNS.has(run.source) ? run.run_id : run.parent;
+    if (!session) {
+      return showToast(document, `${run.agent || 'The agent'} was started outside a panel; follow it in its session`, 'info');
+    }
+    // seen only once it is shown: a session that cannot be read here (another user's, deleted) showed nothing
+    const shown = await window.sessionManager?.loadSession?.(session);
+    if (shown === true && run.needsYou && run.state !== 'needs_input' && run.state !== 'review') {
+      fetch(`/api/agent-runs/${encodeURIComponent(run.run_id)}/ack`, { method: 'POST', credentials: 'include' })
+        .catch(() => { /* still listed: the next click tries again */ });
+    }
+  };
+  // the agents at work, on every tab: a click opens the run that needs the person first, else the newest at work
+  new AgentRunsPill({ button: $('agentRunsPill'), bell: $('agentRunsBell'), onOpen: openRun }).start();
+  // ... and all of them above the sessions, each with the step it is on (activity.js)
+  const activity = new ActivityTree({
+    host: document.querySelector('#sessionsPane .sessions-activity'),
+    onOpen: openRun,
+    current: () => sessions.currentSessionId || '',
+    notify: (message) => showToast(document, message, 'warn'),
+  });
+  activity.start();
+  window.addEventListener('session:loaded', () => activity.draw());
+  window.addEventListener('session:new', () => activity.draw());
 
   document.addEventListener('keydown', (event) => {
     const mod = event.ctrlKey || event.metaKey;

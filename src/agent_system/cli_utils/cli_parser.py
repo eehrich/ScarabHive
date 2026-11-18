@@ -23,7 +23,7 @@ COLOR_CHOICES = ("auto", "always", "never", "ansi", "html", "text")
 
 #: The words the main parser knows as its first token; anything else gets an
 #: implicit `run` in front of it.
-_SUBCOMMANDS = ("plugins", "mcp", "hooks", "run", "chat", "users", "reload", "-h", "--help")
+_SUBCOMMANDS = ("plugins", "mcp", "hooks", "run", "chat", "users", "reload", "runs", "-h", "--help")
 
 
 def _literal_strings(annotation: Any) -> frozenset:
@@ -275,6 +275,11 @@ def main_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     chat_parser.add_argument("task", nargs="?", default=None, help="Optional first message to send immediately")
     _add_attachment_args(chat_parser)
     _add_agent_session_args(chat_parser)
+
+    # runs subcommand -- read-only: what the agents are doing now, from the run events every process writes.
+    runs_parser = subparsers.add_parser(
+        "runs", help="What the agents are doing now: the runs at work with the step each is on, what needs you")
+    runs_parser.add_argument("--watch", action="store_true", help="Stay and follow (Ctrl-C leaves)")
 
     # plugins subcommand -- read-only. Switching a plugin on is an edit in
     # plugins.yaml (enabled, plus the agent's tool allowlist), not a command.

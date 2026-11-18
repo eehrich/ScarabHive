@@ -374,6 +374,7 @@ Command | What it does
 @{tt}/tools [filter]@{utt} | the tools this agent really has, not what it claims
 @{tt}/skills@{utt} | the skills you can run, and what this agent loads
 @{tt}/costs@{utt} (@{tt}/cost@{utt}) | cost of the session so far, sub-agents included
+@{tt}/runs@{utt} (@{tt}/ps@{utt}) | what the agents are doing now: the runs at work with the step each is on
 @{tt}/context@{utt} (@{tt}/ctx@{utt}) | what fills this session's context window
 @{tt}/history [n]@{utt} (@{tt}/hist@{utt}) | the last n exchanges (default 6)
 @{tt}/last@{utt} | the tool calls and results of the last turn, in full

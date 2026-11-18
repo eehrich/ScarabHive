@@ -53,6 +53,13 @@ function storedFolds() {
   return {};
 }
 
+/** Whether the list of every session is open below what works now (shell/activity.js), in this browser. */
+const ARCHIVE_KEY = 'scarabhive.sessions.archive.v1';
+
+function storedArchive() {
+  try { return localStorage.getItem(ARCHIVE_KEY) !== 'closed'; } catch { return true; }
+}
+
 /** A new folder's id: its name as a slug, and enough of the clock that a second of the same name differs. */
 function folderId(name) {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'folder';
@@ -131,9 +138,25 @@ export class SessionManager {
                 title="Collapse all sub-sessions">${icon('chevrons-down-up', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--sm" data-act="new" title="New session">${icon('plus', { size: 'sm' })} New</button>
       </div>
+      <div class="sessions-activity" hidden></div>
+      <button type="button" class="sessions-archive" data-act="archive" aria-expanded="true"
+              title="Every session, by folder and day">${icon('chevron-right', { size: 'sm' })}<span>All sessions</span></button>
       <div class="sessions-filter pk-search">${icon('search')}<input class="pk-input pk-input--sm" type="search" placeholder="Filter" aria-label="Filter sessions"></div>
       <div class="sessions-list"></div>`);
     this.list = this.pane.querySelector('.sessions-list');
+    // What works now stands above the sessions (shell/activity.js, drawn into .sessions-activity); while it shows,
+    // the list of every session folds away under its own head -- as the person left it.
+    const archive = this.pane.querySelector('[data-act="archive"]');
+    const fold = (open) => {
+      archive.setAttribute('aria-expanded', String(open));
+      this.pane.dataset.archive = open ? 'open' : 'closed';
+    };
+    fold(storedArchive());
+    archive.addEventListener('click', () => {
+      const open = archive.getAttribute('aria-expanded') !== 'true';
+      fold(open);
+      try { localStorage.setItem(ARCHIVE_KEY, open ? 'open' : 'closed'); } catch { /* private mode: not remembered */ }
+    });
     this.pane.querySelector('[data-act="new"]').addEventListener('click', () => this.newConversation());
     this.pane.querySelector('[data-act="collapse-all"]').addEventListener('click', () => this.collapseAll());
     this.pane.querySelector('[data-act="new-folder"]').addEventListener('click', () => this.editFolder(null));

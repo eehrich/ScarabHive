@@ -30,6 +30,7 @@ from .cli_utils.commands.mcp import run_mcp_command
 from .cli_utils.commands.plugins import run_plugins_command
 from .cli_utils.commands.reload import run_reload_command
 from .cli_utils.commands.run import run_agent_command
+from .cli_utils.commands.runs import run_runs_command
 
 
 def _exit_on_unknown_profile(config: AgentSystemConfig, profile: str) -> None:
@@ -102,6 +103,9 @@ def _apply_colour_flags(no_color: bool, color: str) -> None:
 def main() -> None:
     """The agent-cli entry point, run as the local operator
     (cli_utils.agent_runner.run_as_local_operator)."""
+    # A person is at an agent-cli: its turns are told as runs (core/turn_runs.py), beside the server's.
+    from .core.turn_runs import report_turns
+    report_turns()
     run_as_local_operator(_main)
 
 
@@ -193,6 +197,8 @@ def _main() -> None:
         run_reload_command(args, config)
     elif args.subcommand == "plugins":
         run_plugins_command(args, config)
+    elif args.subcommand == "runs":
+        run_runs_command(args, config)
     elif args.subcommand == "hooks":
         run_hooks_command(args, config)
     elif args.subcommand == "mcp":

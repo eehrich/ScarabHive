@@ -233,6 +233,12 @@ def _on_help(repl: _Repl, payload: str) -> None:
               ansi=repl.ansi, interactive=repl.interactive)
 
 
+def _on_runs(repl: _Repl, payload: str) -> None:
+    """What works now, as `agent-cli runs` prints it: this terminal's turns, the browser's, the sub-agents below."""
+    from ..commands.runs import runs_text
+    print(runs_text())
+
+
 def _on_unknown(repl: _Repl, payload: str) -> None:
     """A command word nobody claims: say so, never send it as a message."""
     hint = suggest_command(
@@ -261,6 +267,7 @@ _COMMANDS: dict[str, Callable[[_Repl, str], Optional[Any]]] = {
     "model": agent_setup._on_model,
     "tools": agent_setup._on_tools,
     "skills": agent_setup._on_skills,
+    "runs": _on_runs,
     "context": agent_setup._on_context,
     "costs": token_usage._on_costs,
     "history": transcript._on_history,

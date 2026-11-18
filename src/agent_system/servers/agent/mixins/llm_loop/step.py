@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from .....core import turn_runs
 from .....llm.message_roles import DEVELOPER
 from .....llm.models import ChatMessage
 from .....utils.json_utils import history_safe_tool_calls
@@ -121,6 +122,7 @@ class StepMixin:
 
         # Emit thinking event before LLM call (for UI step display)
         yield {"type": "thinking", "step": step + 1}
+        turn_runs.step(run.session_id, turn_runs.THINKING)
 
         # Before the hooks: the input they hand over needs no wake at the end.
         self._presence_step(run.session_id, run.request_id)

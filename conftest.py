@@ -1004,6 +1004,14 @@ def _reset_all_global_state():
     except ImportError:
         pass
 
+    # Turns are told as runs only where a process says so (the app's start does): no test inherits that
+    try:
+        from agent_system.core import turn_runs
+        turn_runs.report_turns(False)
+        turn_runs._TURNS.clear()
+    except ImportError:
+        pass
+
 
 _REAL_PLUGINS = (Path(__file__).parent / "src" / "plugins").resolve()
 

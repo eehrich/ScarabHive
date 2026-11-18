@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every turn of an agent is told as a run (`core/turn_runs.py`): who works now, on which step, below whom. A chat's
+  turn, the sub-agents and machines below it and theirs are runs in the run events, each under its session's id and
+  with the session that started it as `parent_session`; their steps are the model thinking and the tools it calls.
+  Before, that a session was at work showed as a dot beside it, what it was doing only inside its chat -- and a
+  sub-agent three levels down nowhere else. Told for the turns a person started and what runs below them, by the
+  server and by agent-cli -- not for what a program sends the server (`AGENT_TURN_RUNS=0` silences a process,
+  `=1` makes it tell every turn); the server's stream of run events now also carries what another process wrote,
+  and `POST /api/agent-runs/{id}/cancel` stops a turn or one sub-agent. A server that stays up ends the runs of a
+  process that is gone every 30 s (an agent-cli closed mid-turn said no end); a run held in another container or
+  on another host is not judged by a process list here, it ends once it gave no sign of life for five minutes.
+- What works now stands above the sessions (`static/js/shell/activity.js`): the runs at work as a tree -- a
+  turn, its sub-agents, theirs --, each with the step it is on, how long, and a Stop; under it what needs you and
+  what just ended. A click opens a run where it is followed. "All sessions" folds the session list away below it.
+  The terminal has the same reading: `agent-cli runs` (`--watch` follows), and `/runs` in a chat on both surfaces.
 - Work a turn starts that goes on after it is shown where the chat shows a sub-agent, after the turn too:
   `core/background_runs.py` keeps it as a sub-session of the chat's session (its steps, as an agent's are stored)
   and as a run in the run events below that session. Switched back to the session, or after a reload, the box is

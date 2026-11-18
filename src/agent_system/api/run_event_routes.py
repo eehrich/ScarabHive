@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -27,8 +28,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from agent_system import app_state
 from agent_system.api.run_start import sse_response
+from agent_system.core import turn_runs
 from agent_system.plugins.agent_tasks import cancel_run, user_of
 from agent_system.run_events import HELD, run_event_bus, run_event_store
+from agent_system.run_tree import render
 
 router = APIRouter(prefix="/api/agent-runs", tags=["agent-runs"])
 
@@ -36,13 +39,36 @@ router = APIRouter(prefix="/api/agent-runs", tags=["agent-runs"])
 KEEPALIVE_S = 15.0
 #: Events replayed to a client that reconnects, at most; it reads the rest per run (``/events``).
 REPLAY_MAX = 1000
+#: The runs a page starts with: those not ended first, then the newest -- every turn and sub-agent is one, and the
+#: page draws them as a tree with what just ended.
+SNAPSHOT_RUNS = 60
+#: How often a stream reads what OTHER processes wrote, in seconds. The bus hands out this process's events only;
+#: an agent-cli's turn, a run a CLI holds, say theirs into the store.
+TAIL_S = 2.0
+#: How often the streams have the store end the runs whose process is gone, in seconds: an agent-cli closed mid-turn
+#: says no end, and the store is swept only when a process opens it.
+SWEEP_S = 30.0
+#: The runs a stream remembers how far it told them, at most.
+TOLD_RUNS = 2000
+#: The events a run begins with: with one of them its count of events may start again (its row was pruned).
+BEGINS = frozenset({"run.queued", "run.started"})
+_swept = 0.0
+
+
+def _sweep_due() -> bool:
+    """Whether it is time for a sweep; says so once per SWEEP_S, to the stream that asks first."""
+    global _swept
+    if time.monotonic() - _swept < SWEEP_S:
+        return False
+    _swept = time.monotonic()
+    return True
 
 
 _STOPPING = object()
 
 
-async def _next_or_stop(queue: asyncio.Queue) -> Any:
-    """The next event; None after KEEPALIVE_S without one; _STOPPING once the server stops.
+async def _next_or_stop(queue: asyncio.Queue, wait: float) -> Any:
+    """The next event; None after ``wait`` seconds without one; _STOPPING once the server stops.
 
     This stream never ends by itself, and every open tab holds one: a server that stops waited for it until
     uvicorn's graceful timeout ran out and cancelled it (app_state.shutdown_event, set as the stop signal comes).
@@ -51,7 +77,7 @@ async def _next_or_stop(queue: asyncio.Queue) -> Any:
     getter = asyncio.ensure_future(queue.get())
     waits = {getter} if stopping is None else {getter, asyncio.ensure_future(stopping.wait())}
     try:
-        done, _ = await asyncio.wait(waits, timeout=KEEPALIVE_S, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(waits, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
     finally:
         for waiting in waits:
             waiting.cancel()  # a getter that has an event is done: cancelling it takes nothing from the queue
@@ -69,10 +95,21 @@ def _line(event: dict[str, Any]) -> str:
 
 
 @router.get("")
-async def agent_runs(request: Request, limit: int = Query(default=20, ge=1, le=200)) -> dict[str, Any]:
+async def agent_runs(request: Request, limit: int = Query(default=SNAPSHOT_RUNS, ge=1, le=200)) -> dict[str, Any]:
     """The asking person's runs, those not ended first, then the newest."""
     who = await user_of(request)
     return {"runs": await asyncio.to_thread(run_event_store().runs, who, limit)}
+
+
+@router.get("/text")
+async def agent_runs_text(request: Request, width: int = Query(default=100, ge=40, le=240),
+                          lang: str = Query(default="en", max_length=16)) -> dict[str, Any]:
+    """The asking person's runs as a terminal reads them (``agent_system.run_tree``): what the chat's ``/runs``
+    shows, in the words ``agent-cli runs`` prints. ``lang``: the language the steps are told in where an agent
+    names them so, as the list above the sessions tells them."""
+    who = await user_of(request)
+    runs = await asyncio.to_thread(run_event_store().runs, who, SNAPSHOT_RUNS)
+    return {"text": "\n".join(render(runs, width=width, lang=lang[:2].lower()))}
 
 
 @router.get("/stream")
@@ -91,28 +128,80 @@ async def agent_runs_stream(request: Request, after: str = Query(default="", max
         try:
             cursor = await asyncio.to_thread(store.cursor_of, last) if last else None
             missed = await asyncio.to_thread(store.since, cursor, who, REPLAY_MAX) if cursor is not None else []
-            snapshot = None if cursor is not None else await asyncio.to_thread(store.runs, who)
+            # How far the store is read, BEFORE the runs are: what is kept between the two is read on from there
+            # (and is in the runs already -- told twice, never not at all).
             seen = missed[-1]["cursor"] if missed else (cursor if cursor is not None else
                                                         await asyncio.to_thread(store.last_cursor))
+            snapshot = None if cursor is not None else await asyncio.to_thread(store.runs, who, SNAPSHOT_RUNS)
             yield "retry: 3000\n\n"
             if snapshot is not None:
                 yield f"data: {json.dumps({'type': 'runs.snapshot', 'runs': snapshot}, ensure_ascii=False)}\n\n"
+            # How far each run has been told on this stream. A step kept as its run ended is read from the store
+            # after the end went out by the bus (core/turn_runs.py: the end is not held up for a step still being
+            # written): sent after it, it would put the run back to work for a client that has let it go.
+            told_to: dict[str, int] = {}
+
+            def tell(kept: dict[str, Any]) -> bool:
+                """Whether a kept event is news of its run on this stream; counted as told if so."""
+                run_id, seq = kept["run_id"], kept.get("seq") or 0
+                if kept.get("type") not in BEGINS and seq < told_to.get(run_id, 0):
+                    return False
+                told_to.pop(run_id, None)
+                told_to[run_id] = seq       # the run told last stands last
+                while len(told_to) > TOLD_RUNS:
+                    del told_to[next(iter(told_to))]
+                return True
+
             for event in missed:
+                tell(event)
                 yield _line(event)
+            tailed = said = time.monotonic()
+            beat_after = time.time()
+            # The kept events the bus brought before the store was read up to them. ``seen`` is how far the store
+            # has been read, and only reading it moves it: moved by an event of this process, an earlier one of
+            # another process -- written, not yet read -- would never be sent.
+            early: set[int] = set()
             while True:
-                event = await _next_or_stop(queue)
+                event = await _next_or_stop(queue, min(TAIL_S, KEEPALIVE_S))
                 if event is _STOPPING:  # the browser reconnects by itself (retry), to the server that comes next
                     return
-                if event is None:
+                if event is not None and event.get("who") == who:
+                    cursor = event.get("cursor")
+                    if cursor is None:      # a heartbeat: not kept, only passed on
+                        said = time.monotonic()
+                        yield _line(event)
+                    elif cursor > seen:
+                        early.add(cursor)
+                        if tell(event):
+                            said = time.monotonic()
+                            yield _line(event)
+                if time.monotonic() - tailed >= TAIL_S:
+                    # What other processes wrote since: their events in the order they were kept, and a sign of
+                    # life of each run they hold. Both read before either is sent: a client slow to take a line
+                    # must not move what is asked.
+                    tailed = time.monotonic()
+                    if _sweep_due():
+                        # ended in the store, read just below like anything another process wrote
+                        await asyncio.to_thread(store.sweep)
+                    written = await asyncio.to_thread(store.since, seen, who, REPLAY_MAX)
+                    asked = time.time()
+                    beats = await asyncio.to_thread(store.beats, who, beat_after)
+                    beat_after = asked
+                    told = {kept["run_id"] for kept in written}     # an event says that its run is alive
+                    for kept in written:
+                        seen = kept["cursor"]
+                        if seen in early or not tell(kept):   # the bus was the faster one, or is past it
+                            continue
+                        said = time.monotonic()
+                        yield _line(kept)
+                    early = {cursor for cursor in early if cursor > seen}
+                    for beat in beats:
+                        if beat["run_id"] not in told:
+                            said = time.monotonic()
+                            yield _line(beat)
+                if time.monotonic() - said >= KEEPALIVE_S:
+                    said = time.monotonic()
                     yield ": keepalive\n\n"
-                    continue
-                if event.get("who") != who:
-                    continue
-                if event.get("cursor") is not None:   # a kept event; a heartbeat (none) is only passed on
-                    if event["cursor"] <= seen:
-                        continue
-                    seen = event["cursor"]
-                yield _line(event)
         finally:
             bus.unsubscribe(queue)
 
@@ -154,6 +243,19 @@ async def agent_run_cancel(run_id: str, request: Request) -> dict[str, Any]:
     on the stream."""
     who = await user_of(request)
     run = await _own_run(run_id, who)
-    if run["state"] not in HELD or not await cancel_run(run_id, who):
-        raise HTTPException(status_code=409, detail="This run is not at work on this server")
+    if run["state"] not in HELD:
+        raise HTTPException(status_code=409, detail="This run has ended")
+    if not await cancel_run(run_id, who):
+        store = run_event_store()
+        # it ended as the stop was on its way -- or is a turn writing its end, at work in the store for that moment
+        if (await _own_run(run_id, who))["state"] not in HELD or turn_runs.ending(run_id):
+            raise HTTPException(status_code=409, detail="This run has ended")
+        if await asyncio.to_thread(store.held_here, run_id):
+            # this server's, with nothing here to stop it by (work it holds without a way to cancel it): the tree
+            # offers no Stop for it
+            raise HTTPException(status_code=409, detail="This run takes no stop",
+                                headers={"X-Run-Takes-No-Stop": "1"})
+        # held by another process (an agent-cli's turn): the tree says so and offers no Stop for it
+        raise HTTPException(status_code=409, detail="This run is not at work on this server",
+                            headers={"X-Run-Held-Elsewhere": "1"})
     return {"status": "cancelling", "run_id": run_id}

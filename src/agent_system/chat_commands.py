@@ -106,6 +106,9 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("tools", ("/tools",), "tools this agent really has (not what it claims)",
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),
+    # What works now, in every session and every process. The browser shows it above its sessions all the time;
+    # typed there, the command says it in the chat, in the terminal's words.
+    ChatCommand("runs", ("/runs", "/ps", "/tasks"), "what the agents are doing now: the runs at work and their step"),
     # Not "/stats", which Claude Code and Gemini CLI spell it as too: a shipped
     # plugin command has that name (see the catalogue's head).
     ChatCommand("costs", ("/costs", "/cost", "/usage"), "session cost so far, including sub-agents"),

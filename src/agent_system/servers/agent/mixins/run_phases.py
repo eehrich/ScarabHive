@@ -346,6 +346,9 @@ class RunPhasesMixin:
             cancelled = (bool(results["cancelled"]) if "cancelled" in results
                          else bool(run_token is not None and run_token.is_cancelled))
             cancellation_manager.unregister_request(request_id)
+            # for whoever ends the run after this (core/turn_runs.py): a run stopped while its model was
+            # finishing has an answer and was cancelled all the same, as the session end hooks are told
+            results["cancelled"] = cancelled
 
             # Clean up request tracking but preserve session data
             self._request_manager.unregister_active_request(request_id)

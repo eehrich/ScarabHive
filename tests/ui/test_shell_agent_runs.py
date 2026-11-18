@@ -32,6 +32,7 @@ EXPECTED = [
     "an agent that asks its person is counted as needing them, named so, and told while they look elsewhere",
     "a run silent at a reconnect is marked at once",
     "a run below a session keeps that session for the click, whatever its later events say",
+    "a turn's end is not told, nor a sub-agent's: only what needs the person is",
 ]
 
 

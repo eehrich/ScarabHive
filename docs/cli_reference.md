@@ -205,6 +205,7 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 | `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered); deferred ones (`tools.deferred`) are listed too, a run sends their schema once loaded |
 | `/skills` | Skill bundles it loads, `always` vs `on_demand` |
 | `/costs`, `/cost`, `/usage` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
+| `/runs`, `/ps`, `/tasks` | What the agents are doing now, in every session and every process: the runs at work as a tree with the step each is on, what needs you, what just ended (see `agent-cli runs`) |
 | `/context`, `/ctx` | What fills the context window. Two blocks that are never mixed: what the provider **counted at the last call** (from `context_usage_tracker`, with the window it was counted against — and the note "stale" if the context has been compacted since), and what the conversation contains **now**, estimated and broken down by kind: tool results, answers, your messages, system prompt, tool schemas. Largest first, because that is the answer to "why is my window full" — in a long session it is almost always the tool results. No category is computed as "measurement minus estimate": that would look exact and carry the error of both |
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
@@ -413,6 +414,40 @@ falls back to plain chronological lines.
 
 ---
 
+## `agent-cli runs` — What the agents are doing now
+
+```bash
+agent-cli runs            # as it stands
+agent-cli runs --watch    # stay and follow (Ctrl-C leaves)
+```
+
+Read-only; no agent is built. Prints the runs every process tells into the
+run events (`docs/run_events.md`): a turn in the browser shows here, a turn
+of this terminal there.
+
+```
+At work (2)
+  ● coder · Profile the import path                    12 min
+      Thinking
+    ● explorer · Read the parser code                     now
+        file_ops: read_file · parser.c
+Needs you (1)
+  ? code_analyst · Assess the issues                    3 min
+      Asks: Which branch?
+Just ended (1)
+  ✓ reviewer · The second report                        5 min
+```
+
+A run stands below the run that started it while that one is at work too.
+Told are the turns a person started and what runs below them (a chat, a
+session woken for its person) -- not what a program sends the server.
+`AGENT_TURN_RUNS=1` makes a process tell every turn, `=0` none. "Just ended"
+is what ended within the last hour. On a console that cannot show the marks
+they are plain (`*`, `?`, `+`, `x`); `--watch` into a file writes a line
+between the readings instead of clearing the screen.
+
+---
+
 ## `agent-cli plugins` — Inspect plugins
 
 Read-only. A plugin is enabled in `config/plugins.yaml`, not by
@@ -611,6 +646,7 @@ agent-cli run "task" --agent NAME --llm PROFILE
 agent-cli chat --agent NAME                     # interactive
 agent-cli run --list-sessions                   # this user's sessions
 
+agent-cli runs [--watch]                        # what the agents are doing now
 agent-cli plugins list | info NAME | search TERM
 agent-cli mcp list | status [SERVER] | test SERVER | tools SERVER
 agent-cli hooks list | inspect NAME

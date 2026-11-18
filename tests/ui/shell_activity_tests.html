@@ -1,0 +1,343 @@
+<!doctype html>
+<html class="pk-root" data-theme="dark" lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>activity.js: what works now, above the sessions</title>
+  <link rel="stylesheet" href="/static/kit/kit.css">
+  <link rel="stylesheet" href="/static/css/shell.css">
+</head>
+<body>
+<aside id="sessionsPane" class="app-sessions" style="width: 320px; height: 600px">
+  <div class="sessions-activity" hidden></div>
+</aside>
+<script type="module">
+  // The tree against a stand-in stream: each check says what the server would stream and reads the pane.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const need = (condition, message) => { if (!condition) throw new Error(message); return true; };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 4000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(20);
+    }
+  }
+
+  window.SharedWorker = undefined;  // the stream of the page itself, which this stub stands in for
+  window.EventSource = class { constructor(url) { this.url = url; window.stream = this; } close() { this.closed = true; } };
+  // what the page asks the server: each check sets how it answers
+  const report = window.fetch.bind(window);   // the page's own way to the test that opened it
+  const asked = [];
+  let answer = 200;
+  let elsewhere = false;   // a 409 that says another process holds the run (the server's header)
+  let noStop = false;      // a 409 that says this server holds it and has nothing to stop it by
+  window.fetch = async (url, options = {}) => {
+    asked.push({ url: String(url), method: options.method || 'GET' });
+    return { ok: answer < 400, status: answer, json: async () => ({ runs: [] }),
+      headers: { get: (name) => ((elsewhere && name === 'X-Run-Held-Elsewhere')
+        || (noStop && name === 'X-Run-Takes-No-Stop') ? '1' : null) } };
+  };
+  let seq = 0;
+  const say = (data) => window.stream.onmessage({ data: JSON.stringify(data) });
+  const event = (fields) => say({ event_id: `e${++seq}`, seq, ts: new Date().toISOString(), payload: null, touching: [],
+    step: null, ...fields });
+  const turn = (run_id, type, fields = {}) => event({ run_id, type, agent: 'coder', source: 'chat', task: 'turn',
+    state: type === 'run.done' ? 'done' : type === 'run.failed' ? 'failed' : type === 'run.cancelled' ? 'cancelled' : 'working',
+    subject: { title: `About ${run_id}` }, parent_session: '', ...fields });
+  const thinking = { index: 1, total: null, key: '', label: 'Thinking', labels: { de: 'Denkt nach' } };
+
+  const live = await import('/static/kit/run-events.js');
+  const { ActivityTree, ACTIVITY, since } = await import('/static/js/shell/activity.js');
+  ACTIVITY.checkMs = 50;
+  ACTIVITY.lang = 'en';
+  const opened = [];
+  const told = [];
+  let open = '';
+  const host = document.querySelector('.sessions-activity');
+  const tree = new ActivityTree({ host, onOpen: (run) => opened.push(run), current: () => open,
+    notify: (message) => told.push(message) });
+  tree.start();
+  const items = (group) => [...host.querySelectorAll(`[data-activity="${group}"] .activity-item`)];
+  const item = (id) => host.querySelector(`.activity-item[data-run="${id}"]`);
+  const text = (id, part) => item(id)?.querySelector(`.activity-${part}`)?.textContent.trim();
+
+  await check('the stream it follows is the run events of the person', async () => window.stream.url === '/api/agent-runs/stream');
+
+  await check('while nothing works, waits or just ended the tree stays out of the way', async () => {
+    say({ type: 'runs.snapshot', runs: [] });
+    await sleep(60);
+    return host.hidden && host.children.length === 0;
+  });
+
+  await check('a turn at work shows with its agent, what it is about and the step it is on', async () => {
+    turn('c1', 'run.started');
+    await until('the turn', () => item('c1'));
+    need(!host.hidden && items('working').length === 1, 'the turn is not listed at work');
+    need(text('c1', 'line') === 'At work', `before its first step it says "${text('c1', 'line')}"`);
+    turn('c1', 'run.step', { step: thinking });
+    await until('its step', () => text('c1', 'line') === 'Thinking');
+    return text('c1', 'agent') === 'coder' && text('c1', 'title') === 'About c1' && text('c1', 'time') === 'now'
+      && item('c1').querySelector('.ai-live-dot:not(.ai-live-dot--quiet)') !== null
+      && host.querySelector('[data-activity="working"] .sessions-count').textContent === '1';
+  });
+
+  await check('a sub-agent stands below the turn that started it, and its own below it', async () => {
+    turn('s2', 'run.started', { agent: 'explorer', source: 'sub_agent', parent_session: 's1' });
+    turn('s1', 'run.started', { agent: 'researcher', source: 'sub_agent', parent_session: 'c1' });
+    turn('c2', 'run.started', { agent: 'reviewer' });
+    await until('all four', () => items('working').length === 4);
+    const order = items('working').map((li) => `${li.dataset.run}:${li.style.getPropertyValue('--depth').trim()}`);
+    // s2 came first and stood on its own until the run it works below was at work too
+    return need(order.join(' ') === 'c1:0 s1:1 s2:2 c2:0', `the tree reads ${order.join(' ')}`);
+  });
+
+  await check('work below a session whose turn has ended stands on its own', async () => {
+    event({ run_id: 'b1', type: 'run.started', state: 'working', agent: 'claude_code', source: 'background',
+      task: 'background', subject: { title: 'Fix the parser' }, parent_session: 'long-gone' });
+    await until('the run', () => item('b1'));
+    return item('b1').style.getPropertyValue('--depth').trim() === '0';
+  });
+
+  await check('a click opens the run', async () => {
+    opened.length = 0;
+    item('s1').querySelector('[data-act="open"]').click();
+    return opened.length === 1 && opened[0].run_id === 's1' && opened[0].source === 'sub_agent' && opened[0].parent === 'c1';
+  });
+
+  await check('the session open in the chat is marked', async () => {
+    open = 'c2';
+    tree.draw();
+    return item('c2').getAttribute('aria-current') === 'true' && item('c1').getAttribute('aria-current') === 'false';
+  });
+
+  await check('Stop asks the server to end the run, once, and the run leaves when it has ended', async () => {
+    asked.length = 0;
+    answer = 200;
+    const stop = item('s2').querySelector('[data-act="stop"]');
+    stop.click();
+    await until('the Stop sent', () => asked.length === 1);
+    need(asked[0].url === '/api/agent-runs/s2/cancel' && asked[0].method === 'POST', `it asked ${JSON.stringify(asked[0])}`);
+    await until('the Stop held', () => item('s2').querySelector('[data-act="stop"]').disabled);
+    item('s2').querySelector('[data-act="stop"]').click();
+    await sleep(60);
+    need(asked.length === 1, 'a second click sent a second Stop');
+    need(opened.every((run) => run.run_id !== 's2'), 'a Stop opened the run');
+    turn('s2', 'run.cancelled', { agent: 'explorer', source: 'sub_agent', parent_session: 's1' });
+    await until('the run gone from the work', () => !items('working').some((li) => li.dataset.run === 's2'));
+    need(!item('s2') && told.length === 0, 'a stopped sub-agent is still listed');   // its end is its caller's to hear of
+    // begun again, it can be stopped again: the Stop sent for its last turn is not held against this one
+    turn('s2', 'run.started', { agent: 'explorer', source: 'sub_agent', parent_session: 's1' });
+    await until('at work again', () => item('s2'));
+    const again = !item('s2').querySelector('[data-act="stop"]').disabled;
+    turn('s2', 'run.cancelled', { agent: 'explorer', source: 'sub_agent', parent_session: 's1' });
+    await until('gone again', () => !item('s2'));
+    return need(again, 'a run begun again cannot be stopped');
+  });
+
+  await check('a run another process holds says so, and offers no Stop that does nothing', async () => {
+    asked.length = 0;
+    answer = 409;
+    elsewhere = true;
+    try {
+      item('b1').querySelector('[data-act="stop"]').click();
+      await until('the refusal told', () => told.length === 1);
+      await until('no Stop', () => !item('b1').querySelector('[data-act="stop"]'));
+      need(told[0] === 'claude_code runs in another process: stop it there', `it said "${told[0]}"`);
+      // that was that turn: ended and begun again -- on this server now, for all the page knows -- it has its Stop
+      const b1 = { agent: 'claude_code', source: 'background', task: 'background', subject: { title: 'Fix the parser' },
+        parent_session: 'long-gone' };
+      event({ run_id: 'b1', type: 'run.cancelled', state: 'cancelled', ...b1 });
+      event({ run_id: 'b1', type: 'run.started', state: 'working', ...b1 });
+      await until('its Stop again', () => item('b1')?.querySelector('[data-act="stop"]'));
+    } finally { elsewhere = false; }
+    // 409 without that word: the run ended as the Stop was on its way -- nothing to say, its end says the rest
+    item('c2').querySelector('[data-act="stop"]').click();
+    await until('asked', () => asked.length === 2);
+    await sleep(60);
+    need(told.length === 1 && !item('c2').querySelector('[data-act="stop"]').disabled, `a Stop too late said "${told[1]}"`);
+    answer = 500;
+    item('c2').querySelector('[data-act="stop"]').click();
+    await until('the failure told', () => told.length === 2);
+    need(told[1].includes('could not be stopped (500)') && !item('c2').querySelector('[data-act="stop"]').disabled,
+      `a Stop the server failed on said "${told[1]}"`);
+    // sent, and the run does not end (stuck in work that does not look at the stop): after a while Stop is there again
+    answer = 200;
+    ACTIVITY.holdMs = 120;
+    item('c2').querySelector('[data-act="stop"]').click();
+    await until('held', () => item('c2').querySelector('[data-act="stop"]').disabled);
+    await until('let go', () => !item('c2').querySelector('[data-act="stop"]').disabled, 2000);
+    // this server holds it and has nothing to stop it by (work taken over after a restart): said in those words --
+    // "another process" sent the person looking for one -- and no Stop that does nothing either
+    answer = 409;
+    noStop = true;
+    try {
+      item('b1').querySelector('[data-act="stop"]').click();
+      await until('said', () => told.length === 3);
+      need(told[2] === 'claude_code cannot be stopped from here', `it said "${told[2]}"`);
+      return Boolean(await until('no Stop', () => !item('b1').querySelector('[data-act="stop"]')));
+    } finally {
+      noStop = false;
+      answer = 200;
+    }
+  });
+
+  await check('a run gone quiet is marked', async () => {
+    const before = live.LIVE.silentMs;
+    live.LIVE.silentMs = 100;
+    try {
+      await until('quiet', () => item('c1').querySelector('.ai-live-dot--quiet'), 3000);
+      need(text('c1', 'line') === 'Thinking -- no sign of life for 30 s', `it says "${text('c1', 'line')}"`);
+      turn('c1', 'run.heartbeat', { step: thinking });
+      return Boolean(await until('alive again', () => item('c1').querySelector('.ai-live-dot:not(.ai-live-dot--quiet)')));
+    } finally { live.LIVE.silentMs = before; }
+  });
+
+  await check('a run that needs its person is listed so, with what it wants', async () => {
+    const at = (ms) => new Date(Date.now() + ms).toISOString();
+    const asks = (run_id, question, ts) => event({ run_id, type: 'run.needs_input', state: 'needs_input', needs_you: true,
+      agent: 'code_analyst', source: 'code_audit', task: 'assess', subject: { title: 'Assess the issues' },
+      parent_session: '', payload: { question }, ts });
+    asks('p2', 'Which file?', at(1));
+    turn('c2', 'run.failed', { agent: 'reviewer', needs_you: true, payload: { reason: 'the model is down' }, ts: at(2) });
+    asks('p1', 'Which branch?', at(3));
+    const order = () => items('needs').map((li) => li.dataset.run).join(' ');
+    await until('all three', () => items('needs').length === 3);
+    need(order() === 'p1 c2 p2', `the one heard of last does not come first: ${order()}`);
+    // a sign of life says nothing new: the run that waits longest does not jump up for it
+    event({ run_id: 'p2', type: 'run.heartbeat', state: 'needs_input', needs_you: true, agent: 'code_analyst',
+      source: 'code_audit', task: 'assess', subject: { title: 'Assess the issues' }, parent_session: '', ts: at(9) });
+    await sleep(80);
+    need(order() === 'p1 c2 p2' && text('p2', 'line') === 'Asks: Which file?', `after a sign of life: ${order()}`);
+    need(text('p1', 'line') === 'Asks: Which branch?', `the question reads "${text('p1', 'line')}"`);
+    need(text('c2', 'line') === 'Failed: the model is down', `the failure reads "${text('c2', 'line')}"`);
+    need(!items('working').some((li) => li.dataset.run === 'c2') && !item('c2').querySelector('[data-act="stop"]'),
+      'a failed run is still at work');
+    // seen (the server says so once it was opened): it needs nobody any more, and is among what just ended
+    turn('c2', 'run.acknowledged', { agent: 'reviewer', state: 'failed', needs_you: false });
+    await until('seen', () => items('needs').length === 2);
+    // ... and still says why: "seen" says nothing of the run
+    return need(items('ended').some((li) => li.dataset.run === 'c2') && text('c2', 'line') === 'Failed: the model is down',
+      `seen, the failure reads "${text('c2', 'line')}"`);
+  });
+
+  await check('what just ended is listed, the newest first, without the sub-agents, and only so many', async () => {
+    ACTIVITY.ended = 3;
+    turn('s1', 'run.done', { agent: 'researcher', source: 'sub_agent', parent_session: 'c1' });
+    const base = Date.now();
+    for (const id of ['d1', 'd2', 'd3']) {
+      turn(id, 'run.started');
+      turn(id, 'run.done', { ts: new Date(base + Number(id[1])).toISOString() });
+    }
+    // a failure seen long after it happened ended when it failed, not when it was seen
+    turn('e1', 'run.started');
+    turn('e1', 'run.failed', { needs_you: true, ts: new Date(base - 60000).toISOString() });
+    turn('e1', 'run.acknowledged', { state: 'failed', needs_you: false, ts: new Date(base + 50).toISOString() });
+    await until('three ended', () => items('ended').length === 3);
+    need(items('ended').map((li) => li.dataset.run).join(' ') === 'd3 d2 d1', `ended reads ${items('ended').map((li) => li.dataset.run)}`);
+    // how it ended is its mark; a line under it only where there is more to say
+    need(!item('d3').querySelector('.activity-line') && item('d3').querySelector('.activity-mark .pk-icon')
+      && item('d3').querySelector('[data-act="open"]').title.endsWith('Done'), 'an ended run does not say how it ended');
+    need(!tree.runs.has('s1'), 'an ended sub-agent is remembered, though nothing shows it');
+    // the sub-agent never, the failed turn pushed out by newer ones
+    return need(!item('s1') && !item('c2'), `still shown: ${[item('s1') && 's1', item('c2') && 'c2'].filter(Boolean)} `
+      + `in ${[...host.querySelectorAll('.activity-item')].map((li) => `${li.closest('[data-activity]').dataset.activity}/${li.dataset.run}`)}`);
+  });
+
+  await check('a turn begun again is at work again', async () => {
+    turn('d3', 'run.started', { subject: { title: 'The next question' } });
+    await until('at work', () => items('working').some((li) => li.dataset.run === 'd3'));
+    return !items('ended').some((li) => li.dataset.run === 'd3') && text('d3', 'title') === 'The next question'
+      && text('d3', 'time') === 'now';
+  });
+
+  await check('an event from before what is known of a run changes nothing', async () => {
+    // A step written as its run ended is read from the store after the end was told: taken, the run was at work
+    // again on this page, then silent, for good.
+    need(items('ended').some((li) => li.dataset.run === 'd2'), 'fixture: d2 has not ended');
+    turn('d2', 'run.step', { step: thinking, seq: 1 });
+    await sleep(80);
+    return items('ended').some((li) => li.dataset.run === 'd2') && !items('working').some((li) => li.dataset.run === 'd2');
+  });
+
+  await check('of the ended runs only the newest are remembered', async () => {
+    ACTIVITY.kept = 2;
+    turn('d3', 'run.done');
+    await sleep(60);
+    const kept = [...tree.runs.values()].filter((run) => live.FINAL.has(run.state) && !run.needsYou).map((run) => run.run_id);
+    return need(kept.length === 2 && kept.includes('d3'), `it remembers ${kept}`);
+  });
+
+  await check('a snapshot is what there is: what it does not name is gone', async () => {
+    ACTIVITY.ended = 6;    // as shipped: the checks above set both low
+    ACTIVITY.kept = 40;
+    // heard of meanwhile: a run that ended a moment before the list arrived, which still calls it at work
+    turn('late', 'run.started');
+    turn('late', 'run.done');
+    const ago = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
+    const row = (run_id, state, fields = {}) => ({ run_id, agent: 'coder', source: 'chat', task: 'turn', title: `Row ${run_id}`,
+      state, started: ago(30), parent_session: '', needs_you: false, last_seq: 1, ...fields });
+    say({ type: 'runs.snapshot', runs: [
+      row('late', 'working'),
+      // asked ten minutes ago, and saying ever since that it lives: it waits longer than the failure below
+      row('q9', 'needs_input', { needs_you: true, question: { question: 'Which host?' }, asked: ago(10), updated: ago(0) }),
+      row('f9', 'failed', { needs_you: true, ended: ago(5), reason: 'no access' }),
+      row('z9', 'working', { silent: true, step_label: 'Thinking', started: ago(2) }),
+      row('old9', 'done', { ended: ago(120) }),
+      { run_id: 'n3', agent: 'coder', source: 'chat', task: 'turn', title: 'Started later', state: 'working',
+        started: new Date(Date.now() - 5 * 60000).toISOString(), parent_session: '', needs_you: false },
+      { run_id: 'n1', agent: 'coder', source: 'chat', task: 'turn', title: 'Back again', state: 'working',
+        started: new Date(Date.now() - 65 * 60000).toISOString(), step_label: 'file_ops: read_file · a.py', step_index: 3,
+        parent_session: '', needs_you: false },
+      { run_id: 'n2', agent: 'coder', source: 'chat', task: 'turn', title: 'Earlier', state: 'done',
+        started: '2026-11-18T05:00:00Z', ended: new Date(Date.now() - 5 * 60000).toISOString(), parent_session: '' }] });
+    await until('the new tree', () => item('n1') && item('n2'));
+    need(items('working').map((li) => li.dataset.run).join(' ') === 'n1 n3 z9', 'the runs at work do not read oldest first');
+    need(!items('working').some((li) => li.dataset.run === 'late') && items('ended').some((li) => li.dataset.run === 'late'),
+      'the list took back an end the page had heard');
+    need(items('needs').map((li) => li.dataset.run).join(' ') === 'f9 q9' && text('q9', 'line') === 'Asks: Which host?'
+      && text('f9', 'line') === 'Failed: no access', `what waits reads ${items('needs').map((li) => li.textContent.replace(/\s+/g, ' ').trim())}`);
+    need(item('z9').querySelector('.ai-live-dot--quiet') && text('z9', 'line') === 'Thinking -- no sign of life for 30 s',
+      'a run the list calls silent is not marked');
+    need(!item('old9'), 'a run that ended two hours ago is "just ended"');
+    return !item('c1') && !item('b1') && text('n1', 'time') === '1 h 05' && text('n1', 'line') === 'file_ops: read_file · a.py'
+      && text('n2', 'time') === '5 min';
+  });
+
+  await check('a run that begins anew under an id the page knew counts its events from its own start', async () => {
+    // The store keeps so many ended runs; a session whose run it let go of starts its next one at event 1. Held
+    // against what the page knew of the old run, the new one's every event was "from before" and it never showed.
+    turn('n3', 'run.step', { step: thinking });
+    turn('n3', 'run.done');
+    await until('ended', () => items('ended').some((li) => li.dataset.run === 'n3'));
+    need(tree.runs.get('n3').seq > 2, 'fixture: the page knows the old run no further than the new one counts');
+    turn('n3', 'run.started', { seq: 1, subject: { title: 'A new run' } });
+    await until('at work', () => items('working').some((li) => li.dataset.run === 'n3'));
+    turn('n3', 'run.step', { seq: 2, step: thinking, subject: { title: 'A new run' } });
+    await until('its step', () => text('n3', 'line') === 'Thinking');
+    return text('n3', 'title') === 'A new run' && !items('ended').some((li) => li.dataset.run === 'n3');
+  });
+
+  await check('with nothing left to say the tree is out of the way again', async () => {
+    need(!host.hidden, 'fixture: the tree is not showing');
+    say({ type: 'runs.snapshot', runs: [] });
+    return Boolean(await until('hidden', () => host.hidden && host.children.length === 0));
+  });
+
+  await check('how long is told by the minute', async () => {
+    const now = Date.parse('2026-11-18T12:00:00Z');
+    return since('2026-11-18T11:59:20Z', now) === 'now' && since('2026-11-18T11:48:00Z', now) === '12 min'
+      && since('2026-11-18T09:57:00Z', now) === '2 h 03' && since('', now) === '' && since('2026-11-18T12:00:09Z', now) === 'now';
+  });
+
+  tree.close();
+  await report('/__results', { method: 'POST', body: JSON.stringify(results) });
+</script>
+</body>
+</html>

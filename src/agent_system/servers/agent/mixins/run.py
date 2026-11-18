@@ -14,6 +14,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
+from ....core import turn_runs
 from ....core.cancellation import get_cancellation_manager
 from ....core.session_presence import SessionBusy, presence_for
 from ....utils.id import short_id
@@ -291,6 +292,7 @@ class RunMixin:
         messages = None
         checkpoint_loop: Optional[asyncio.Task] = None
         results: Dict[str, Any] = {"task": task, "calls": []}
+        turn: Optional[turn_runs.Turn] = None
 
         # Register this request BEFORE emitting start event so appends work immediately
         request_entry = {
@@ -374,6 +376,18 @@ class RunMixin:
                 # while this run has it, and a direct message would wake a
                 # second run of it.
                 self._presence_hold(session_id, request_id)
+
+                # Told as a run (core/turn_runs.py): who works, on what, below whom. The session the context
+                # names here is still the caller's -- this run sets its own in Phase 1: the turn that started
+                # this one, none for a turn of its own.
+                from ....core.request_context import current_run_session, run_is_attended
+                above = current_run_session.get() or ""
+                turn = await turn_runs.started(
+                    agent=self.name, system_config=self.system_config, session_id=session_id,
+                    user_id=str((self._session_tracker.get_session_metadata(session_id) or {}).get("user_id") or ""),
+                    task=task or (task_text_of(initial_message) if initial_message is not None else ""),
+                    parent=above, attended=run_is_attended(request_id),
+                    request_id=request_id)
 
                 # Phase 1: Initialize request and build conversation context
                 try:
@@ -499,6 +513,10 @@ class RunMixin:
                     # the client's cancel, and an await here would be cancelled before the
                     # release starts (measured: 1 of 30 disconnects released).
                     self._presence_release(request_id)
+                    # The run's end, told like the release: without an await this finally could lose to a cancel.
+                    # "cancelled" is in the results once the finalize got that far, and of a run that crashed
+                    # after it was stopped; one whose finalize was cut short has neither answer nor error.
+                    turn_runs.ended(turn, session_id, results, bool(results.get("cancelled")))
 
             # Yield final status events and end marker
             # These won't execute if generator was closed early (GeneratorExit), which is fine

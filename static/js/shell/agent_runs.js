@@ -5,7 +5,7 @@
 // elsewhere, a system notification says so (once they allowed it with the bell beside the pill). Fed by the run events
 // (run-events.js); hidden while no agent works and none waits.
 import { html, icon, update } from '/static/kit/panel-kit.js';
-import { ACTIVE, FINAL, followRuns, isSilent, liveRun, stepLabel } from '/static/kit/run-events.js';
+import { ACTIVE, FINAL, TURNS, followRuns, isSilent, liveRun, stepLabel } from '/static/kit/run-events.js';
 
 /** How often the pill looks again whether a run went quiet, in ms, and the language of the steps: the browser's --
  * the shell speaks English, but what an agent does is told in the reader's own language where the agent names it
@@ -85,7 +85,9 @@ export class AgentRunsPill {
     if (became('needs_input')) body = `Has a question for you: ${run.payload?.question || ''}`;
     else if (became('review')) body = 'Done -- please check the result';
     else if (run.needsYou && (became('failed') || became('handed_over'))) body = 'Could not go on -- it needs you';
-    else if (became('done') && before?.state !== 'review') body = 'Done';
+    // not a turn's end, nor a sub-agent's: a chat is watched where it runs -- at a terminal as much as here -- and
+    // every turn of every chat would ring; what needs the person is told above
+    else if (became('done') && before?.state !== 'review' && !TURNS.has(run.source)) body = 'Done';
     if (!body) return;
     try {
       const note = new Notification(`${run.agent}${run.title ? ` · ${run.title}` : ''}`, { body, tag: run.run_id });
@@ -114,7 +116,7 @@ export class AgentRunsPill {
       ...waiting.map((run) => `${run.agent}${run.title ? ` · ${run.title}` : ''}: ${run.state === 'review' ? 'done, please check' : run.state === 'needs_input' ? 'has a question' : 'needs you'}`),
       ...working.map((run) => `${run.agent}${run.title ? ` · ${run.title}` : ''}: ${stepLabel(run.step, PILL.lang) || 'at work'}${
         isSilent(run) ? ' -- no sign of life for 30 s' : ''}`),
-      'Click: open the panel that started it',
+      'Click: open it where it is followed',
     ].join('\n');
   }
 }

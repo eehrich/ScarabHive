@@ -1416,6 +1416,12 @@
     addNote(container, lines.join('\n'));
   }
 
+  /** /runs: what works now, in the words `agent-cli runs` prints -- the list above the sessions, said in the chat. */
+  async function cmdRuns(container) {
+    const data = await getJSON('/api/agent-runs/text?width=90&lang=' + encodeURIComponent(navigator.language || 'en'));
+    addNote(container, data.text);
+  }
+
   async function cmdCosts(container) {
     if (!currentSessionId) {
       addNote(container, 'No session yet -- nothing has been billed.');
@@ -1631,6 +1637,7 @@
       vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
       costs: function () { return cmdCosts(container); },
+      runs: function () { return cmdRuns(container); },
       context: function () { return cmdContext(container); },
       history: function () { return cmdHistory(container, payload); },
       last: function () { return cmdLast(container); },

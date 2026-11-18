@@ -19,6 +19,7 @@
     catch (error) { results[name] = `error: ${error && error.message}`; }
   };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const need = (condition, message) => { if (!condition) throw new Error(message); return true; };
   async function until(what, predicate, timeout = 4000) {
     const end = performance.now() + timeout;
     for (;;) {
@@ -191,6 +192,30 @@
     opened.length = 0;
     button.click();
     return opened.length === 1 && opened[0].run_id === 'b1' && opened[0].parent === 's-chat';
+  });
+
+  await check('a turn\'s end is not told, nor a sub-agent\'s: only what needs the person is', async () => {
+    // Every turn is a run now, and so is every sub-agent below it: told each, a turn with five of them rang six
+    // times -- and a turn watched at a terminal rang in the browser beside it.
+    need(Notification.permission === 'granted', 'fixture: notifications are not allowed any more');
+    looking = false;
+    notes.length = 0;
+    try {
+      event({ run_id: 'c9', type: 'run.started', state: 'working', agent: 'coder', source: 'chat', subject: { title: 'Fix it' } });
+      event({ run_id: 'sa1', type: 'run.started', state: 'working', agent: 'explorer', source: 'sub_agent',
+        parent_session: 'c9', subject: { title: 'Read the code' } });
+      event({ run_id: 'sa1', type: 'run.done', state: 'done', agent: 'explorer', source: 'sub_agent', parent_session: 'c9' });
+      await sleep(60);
+      need(notes.length === 0, `a sub-agent's end was told: ${JSON.stringify(notes)}`);
+      event({ run_id: 'c9', type: 'run.done', state: 'done', agent: 'coder', source: 'chat' });
+      await sleep(60);
+      need(notes.length === 0, `a turn's end was told: ${JSON.stringify(notes)}`);
+      // a turn that failed where nobody saw it is
+      event({ run_id: 'c8', type: 'run.started', state: 'working', agent: 'coder', source: 'chat', subject: { title: 'Run it' } });
+      event({ run_id: 'c8', type: 'run.failed', state: 'failed', needs_you: true, agent: 'coder', source: 'chat' });
+      await until('the failure told', () => notes.length === 1);
+      return notes[0].title === 'coder · Run it' && notes[0].body.startsWith('Could not go on');
+    } finally { looking = true; }
   });
 
   pill.stop();
