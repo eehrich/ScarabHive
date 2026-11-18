@@ -111,7 +111,9 @@ Tools that change files without naming them -- shell commands and the like
 -- are recorded by a look before and after the call (see @{" What is
 recorded " link recorded}). Where that was not possible they are counted:
 the answer ends with "Not tracked: <tool> xN", so a "rewound" is never
-mistaken for "exactly as before".
+mistaken for "exactly as before". A call recorded except for a part the
+look does not see -- a build's output in an ignored directory -- is named
+apart: "Partly tracked: <tool> xN (files the work tree ignores)".
 
 In the browser the answers come from the server: a refusal is a 409, an
 unknown checkpoint a 404, a partial rewind a 500 with the same text, and

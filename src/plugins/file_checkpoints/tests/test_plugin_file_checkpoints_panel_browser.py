@@ -36,10 +36,14 @@ CHECKPOINTS = [
     {"number": 3, "turn": 1, "after_turn": None, "dropped": False, "question": "fix the parser", "changed_at": YESTERDAY,
      "files": [{"path": "/w/a.txt", "change": "modified", "changed_at": YESTERDAY},
                {"path": "/w/logo.bin", "change": "created", "changed_at": YESTERDAY}],
-     "untracked": [{"tool": "terminal/execute", "count": 2}]},
+     "untracked": [{"tool": "terminal/execute", "count": 2},
+                   {"tool": "builder/build (partly not recorded: files the work tree ignores)", "count": 3}]},
     # A turn that only counted a call which may change files (a coding CLI's run): no file of its own.
     {"number": 4, "turn": 2, "after_turn": None, "dropped": False, "question": "let it run", "changed_at": YESTERDAY,
      "files": [], "untracked": [{"tool": "coder_cli/run_task", "count": 1}]},
+    # A turn whose only call changed what the look leaves out (an install into a venv): no file, and no warning.
+    {"number": 6, "turn": 3, "after_turn": None, "dropped": False, "question": "install it", "changed_at": YESTERDAY,
+     "files": [], "untracked": [{"tool": "terminal/execute (partly not recorded: .venv directories)", "count": 1}]},
     {"number": 5, "turn": None, "after_turn": 1, "dropped": True, "question": "try again", "changed_at": RECENT,
      "files": [{"path": "/w/c.txt", "change": "created", "changed_at": RECENT}], "untracked": []},
 ]
@@ -117,6 +121,8 @@ EXPECTED = [
     'a refusal for a running session offers no overwrite',
     'a refused rewind is asked once more and then sent with overwrite',
     'a checkpoint that only counted calls is one line with nothing to put back',
+    'a checkpoint whose calls changed only what the look does not see is one line without a warning',
+    'a call recorded except for a part is named apart from the calls that were only counted',
     'a checkpoint is reverted alone, and a file of it alone',
     'what is reviewed offers no revert',
     'without storage a mark still holds for the page',

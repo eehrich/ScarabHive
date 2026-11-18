@@ -800,7 +800,7 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
                     Journal.note_untracked(conn, seq, f"{tool} (not recorded: {reason})")
                     return
                 if unseen:
-                    Journal.note_untracked(conn, seq, f"{tool} (partly not recorded: {', '.join(unseen)})")
+                    Journal.note_untracked(conn, seq, f"{tool}{_PARTLY}{', '.join(unseen)})")
                 needed = sum(item.before.size or 0 for item in found if item.source is not None)
                 forgotten = Journal.prune(conn, self.max_checkpoints, self.max_session_bytes, keep_seq=seq,
                                           needed=min(needed, self.max_call_bytes))
@@ -1612,9 +1612,24 @@ def _paths(items: List[dict], limit: int = 10) -> List[str]:
     return lines
 
 
-def _untracked_line(untracked: List[dict]) -> str:
-    calls = ", ".join(f"{u['tool']} x{u['count']}" for u in untracked)
-    return f"  Not tracked: {calls} -- whatever they changed is still as they left it."
+#: How a call that was recorded except for what the look does not see is named (_record_snapshot_held).
+_PARTLY = " (partly not recorded: "
+
+
+def _untracked_lines(untracked: List[dict]) -> List[str]:
+    """What a rewind did not put back, in words: calls that left no record at all, and calls recorded except
+    for a part the look does not see. One line for both said of a build "whatever it changed is still as it
+    left it", when only its ignored output was."""
+    whole = [u for u in untracked if _PARTLY not in u["tool"]]
+    partly = [(u["tool"].partition(_PARTLY), u["count"]) for u in untracked if _PARTLY in u["tool"]]
+    lines: List[str] = []
+    if whole:
+        calls = ", ".join(f"{u['tool']} x{u['count']}" for u in whole)
+        lines.append(f"  Not tracked: {calls} -- whatever they changed is still as they left it.")
+    if partly:
+        calls = ", ".join(f"{name} x{count} ({what.removesuffix(')')})" for (name, _, what), count in partly)
+        lines.append(f"  Partly tracked: {calls} -- that part is still as they left it.")
+    return lines
 
 
 def _rewind_text(status: str, what: str, result: dict, alone: bool = False) -> str:
@@ -1652,8 +1667,7 @@ def _rewind_text(status: str, what: str, result: dict, alone: bool = False) -> s
     if result["failed"]:
         lines.append("  Could not be written (still recorded -- try again):")
         lines.extend(_paths(result["failed"]))
-    if result["untracked"]:
-        lines.append(_untracked_line(result["untracked"]))
+    lines.extend(_untracked_lines(result["untracked"]))
     return "\n".join(lines)
 
 
@@ -1671,6 +1685,5 @@ def _listing_text(entries: List[dict]) -> str:
         lines.append(f"  {entry['number']:>2}  {where}: \"{entry['question']}\"")
         if files:
             lines.append(f"      {len(files)} file(s): {shown}{more}")
-        if entry["untracked"]:
-            lines.append("    " + _untracked_line(entry["untracked"]).strip())
+        lines.extend("    " + line.strip() for line in _untracked_lines(entry["untracked"]))
     return "\n".join(lines)

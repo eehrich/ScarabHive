@@ -540,6 +540,10 @@ class TestWhatGitDidNotLookAt:
 
         assert counted(await listing(rig)) == [
             "shell_execute (partly not recorded: files the work tree ignores)"]
+        # in words it is no "whatever they changed is still as they left it": a.txt is put back, .env is not
+        said = (await rig.checkpoints(agent=rig.agent("with_shell")))["text"]
+        assert "Partly tracked: shell_execute x1 (files the work tree ignores) -- that part is still" in said
+        assert "Not tracked" not in said
 
     async def test_a_change_to_ignored_files_alone_makes_no_checkpoint(self, rig):
         """A service writes its ignored log while any call runs: a checkpoint for that would come with every

@@ -67,11 +67,27 @@ function where(entry) {
   return `before turn ${entry.turn}`;
 }
 
+// How the server names a call that was recorded except for what its look does not see.
+const PARTLY = ' (partly not recorded: ';
+
+/** [calls that left no record, calls recorded except for a part], each as "tool xN" text. */
+function untrackedParts(untracked) {
+  const whole = untracked.filter((u) => !u.tool.includes(PARTLY)).map((u) => `${u.tool} ×${u.count}`);
+  const partly = untracked.filter((u) => u.tool.includes(PARTLY)).map((u) => {
+    const [name, what] = u.tool.split(PARTLY);
+    return `${name} ×${u.count} (${what.replace(/\)$/, '')})`;
+  });
+  return [whole, partly];
+}
+
+/** Calls that left no record, and -- apart, they are no warning of the same weight -- calls recorded except for a part. */
 function untrackedLine(untracked) {
-  if (!untracked.length) return '';
-  const calls = untracked.map((u) => `${u.tool} ×${u.count}`).join(', ');
-  return html`<p class="pk-muted" style="margin:0">${icon('triangle-alert', { size: 'sm' })}
-    Not recorded, only counted (they may have changed files too): <span class="pk-mono">${calls}</span></p>`;
+  const [whole, partly] = untrackedParts(untracked);
+  return html`${whole.length ? html`<p class="pk-muted" data-untracked="whole" style="margin:0">${icon('triangle-alert', { size: 'sm' })}
+      Not recorded, only counted (they may have changed files too):
+      <span class="pk-mono">${whole.join(', ')}</span></p>` : ''}
+    ${partly.length ? html`<p class="pk-muted" data-untracked="partly" style="margin:0">${icon('info', { size: 'sm' })}
+      Recorded, except for what the look does not see: <span class="pk-mono">${partly.join(', ')}</span></p>` : ''}`;
 }
 
 function reviewButton(attrs, done, label) {
@@ -96,10 +112,14 @@ function fileRow(entry, file, marks) {
 // A checkpoint that recorded no file, only counted calls that may have changed some (a coding CLI's run): one
 // line. /rewind <n> still takes its number; here it has nothing to show or put back of its own.
 function countedRow(entry, id) {
-  const calls = (entry.untracked || []).map((u) => `${u.tool} ×${u.count}`).join(', ');
+  const [whole, partly] = untrackedParts(entry.untracked || []);
+  // only calls recorded except for a part: nothing went unseen that the look could have seen -- no warning
+  const said = [whole.length && html`only counted: <span class="pk-mono">${whole.join(', ')}</span>`,
+    partly.length && html`changed only what the look does not see: <span class="pk-mono">${partly.join(', ')}</span>`].filter(Boolean);
   return html`<div class="fc-counted pk-row pk-muted" data-session="${id}" data-card="${entry.number}"
-    title="Not recorded, only counted: they may have changed files too">${icon('triangle-alert', { size: 'sm' })}
-    <span class="pk-grow">Checkpoint ${entry.number} · ${where(entry)} · only counted: <span class="pk-mono">${calls}</span></span>
+    title="${whole.length ? 'Not recorded, only counted: they may have changed files too' : 'Nothing here a rewind could put back'}">
+    ${icon(whole.length ? 'triangle-alert' : 'info', { size: 'sm' })}
+    <span class="pk-grow">Checkpoint ${entry.number} · ${where(entry)} · ${said.map((part, index) => html`${index ? ' · ' : ''}${part}`)}</span>
     ${when(entry.changed_at)}</div>`;
 }
 

@@ -153,6 +153,22 @@
       && calls[1].session_id === 's1';
   });
 
+  await check('a call recorded except for a part is named apart from the calls that were only counted', async () => {
+    const line = (kind) => card(3).querySelector(`[data-untracked="${kind}"]`)?.textContent.replace(/\s+/g, ' ') ?? '';
+    return line('whole').includes('only counted') && line('whole').includes('terminal/execute ×2')
+      && !line('whole').includes('builder/build')
+      && line('partly').includes('Recorded, except for what the look does not see: builder/build ×3 (files the work tree ignores)')
+      && !line('partly').includes('partly not recorded');
+  });
+
+  await check('a checkpoint whose calls changed only what the look does not see is one line without a warning', async () => {
+    const row = doc().querySelector('.fc-counted[data-card="6"]');
+    const said = row?.textContent.replace(/\s+/g, ' ') ?? '';
+    return said.includes('changed only what the look does not see: terminal/execute ×1 (.venv directories)')
+      && !said.includes('only counted') && !said.includes('partly not recorded')
+      && row.querySelector('use')?.getAttribute('href')?.endsWith('#info') && !row.querySelector('button');
+  });
+
   await check('a checkpoint that only counted calls is one line with nothing to put back', async () => {
     const row = doc().querySelector('.fc-counted[data-card="4"]');
     return !!row && !row.closest('.pk-card') && row.textContent.includes('coder_cli/run_task ×1')
