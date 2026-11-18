@@ -268,6 +268,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Config: a `system_template` starting with `./` or `../` in the master config is relative to that file, as the
+  docs say and as it always was in an include and in the local layer. It stayed as written and was opened from the
+  folder the process was started in. A master that wrote such a path from the project root (`./config/prompts/x.md`)
+  now names it without the dot (`config/prompts/x.md`).
+
 - file_checkpoints: a call that was recorded except for a part its look does not see (a build's output in an ignored
   directory) read "Not tracked: ... whatever they changed is still as they left it", like a call that left no record
   at all. A rewind and the Files panel name it apart: "Partly tracked: <tool> xN (files the work tree ignores)".

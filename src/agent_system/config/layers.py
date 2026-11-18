@@ -226,8 +226,10 @@ def read_layers(cfg_path: Path) -> dict:
         logger.error(f"Failed to read config file '{cfg_path}': {e}")
         raise
 
-    # Start with the master config as base
+    # Start with the master config as base. Its ./ paths are relative to it, as an include's are to the include:
+    # left as written, they were read from wherever the process was started.
     data = dict(master)
+    _resolve_relative_paths(data, cfg_path.parent)
 
     includes = _expand_includes(master, cfg_path)
     logger.debug(f"Config includes {len(includes)} files from glob patterns")
