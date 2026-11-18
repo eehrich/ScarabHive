@@ -1,0 +1,74 @@
+# Does the coder's prompt, as edited, change how it works -- and does the work stay as good?
+#
+# The coder twice on the tasks of coder-workflow-ab: `new` with its prompt as shipped, `old` with the prompt as it
+# was before the edit that asks for independent calls in one step and for no read-back after an edit that
+# succeeded (coder_before.md, kept beside this file). The score is the share of tests that pass, hidden ones
+# included (checks.py); the first line of each run's detail counts how it worked: its steps, the lone lookups that
+# followed a lone lookup, the edits read back in the next step. Both arms on one cheap model: what is compared is
+# the prompt -- on that model, which is not the one the coder ships on.
+#
+# Only the coder's own prompt differs: the same edit touched the explorer's and the reviewer's, and both arms run
+# those as shipped. The counts read the coder's session alone, so they compare what was edited there.
+#
+# The hidden tests are kept from coder_fs, not from coder_shell: the shell starts at the checkout's root (as the
+# file tools resolve a relative path) and can reach them. Confining it takes the terminal's sandbox, which has no
+# backend on Windows. A run's session shows whether it looked: none of the first eight did.
+#
+# Run it with:  agent-eval run src/plugins/coder/evals/workflow_ab/prompt_ab.yaml
+name: coder-prompt-ab
+agent: coder
+description: "the coder's prompt before and after the edit on calls per step and read-backs: test share and habits"
+repeats: 2
+timeout_s: 2400
+parallel: 2
+budget_usd: 2                   # no new runs past it
+data: fresh
+config:
+  plugins:
+    servers:
+      # Only the run's workspace and the skills: the hidden tests live in this suite's folder in the checkout,
+      # and the preloaded search would find them by the task's words.
+      coder_fs:
+        allowed_directories: [".", "src/plugins/coder/skills/"]
+      coder_fs_ro:
+        allowed_directories: [".", "src/plugins/coder/skills/"]
+      coder:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+      coder_explorer:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+      coder_reviewer:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+      coder_tester:
+        agent_config: {llm_profile: [or-deepseek-flash], llm_profile_advanced: []}
+arms:
+  new: {}
+  old:
+    agent_config:
+      system_template: ./coder_before.md
+tasks:
+  - id: currencies
+    kind: learn
+    workspace: ledger_feature
+    input: >-
+      The current directory is a small Python package, ledger (read README.md). Add currencies to it:
+      (1) In a ledger line an amount may be followed by a currency code: three letters, after one or more
+      spaces, case-insensitive and kept upper-case ("-3.50 usd" is USD). Anything else after the number is an
+      error (ValueError). Entry gets a field `currency`: the code, or None for an amount without one -- None
+      means the base currency, and Entry(day, text, amount, category) keeps working.
+      (2) A new module ledger/currency.py with `convert(entries, rates, base="EUR")`: a new list in the same
+      order, every entry in the base currency with currency None. `rates` maps a code to the value of one unit
+      of it in the base currency. An entry already in the base currency (None, or the base's own code) keeps
+      its amount and needs no rate; a converted amount is rounded to cents, half to even. A code without a rate
+      is a ValueError that names the code.
+      (3) `totals_by_category` and `monthly` in ledger/report.py take `rates=None, base="EUR"`: with rates
+      they convert first; without rates an entry in another currency is a ValueError, never a sum of mixed
+      currencies. tests/ has tests for part of this; do not change them. Run the tests with python -m pytest.
+    check: {python: "plugins.coder.evals.workflow_ab.checks:score_with_habits"}
+  - id: bugs
+    kind: learn
+    workspace: ledger_bugs
+    input: >-
+      The current directory is a small Python package, ledger (read README.md). Its tests fail: find the bugs
+      in ledger/ and fix them, so the package does what README.md and the docstrings say. Do not change the
+      tests. Run them with python -m pytest.
+    check: {python: "plugins.coder.evals.workflow_ab.checks:score_with_habits"}

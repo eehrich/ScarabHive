@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import shutil
 from types import SimpleNamespace
 
@@ -70,3 +71,47 @@ def test_a_run_that_changed_a_test_scores_nothing(tmp_path, path, text):
     result = _score(tmp_path, "bugs", "ledger_bugs", rewrite)
     assert (result["score"], result["passed"]) == (0.0, False)
     assert path in result["detail"]
+
+
+def _step(*calls):
+    return {"role": "assistant", "tool_calls": [
+        {"function": {"name": name, "arguments": json.dumps({"filePath": path})}} for name, path in calls]}
+
+
+def test_habits_count_lone_lookups_in_a_row_and_edits_read_back_in_the_next_step():
+    """What the suite coder-prompt-ab compares besides the score."""
+    preloaded = {**_step(("coder_fs_semantic_search", "")), "injected_by": "tool_preload"}
+    messages = [
+        preloaded,  # the loop's call, not the model's: no step, and no lone lookup before the first
+        _step(("coder_fs_read_file", "a.py")),
+        {"role": "tool", "content": "..."},
+        _step(("coder_fs_read_file", "b.py")),  # a lone lookup after a lone lookup
+        _step(("coder_fs_grep_search", "")),  # and another
+        _step(("coder_fs_read_file", "c.py"), ("coder_fs_read_file", "d.py")),  # two together end the row
+        _step(("coder_fs_read_file", "e.py")),
+        _step(("coder_fs_replace_string_in_file", "pkg/a.py")),
+        _step(("coder_fs_read_file", "a.py")),  # read back, named without its folder
+        _step(("coder_fs_replace_string_in_file", "./pkg/a.py")),
+        _step(("coder_fs_read_file", "tests/a.py")),  # another file of the same name: no read-back
+        _step(("coder_fs_replace_string_in_file", "a.py")),
+        _step(("coder_shell_execute", "")),
+        _step(("coder_fs_read_file", "a.py")),  # not the very next step: a look after the tests ran
+    ]
+
+    assert checks.habits(messages) == (
+        "habits: steps 12, calls 13, lone lookups after a lone lookup 2, edits 3, read back 1")
+
+
+def test_the_habits_are_read_from_the_runs_own_session(tmp_path):
+    sessions = tmp_path / "sessions/someone"
+    sessions.mkdir(parents=True)
+    # Sorted before s1.json ("-" before "."): a search by the id's start would take it first.
+    (sessions / "s1-sub.json").write_text(json.dumps({"messages": [_step(("coder_fs_read_file", "x.py"))] * 3}),
+                                          encoding="utf-8")
+    (sessions / "s1.json").write_text(json.dumps({"messages": [_step(("coder_fs_read_file", "a.py"))]}),
+                                      encoding="utf-8")
+
+    messages = checks._messages({"data_dir": str(tmp_path), "session_id": "s1"})
+
+    assert checks.habits(messages).startswith("habits: steps 1, calls 1,")
+    assert checks._messages({"data_dir": str(tmp_path), "session_id": "none"}) == []

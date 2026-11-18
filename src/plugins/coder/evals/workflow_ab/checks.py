@@ -11,6 +11,7 @@ workspace (rootdir, confcutdir, an ini beside it), ``-P`` so the workspace canno
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -52,6 +53,76 @@ def score(workspace: Path, run: dict[str, Any], task: Any) -> dict[str, Any]:
     if total <= 0:
         return {"score": 0.0, "passed": False, "detail": f"no tests ran\n{detail}"}
     return {"score": passed / total, "passed": passed == total, "of": total, "detail": detail}
+
+
+#: Tool-name endings: a lookup that changes nothing, and an edit through the file tools.
+LOOKUPS = ("_read_file", "_list_directory", "_search_files", "_grep_search", "_semantic_search")
+EDITS = ("_replace_string_in_file", "_manage")
+
+
+def score_with_habits(workspace: Path, run: dict[str, Any], task: Any) -> dict[str, Any]:
+    """``score``, with how the run worked as the detail's first line (suite coder-prompt-ab): the steps of the
+    suite's agent, how many of them were a lone lookup right after another lone lookup -- they could have gone out
+    together --, and how many edits were read back in the very next step."""
+    result = score(workspace, run, task)
+    result["detail"] = f"{habits(_messages(run))}\n{result['detail']}"
+    return result
+
+
+def habits(messages: list[dict[str, Any]]) -> str:
+    """The model's own steps only: a call the loop or a plugin put in (the preloaded search, ``injected_by``) is
+    no step it took."""
+    steps = calls = lone_after_lone = edits = read_back = 0
+    lone_before = False
+    edited: list[tuple[str, ...]] = []
+    for message in messages:
+        made = [call.get("function") or {} for call in message.get("tool_calls") or []]
+        if message.get("role") != "assistant" or not made or message.get("injected_by"):
+            continue
+        steps += 1
+        calls += len(made)
+        lone = len(made) == 1 and str(made[0].get("name", "")).endswith(LOOKUPS)
+        lone_after_lone += lone and lone_before
+        lone_before = lone
+        now_edited: list[tuple[str, ...]] = []
+        for call in made:
+            name, target = str(call.get("name", "")), _target(call.get("arguments"))
+            if name.endswith("_read_file") and target and any(_same_file(target, done) for done in edited):
+                read_back += 1
+            if name.endswith(EDITS) and target:
+                edits += 1
+                now_edited.append(target)
+        edited = now_edited
+    return (f"habits: steps {steps}, calls {calls}, lone lookups after a lone lookup {lone_after_lone}, "
+            f"edits {edits}, read back {read_back}")
+
+
+def _target(arguments: Any) -> tuple[str, ...]:
+    """The parts of the path a call names; none where it names no file."""
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
+    except ValueError:
+        return ()
+    path = parsed.get("filePath") or parsed.get("path") or "" if isinstance(parsed, dict) else ""
+    return tuple(part for part in str(path).replace("\\", "/").split("/") if part not in ("", "."))
+
+
+def _same_file(one: tuple[str, ...], other: tuple[str, ...]) -> bool:
+    """The same file is written with and without its folders: the shorter path is the end of the longer one."""
+    short, long = sorted((one, other), key=len)
+    return bool(short) and long[len(long) - len(short):] == short
+
+
+def _messages(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """The messages of the run's own session, as stored in its data directory; none where it left no session."""
+    for path in Path(run.get("data_dir") or ".").rglob(f"{run.get('session_id')}.json"):
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(stored, dict) and isinstance(stored.get("messages"), list):
+            return [message for message in stored["messages"] if isinstance(message, dict)]
+    return []
 
 
 def _pytest(workspace: Path, paths: list[str], name: str) -> tuple[tuple[int, int], str]:
