@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:
+async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> bool:
     """403 unless every run the request id reaches is the caller's own, or the caller is an admin.
 
     A request id is all these endpoints are given. Without this, anyone signed in
@@ -42,10 +42,11 @@ async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches
     while it may work on -- so the owner is that of the nearest known run at or above
     the id. A cancel (``reaches_below``) stops every run whose id extends the one
     given, so there every known run below it counts too. A request nobody is known to
-    own (a restart forgot it) is left alone: nothing of anybody's is reached through it.
+    own (a restart forgot it) is left alone here; False says so, for a caller that reaches a run of this
+    process through it all the same (append_event).
     """
     if current_user is None or getattr(current_user, "role", None) == "admin":
-        return
+        return True
     job_manager = get_background_job_manager()
     owners = set()
     parts = request_id.split("_")
@@ -63,6 +64,15 @@ async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches
                       if job["request_id"].startswith(below))
     if owners - {current_user.username}:
         raise HTTPException(status_code=403, detail="Access denied to this request")
+    return bool(owners)
+
+
+def _runs(agent: Any, request_id: str) -> bool:
+    """Whether ``agent`` runs ``request_id`` in this process now."""
+    try:
+        return request_id in agent._request_manager.get_active_requests()
+    except Exception:  # noqa: BLE001 -- an agent without a request manager runs nothing here
+        return False
 
 
 @router.get("/api/requests/{request_id}/status")
@@ -250,7 +260,13 @@ async def append_event(
     target_agent = await resolve_agent_for_request(
         request_id, get_background_job_manager(), registry_of(request), ctx.agent
     )
-    await _refuse_foreign_request(request_id, current_user)
+    if not await _refuse_foreign_request(request_id, current_user) and _runs(target_agent, request_id):
+        # A run of this process nobody is known to own: a sub-agent's, whose caller's turn has ended and taken the
+        # owner map's entries with it, works on. Its session says whose it is.
+        sid = target_agent._session_tracker.get_session_for_request(request_id)
+        if not sid:
+            raise HTTPException(status_code=403, detail="Access denied to this request")
+        await ctx.verify_session_owner(sid, current_user, target_agent._session_tracker)
 
     logger.debug("Append request received for request_id=%s (agent=%s): %.120s",
                  request_id, target_agent.name, content)

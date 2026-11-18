@@ -654,13 +654,18 @@ class BackgroundJobManager:
             job = self._jobs.get(request_id)
             if job is not None and job.status == JobStatus.RUNNING:
                 return True
+        return self.agent_running(request_id) is not None
+
+    def agent_running(self, request_id: str) -> Any:
+        """The Agent server of this process that runs ``request_id`` now, or None. For a run no job names
+        the agent of -- a /run with files streams inline: a message appended to it has to reach that agent."""
         for server in self._agent_servers():
             try:
                 if request_id in server._request_manager.get_active_requests():
-                    return True
+                    return server
             except Exception:  # noqa: BLE001 -- an agent without a request manager runs nothing here
                 continue
-        return False
+        return None
 
     async def active_sessions(self) -> dict[str, dict[str, Any]]:
         """Which sessions this process is running right now: session_id -> info.

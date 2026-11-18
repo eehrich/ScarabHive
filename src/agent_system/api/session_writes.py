@@ -266,6 +266,12 @@ async def resolve_agent_for_request(
     except Exception:
         job = None
     agent_name = getattr(job, "agent_name", None) or agent_name
+    if not agent_name:
+        # Neither a job nor the caller names it -- a /run with files streams inline and makes no job: the agent
+        # running it says so itself, so a message the chat sends meanwhile reaches that run.
+        running = job_manager.agent_running(request_id)
+        if running is not None:
+            return running
     if registry is not None and agent_name and agent_name not in ("default", default_agent.name):
         try:
             return registered_agent(registry, agent_name)

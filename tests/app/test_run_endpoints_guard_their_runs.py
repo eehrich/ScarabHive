@@ -341,3 +341,38 @@ async def test_a_message_through_a_finished_requests_session_reaches_the_run_on_
     finally:
         done.set()
         other._session_tracker._request_to_session.pop(earlier, None)
+
+
+@pytest.mark.parametrize("whose, expected", [("theirs", 403), ("mine", 200)])
+async def test_a_run_nobody_is_known_to_own_is_written_to_by_its_sessions_owner_only(app, user, monkeypatch,
+                                                                                     whose, expected):
+    # A background sub-agent of a run that made no job (a /run with files): its caller's turn has ended and taken the
+    # owner map's entries with it, and the agent that runs it is found all the same (resolve_agent_for_request).
+    default_name = app.state.agent.name
+    runs_it = next((a for a in map(app_state.app_registry.get, app_state.app_registry.list())
+                    if isinstance(a, Agent) and a.name != default_name), None)
+    if runs_it is None:
+        pytest.skip("no registered agent besides the default one")
+    sub_run = f"files{uuid.uuid4().hex[:10]}_001_async_abc123"
+    session_id = f"s{uuid.uuid4().hex[:10]}"
+    owner = user[1] if whose == "mine" else f"not-{user[1]}"
+    runs_it._request_manager.register_active_request(sub_run, {"session_id": session_id})
+    monkeypatch.setattr(runs_it._session_tracker, "get_session_for_request",
+                        lambda rid: session_id if rid == sub_run else None)
+    monkeypatch.setattr(runs_it._session_tracker, "get_session_metadata",
+                        lambda sid: {"user_id": owner} if sid == session_id else None)
+    handed = []
+
+    async def append_user_message(self, rid, content):
+        handed.append((self.name, rid))
+        return True
+
+    monkeypatch.setattr(Agent, "append_user_message", append_user_message)
+    try:
+        async with _client(app) as client:
+            response = await client.post(f"/events/{sub_run}/append", headers=_headers(user),
+                                         json={"content": "do something else"})
+    finally:
+        runs_it._request_manager.unregister_active_request(sub_run)
+    assert response.status_code == expected, response.text
+    assert handed == ([(runs_it.name, sub_run)] if expected == 200 else []), handed

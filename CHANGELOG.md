@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A message for a run nobody is known to own any more -- a background sub-agent whose caller's turn has ended -- is
+  taken only from the owner of the run's session (or an admin).
 - mcp_gateway: `config/security.yaml` opens `/plugins/mcp_gateway*/mcp`, not only the default instance's route, so
   a caller with tools of its own runs its own instance (`mcp_gateway_<purpose>`) instead of filling the default one's
   runner allowlist, which every caller of the default could then reach. A deeper path under such a name stays
@@ -245,6 +247,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the input waits for the next run. The wake chain's depth travels with the turn. The chat joins a run that starts in
   the open session whenever it starts, not only within a minute of its last one. A turn woken in the API is no longer
   refused a wake by basic_operations, coding_cli and n8n as a run "that ends with its turn".
+- A message typed while a run started with attached files goes on reaches that run. Such a run streams without a
+  job, so the message went to the default agent, which did not know the run, and waited for the next turn.
 - file_ops: the ignore files of every folder apply to the searches and the index, not only the root's -- the deepest
   rule decides, as in git, and `.rgignore` counts too. `*.{ts,tsx}` and `[!a]*` are globs; they were taken
   literally. A line longer than 2000 characters is cut in a grep answer. A grep through the walk reads each file
