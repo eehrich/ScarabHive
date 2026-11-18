@@ -1894,6 +1894,8 @@ EXPECTED = [
     'work a turn started that goes on after it shows at work under its call, with its step and a Stop, and its end once it has one',
     'work that goes on after the turn that started it is not marked unfinished when that turn ends',
     'what works now stands above the sessions with the step it is on, and a click opens it in the chat',
+    'the head counts the agents at work only where the tree above the sessions does not show them',
+    "a run's end is read by a session opened while it worked, though the run said nothing before it",
     "a run's session opened by itself is read along as the run goes on, while the viewer follows its end",
     'the list of every session folds away below what works now, as the person left it',
     'a failure nobody saw is seen once its session is opened; a result to check is not',

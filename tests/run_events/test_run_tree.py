@@ -37,9 +37,11 @@ def test_the_runs_at_work_read_as_a_tree_the_oldest_first():
         ("c1", 0), ("s1", 1), ("s2", 2), ("c2", 0), ("b1", 0), ("loop", 0)]
 
 
-def test_two_runs_that_name_each_other_draw_nothing_twice():
-    runs = [run("a", parent_session="b"), run("b", parent_session="a")]
-    assert working(runs) == []      # neither stands on its own: nothing to hang them on, and no endless walk
+def test_two_runs_that_name_each_other_stand_on_their_own_once():
+    # nothing to hang them on, and no endless walk -- but they are at work, and a tree that left them out said
+    # that nothing was
+    runs = [run("a", parent_session="b"), run("b", parent_session="a", started="2026-11-18T11:49:00Z"), run("c")]
+    assert [(r["run_id"], depth) for r, depth in working(runs)] == [("c", 0), ("a", 0), ("b", 0)]
 
 
 def test_the_chats_runs_command_prints_them(store, capsys):

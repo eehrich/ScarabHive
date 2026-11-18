@@ -381,12 +381,13 @@ async function start() {
   });
   server.show(user?.role === 'admin');  // without authentication there are no admin routes, and no buttons
   // Where a run is followed: a panel's task in its panel; an agent's turn in its own session; work a turn started
-  // that goes on after it in the session of that turn, where its box is. Opened, an end that waited to be seen
-  // has been seen.
+  // that goes on after it in the sub-session it is kept in (core/background_runs.py: the run's id is that
+  // session's), read along as it goes -- its box in the caller's chat hangs at the call that started it, and
+  // that may be many turns up from the chat's end. Opened, an end that waited to be seen has been seen.
   const openRun = async (run) => {
     const panel = run.source && workspace.panelAt(`/plugins/${run.source}/`);
     if (panel) return workspace.open(panel.id);
-    const session = TURNS.has(run.source) ? run.run_id : run.parent;
+    const session = TURNS.has(run.source) || run.source === 'background' ? run.run_id : run.parent;
     if (!session) {
       return showToast(document, `${run.agent || 'The agent'} was started outside a panel; follow it in its session`, 'info');
     }
@@ -409,7 +410,13 @@ async function start() {
     onMove: (run) => window.chatModule?.openRunMoved?.(run),
   });
   activity.start();
-  window.addEventListener('session:loaded', () => activity.draw());
+  window.addEventListener('session:loaded', (event) => {
+    activity.draw();
+    // how the run of the session just drawn stands, which the chat cannot know: it hears of a run only as the
+    // run says something, and one in a long call says nothing until its end
+    const id = event.detail.session?.session_id;
+    if (id) activity.known.then(() => window.chatModule?.openRunStands?.(id, activity.runs.get(id) || null));
+  });
   window.addEventListener('session:new', () => activity.draw());
 
   document.addEventListener('keydown', (event) => {

@@ -39,7 +39,9 @@ def working(runs: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
             walk(run["run_id"], depth + 1)
 
     walk("", 0)
-    return out
+    # ... and stand on their own, after the rest: a run at work is said, wherever it claims to hang
+    reached = {run["run_id"] for run, _depth in out}
+    return out + [(run, 0) for run in active if run["run_id"] not in reached]
 
 
 def waits_since(run: dict[str, Any]) -> str:

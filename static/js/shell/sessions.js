@@ -979,18 +979,21 @@ export class SessionManager {
     return true;
   }
 
-  /** Put a fetched session into the chat -- read-only when its sub-agent cannot be picked here. `again`: the
-   * open one, read once more (readAgain). */
+  /** Put a fetched session into the chat -- read-only when its sub-agent cannot be picked here, and when it is
+   * what work that outlived its turn is kept in (core/background_runs.py): no agent answers there, and a turn
+   * sent into it would write the session the work writes. `again`: the open one, read once more (readAgain). */
   show(session, { again = false } = {}) {
     const id = session.session_id;
     this.remember([session]);
     this.setCurrent(id, session.title || session.name);
-    const readOnly = Boolean(session.depth) && !window.selectorModule.hasAgent(session.agent_name);
+    const work = Boolean(session.metadata?.background);
+    const readOnly = work || (Boolean(session.depth) && !window.selectorModule.hasAgent(session.agent_name));
     window.dispatchEvent(new CustomEvent('session:loaded', {
       detail: {
         session,
         readOnly,
-        reason: readOnly ? `Sub-agent "${session.agent_name}" is not available in the agent selector` : null,
+        reason: work ? `The work of "${session.agent_name}", started by a turn of the session that called it: it takes no messages`
+          : readOnly ? `Sub-agent "${session.agent_name}" is not available in the agent selector` : null,
         again,
       },
     }));

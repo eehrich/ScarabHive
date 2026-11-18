@@ -3846,15 +3846,133 @@
       await until('its session in the chat', () => $('#headerSessionId').textContent === 'Import path', 3000);
       // at once: the session opened says so, the tree does not wait for its next look at the clock
       need(item('s-act').getAttribute('aria-current') === 'true', 'the open one is not marked');
-      // work that outlived its turn has no chat of its own: it is followed in the session whose turn started it
+      // work that outlived its turn is kept in a session of its own, under the run's id: followed there, where
+      // its steps are read along -- in its caller's chat its box hangs at the call that started it, turns up
+      // from the end, and a click landed on a chat that showed nothing of it
       await stub('/__stub/sessions', { session_id: 's-check', title: 'To check' });
+      await stub('/__stub/sessions', { session_id: 'sub-work', title: 'claude_code: Fix the parser', agent_name: 'claude_code',
+        parent_session: { session_id: 's-check' }, metadata: { background: { run_id: 'r_001_sub_abc', state: 'cancelled',
+          reason: 'Claude Code: stopped after the time limit of 40 min' } },
+        messages: [{ role: 'user', content: 'Fix the parser', request_id: 'r_001_sub_abc', injected_by: 'background' },
+          { role: 'assistant', content: '', step: 1, injected_by: 'background', tool_calls: [{ id: 'c1', type: 'function',
+            function: { name: 'Read', arguments: '{}' } }] }] });
       await stub('/__stub/agent-runs', { runs: [{ ...atWork('sub-work')[0], agent: 'claude_code', source: 'background',
         task: 'background', parent_session: 's-check' }] });
       await loadShell();
       await until('the work', () => item('sub-work'), 5000);
       item('sub-work').querySelector('[data-act="open"]').click();
-      return Boolean(await until('the session it works below', () => $('#headerSessionId').textContent === 'To check', 3000));
+      await until('the session it is kept in', () => $('#headerSessionId').textContent === 'claude_code: Fix the parser', 3000);
+      need(item('sub-work').getAttribute('aria-current') === 'true', 'the work opened is not marked');
+      // no agent answers there, and the work writes that session: it takes no message
+      need($('#task').disabled && $('#readOnlyBanner')?.textContent.includes('The work of "claude_code"'),
+        'the session the work is kept in takes a message');
+      // ... which says how the work ended where it ended without an answer, as its box does
+      await until('how it ended', () => $('#chat > .run-end'), 3000);
+      need($('#chat > .run-end .response-text.error')?.textContent === 'Claude Code: stopped after the time limit of 40 min'
+        && $('#chat').lastElementChild.matches('.run-end') && $$('#chat > .run-end').length === 1,
+      'the session of work that was stopped does not say so, once and at its end');
+      // what the run events say of a session left meanwhile is not this one's to say
+      win().chatModule.openRunStands('s-check', null);
+      need($$('#chat > .run-end').length === 1, 'how the work ended is said again for a session that is not shown');
+      $('#callerLink').click();
+      await until('back at its caller', () => $('#headerSessionId').textContent === 'To check', 3000);
+      await sleep(400);
+      need(!$('#chat .run-end') && !$('#task').disabled, 'a session that is no such work says how one ended, or takes no message');
+      // work that ended with an answer said it as its last word: nothing to add (its end names the answer too)
+      await stub('/__stub/sessions', { session_id: 'sub-done', title: 'claude_code: Done work', agent_name: 'claude_code',
+        parent_session: { session_id: 's-check' }, metadata: { background: { run_id: 'r_002_sub_abc', state: 'done',
+          reason: 'Claude Code: The parser is fixed' } },
+        messages: [{ role: 'user', content: 'Fix the parser', request_id: 'r_002_sub_abc', injected_by: 'background' },
+          { role: 'assistant', content: 'The parser is fixed', step: 1, injected_by: 'background' }] });
+      await win().sessionManager.loadSession('sub-done');
+      await until('the work that is done', () => $('#headerSessionId').textContent === 'claude_code: Done work', 3000);
+      await sleep(400);
+      need(!$('#chat .run-end') && $('#task').disabled, 'work that ended with an answer is said to have failed');
+      await stub('/__stub/sessions', { session_id: 'sub-done', title: 'claude_code: Failed work', agent_name: 'claude_code',
+        parent_session: { session_id: 's-check' }, metadata: { background: { run_id: 'r_002_sub_abc', state: 'failed',
+          reason: 'Claude Code: the run failed' } },
+        messages: [{ role: 'user', content: 'Fix the parser', request_id: 'r_002_sub_abc', injected_by: 'background' }] });
+      await win().sessionManager.loadSession('sub-done');
+      await until('why it failed', () => $('#chat > .run-end')?.textContent === 'Claude Code: the run failed', 3000);
+      // done with nothing to say: its steps end in a call, and nothing else said that the work was over
+      const call = { role: 'assistant', content: '', step: 1, injected_by: 'background', tool_calls: [{ id: 'c1', type: 'function',
+        function: { name: 'Read', arguments: '{}' } }] };
+      const work = (state, fields = {}) => stub('/__stub/sessions', { session_id: 'sub-work', title: 'claude_code: Fix the parser',
+        agent_name: 'claude_code', parent_session: { session_id: 's-check' }, metadata: { background: { run_id: 'r_001_sub_abc', state, ...fields } },
+        messages: [{ role: 'user', content: 'Fix the parser', request_id: 'r_001_sub_abc', injected_by: 'background' }, call] });
+      await work('done', { reason: 'Claude Code: ' });
+      await win().sessionManager.loadSession('sub-work');
+      await until('done, and nothing said', () => $('#chat > .run-end')?.textContent === 'Done -- it said nothing at its end', 3000);
+      need(!$('#chat > .run-end .error'), 'work that is done is said to have failed');
+      // at work: its session says "running", and so do the run events -- nothing to add
+      await work('running');
+      await loadShell();
+      await until('the work', () => item('sub-work'), 5000);
+      item('sub-work').querySelector('[data-act="open"]').click();
+      await until('its session', () => $('#headerSessionId').textContent === 'claude_code: Fix the parser', 3000);
+      await sleep(500);
+      need(!$('#chat .run-end'), `work that goes on is said to have ended: "${$('#chat .run-end')?.textContent}"`);
+      // an end that was never written (the process died over the work): the session still says "running", the
+      // run events say that it failed, and why
+      await stub('/__stub/agent-runs', { runs: [{ ...atWork('sub-work')[0], agent: 'claude_code', source: 'background',
+        task: 'background', parent_session: 's-check', state: 'failed', needs_you: true, step_label: '',
+        ended: new Date().toISOString(), reason: 'its process ended' }] });
+      await loadShell();
+      await until('the work that failed', () => item('sub-work'), 5000);
+      item('sub-work').querySelector('[data-act="open"]').click();
+      return Boolean(await until('what the run events say of it',
+        () => $('#chat > .run-end .error')?.textContent === 'Failed: its process ended', 3000));
     } finally {
+      await stub('/__stub/agent-runs', { runs: [] });
+      await loadShell();
+    }
+  });
+
+  await check('the head counts the agents at work only where the tree above the sessions does not show them', async () => {
+    // The pill said "2 agents at work" and the newest one's step beside a tree that listed both with their steps.
+    const pill = () => $('#agentRunsPill');
+    // to the eye: neither it nor the pill it stands in is cut away
+    const seen = (el) => Boolean(el) && [el, pill()].every((one) => one.getClientRects().length > 0
+      && win().getComputedStyle(one).clipPath === 'none');
+    const open = () => $('.app-body').dataset.sessions !== 'closed';
+    try {
+      await stub('/__stub/sessions', { session_id: 's-act', title: 'Import path' });
+      await stub('/__stub/agent-runs', { runs: atWork('s-act') });
+      await loadShell();
+      await until('the tree', () => $('#sessionsPane .sessions-activity .activity-item[data-run="s-act"]'), 5000);
+      await until('the pill heard of both', () => pill().dataset.runsWorking === '2', 3000);
+      need(!seen(pill()), `beside the tree the head says "${pill().textContent.replace(/\s+/g, ' ').trim()}"`);
+      // out of sight only: the pill is what a screen reader is told, and the keyboard reaches it -- there it shows
+      need(pill().getClientRects().length > 0, 'the head went silent for a screen reader as well');
+      pill().focus();
+      need(pill().matches(':focus-visible') && seen(pill()) && seen(pill().querySelector('.app-runs-count')),
+        'the keyboard stands on a pill that does not show');
+      pill().blur();
+      $('#sessionsToggle').click();
+      need(!open() && seen(pill()) && seen(pill().querySelector('.app-runs-count'))
+        && seen(pill().querySelector('[data-runs-step]')), 'with the sessions closed the head does not say what works');
+      $('#sessionsToggle').click();
+      need(!seen(pill()), 'the sessions opened again and the head still counts');
+      // what warns stays in the head, tree or not: a run that waits for its person
+      await stub('/__stub/agent-runs', { runs: [...atWork('s-act'), { ...atWork('s-ask')[0], state: 'needs_input',
+        needs_you: true, step_label: '' }] });
+      await loadShell();
+      await until('the one that waits', () => pill().dataset.runsNeeds === '1' && pill().dataset.runsWorking === '2', 5000);
+      await until('the tree again', () => !$('#sessionsPane .sessions-activity').hidden, 3000);
+      need(seen(pill().querySelector('[data-runs-needs]')) && !seen(pill().querySelector('.app-runs-count'))
+        && !seen(pill().querySelector('.ai-live-dot')), 'beside the tree the head does not keep to what warns');
+      // runs that name each other hang on neither: the tree lists them on their own -- left out of it, they
+      // were at work and said nowhere
+      const [one, other] = atWork('s-ring');
+      await stub('/__stub/agent-runs', { runs: [{ ...one, parent_session: other.run_id }, other] });
+      await loadShell();
+      await until('both in the head', () => pill().dataset.runsWorking === '2', 5000);
+      const listed = () => $$('#sessionsPane .sessions-activity .activity-item').map((el) => `${el.dataset.run}/${el.style.getPropertyValue('--depth').trim()}`);
+      await until('the tree', () => listed().length, 3000);
+      return need(listed().join(' ') === 's-ring/0 s-ring-sub/0' && !seen(pill()),
+        `runs that name each other are listed as "${listed().join(' ')}"`);
+    } finally {
+      if (!open()) $('#sessionsToggle').click();
       await stub('/__stub/agent-runs', { runs: [] });
       await loadShell();
     }
@@ -3903,6 +4021,76 @@
     return need(notes().pop() === 'At work (0)\n  as a terminal 90 wide reads them', `it says "${notes().pop()}"`);
   });
 
+  await check('a run\'s end is read by a session opened while it worked, though the run said nothing before it', async () => {
+    // A run in a long call says nothing until its end, and the chat heard of a run only as it said something: a
+    // session opened meanwhile went on showing that call after the run was over.
+    const row = (run_id, source) => ({ run_id, agent: 'explorer', source, task: 'turn', title: `About ${run_id}`,
+      state: 'working', started: new Date(Date.now() - 40000).toISOString(), step_index: 1, step_label: 'Thinking',
+      step_labels: {}, parent_session: source === 'chat' ? '' : 's-1', needs_you: false, last_seq: 1 });
+    let seq = 1;
+    const says = (run_id, source, type, state) => stub('/__stub/agent-run-events', { events: [{ event_id: `end${++seq}`, seq,
+      ts: new Date().toISOString(), run_id, type, state, agent: 'explorer', source, task: 'turn',
+      subject: { title: `About ${run_id}` }, parent_session: source === 'chat' ? '' : 's-1', needs_you: false, payload: null,
+      touching: [], step: type === 'run.step' ? { index: seq, total: null, key: '', label: 'Thinking' } : null }] });
+    const kept = (session_id, messages, fields = {}) => stub('/__stub/sessions', { session_id, title: `About ${session_id}`,
+      agent_name: 'assistant', messages: [{ role: 'user', content: 'Read', request_id: `r-${session_id}` },
+        { role: 'developer', content: 'Stored information', injected_by: 'context_engineer' }, ...messages], ...fields });
+    const call = { role: 'assistant', content: '', step: 1,
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'file_ops_read_file', arguments: '{}' } }] };
+    const answer = { role: 'assistant', content: 'Three files read.', step: 2 };
+    const below = { parent_session: { session_id: 's-1' } };
+    const answered = () => Boolean($('#chat .response-text')?.textContent.includes('Three files read.'));
+    try {
+      await kept('s-end-sub', [call], below);
+      await kept('s-end-two', [call], below);
+      await kept('s-end-chat', [call]);
+      await stub('/__stub/agent-runs', { runs: [row('s-end-sub', 'sub_agent'), row('s-end-two', 'sub_agent'), row('s-end-chat', 'chat')] });
+      await loadShell();
+      const item = (id) => $(`#sessionsPane .activity-item[data-run="${id}"] [data-act="open"]`);
+      await until('the runs at work', () => item('s-end-sub') && item('s-end-two'), 5000);
+      sessionButton('s-1', 'open').click();
+      await until('the session that called them', () => $('#headerSessionId').textContent === 'Refactor the kit', 3000);
+      // a turn just ended there, and the chat watches for a run that follows it: that watch is that session's,
+      // and held back what the run of the one opened next said in its first second
+      win().chatModule.watchForASuccessorRun();
+      item('s-end-two').click();
+      await until('its session', () => $('#headerSessionId').textContent === 'About s-end-two', 3000);
+      need(!answered(), 'the answer is there before the run ended');
+      await kept('s-end-two', [call, answer], below);
+      await says('s-end-two', 'sub_agent', 'run.done', 'done');
+      await until('the answer its end brought', answered, 4000);
+
+      // a read the server did not answer: what the run did is still to be had -- offered, and read once taken
+      item('s-end-sub').click();
+      await until('the other session', () => $('#headerSessionId').textContent === 'About s-end-sub', 3000);
+      await kept('s-end-sub', [call, answer], { ...below, fails: true });
+      await says('s-end-sub', 'sub_agent', 'run.step', 'working');
+      const offer = await until('the offer of what could not be read', () => $('#chat > .new-steps'), 4000);
+      offer.click();      // still unanswered: the session's own note is not taken away for it, and the offer stands
+      await sleep(900);
+      need($('#chat .msg.note[data-stored]') && $('#chat > .new-steps') && !answered(),
+        'a read that failed took the session\'s note or the offer with it');
+      await kept('s-end-sub', [call, answer], below);
+      $('#chat > .new-steps').click();
+      await until('what the run did, read after all', answered, 4000);
+      need(!$('#chat > .new-steps'), 'the offer stands after it was read');
+
+      // a chat's own turn is not read along: joined by its stream where this server runs it, read at its end
+      // where another process does
+      await win().sessionManager.loadSession('s-end-chat');
+      await until('the chat', () => $('#headerSessionId').textContent === 'About s-end-chat', 3000);
+      await sleep(400);
+      const before = await hits('session:s-end-chat');
+      await kept('s-end-chat', [call, answer]);
+      await says('s-end-chat', 'chat', 'run.done', 'done');
+      await sleep(1800);
+      return need(await hits('session:s-end-chat') === before && !answered(), 'a chat\'s own turn was read again at its end');
+    } finally {
+      await stub('/__stub/agent-runs', { runs: [] });
+      await loadShell();
+    }
+  });
+
   await check('a run\'s session opened by itself is read along as the run goes on, while the viewer follows its end', async () => {
     // A sub-agent's run streams to the turn that started it. Opened by itself -- from what works now -- its
     // session showed how it stood at that moment and nothing since: to follow the run one had to click it again.
@@ -3912,7 +4100,9 @@
       tool_calls: [{ id: `c${number}`, type: 'function', function: { name: 'file_ops_read_file', arguments: '{}' } }],
       tool_request_ids: { [`c${number}`]: `rs_00${number}` }, status_lines: [line(`rs_00${number}`, `Read file ${number}`)] });
     const stored = (messages) => stub('/__stub/sessions', { session_id: 's-sub-live', title: 'Read the parser code',
-      agent_name: 'assistant', parent_session: { session_id: 's-1' }, messages: [{ role: 'user', content: 'Read', request_id: 'rs' }, ...messages] });
+      agent_name: 'assistant', parent_session: { session_id: 's-1' }, messages: [{ role: 'user', content: 'Read', request_id: 'rs' },
+        // what the run told its model: shown as a note, and the session's own -- it holds no read back
+        { role: 'developer', content: 'Stored information', injected_by: 'context_engineer' }, ...messages] });
     const sub = { run_id: 's-sub-live', agent: 'explorer', source: 'sub_agent', task: 'turn', title: 'Read the parser code',
       state: 'working', started: new Date(Date.now() - 40000).toISOString(), step_index: 1, step_label: 'Thinking',
       step_labels: {}, parent_session: 's-1', needs_you: false, last_seq: 1 };
@@ -3962,7 +4152,7 @@
       // a command answered after it stands above it: the offer stays the last thing in the chat
       $('#task').value = '/runs';
       $('#f').requestSubmit();
-      await until('the command answered', () => $('#chat .msg.note'), 3000);
+      await until('the command answered', () => $('#chat .msg.note:not([data-stored])'), 3000);
       await until('the offer below it', () => $('#chat').lastElementChild === offer, 2000);
       await sleep(1900);
       need(await reads() === before && rows().join() === 'Read file 1,Read file 2', 'the chat was read again under a reader');
@@ -3982,17 +4172,17 @@
       // a command's answer stands in the chat and nowhere else: drawn anew it was gone. Offered, then
       $('#task').value = '/runs';
       $('#f').requestSubmit();
-      await until('the command answered', () => $('#chat .msg.note'), 3000);
+      await until('the command answered', () => $('#chat .msg.note:not([data-stored])'), 3000);
       const beforeNote = await reads();
       await stored([step(1), step(2), step(3), step(4), step(5)]);
       await say('s-sub-live', 'run.step', 'working');
       const withNote = await until('the offer below the note', () => $('#chat > .new-steps'), 3000);
       await sleep(1900);
-      need(await reads() === beforeNote && $('#chat .msg.note') && $('#chat').lastElementChild === withNote,
+      need(await reads() === beforeNote && $('#chat .msg.note:not([data-stored])') && $('#chat').lastElementChild === withNote,
         'the chat was drawn anew over what a command had answered');
       withNote.click();
       await until('the step', () => rows().length === 5, 4000);
-      need(!$('#chat .msg.note'), 'the note is still there after the offer was taken');
+      need(!$('#chat .msg.note:not([data-stored])'), 'the note is still there after the offer was taken');
       // what the run says while the chat is asking for the session's run (a load just drew it) is not lost
       const asking = win().chatModule.askingForRun;
       win().chatModule.askingForRun = () => true;

@@ -2,7 +2,8 @@
 // sub-agents below it, the panels' tasks and the work that outlived its turn, as a tree by the session each works
 // below, each with the step it is on (agent_system/core/turn_runs.py, docs/run_events.md). Under it what waits for
 // the person, and what ended within the last hour. A click opens a run where it is followed -- a turn's session in
-// the chat, a panel's task in its panel -- and Stop ends one from here. Fed by the run events (run-events.js), like
+// the chat, as the session work that outlived its turn is kept in, a panel's task in its panel -- and Stop ends
+// one from here. Fed by the run events (run-events.js), like
 // the pill in the head, which is this folded to a line. Hidden while there is nothing to say. The terminal reads the
 // same rows the same way (agent_system/run_tree.py: `agent-cli runs`, /runs).
 import { html, icon, update } from '/static/kit/panel-kit.js';
@@ -35,6 +36,8 @@ export class ActivityTree {
    * onMove(run): a run said something -- a step, its end. */
   constructor({ host, onOpen, current = () => '', notify = () => {}, onMove = () => {} }) {
     this.host = host;
+    // settled once the first list of the runs is here: before it, "not among the runs" says nothing
+    this.known = new Promise((resolve) => { this.heard = resolve; });
     this.onOpen = onOpen;
     this.current = current;
     this.notify = notify;
@@ -70,6 +73,7 @@ export class ActivityTree {
         }
         this.forget();
         this.draw();
+        this.heard();
       },
       onEvent: (event) => {
         const run = liveRun(event, this.runs.get(event.run_id));
@@ -118,7 +122,9 @@ export class ActivityTree {
       }
     };
     walk('', 0);
-    return out;
+    // ... and stand on their own, after the rest: a run at work is said, wherever it claims to hang
+    const reached = new Set(out.map(([run]) => run));
+    return [...out, ...active.filter((run) => !reached.has(run)).map((run) => [run, 0])];
   }
 
   /** The runs that wait for their person, the one that came to wait last first. */

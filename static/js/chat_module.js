@@ -3189,6 +3189,7 @@
   let successorWatch = 0;
   //: Whether a watch for a successor is asking now -- the session pane's activity tick starts none beside it.
   let watchingForASuccessor = false;
+  let watchedSession = '';      // the session the watch is for: another one's run events are not its to hold
   //: attachRunOfOpenSession calls whose question about the session's run is on its way.
   let askingForRun = 0;
 
@@ -3254,6 +3255,7 @@
       else over();
     };
     watchingForASuccessor = true;
+    watchedSession = session;
     setTimeout(tick, SUCCESSOR_WAITS[step++]);
   }
 
@@ -3267,6 +3269,9 @@
   let rereadTimer = 0;
   let rereadFor = '';
   let rereadAt = 0;
+  //: The run of the open session as the run events last said it stands: undefined while they have said nothing
+  //: of it, null when it is not among the runs at work or waiting.
+  let runOfOpen;
 
   /**
    * The open session's run took a step or ended, by the run events -- and this page follows it by no stream.
@@ -3282,16 +3287,18 @@
    * works on: the server has nothing of that turn until it ends (watchForASuccessorRun reads it then).
    *
    * What is in the chat and not in the session -- a command's answer, a note -- would be gone with the chat
-   * drawn anew: then, too, the new steps are offered, not taken.
+   * drawn anew: then, too, the new steps are offered, not taken. Not for what the run told its model, which the
+   * session holds and shows as a note too (most sub-agents' sessions have one).
    */
   function openRunMoved(run) {
     const session = currentSessionId;
     if (!run || !session || run.run_id !== session) return;
+    runOfOpen = run;
     if (chatModule.hasActiveRequest()) {
       liveRead = '';      // followed by its stream from here on
       return;
     }
-    if (watchingForASuccessor) return;
+    if (watchingForASuccessor && watchedSession === session) return;
     if (run.state === 'working' || run.state === 'queued') {
       liveRead = session;
     } else if (liveRead === session) {
@@ -3300,6 +3307,22 @@
       return;             // the end of a run this page did not read along (its own turn's, say)
     }
     rereadSoon(session);
+  }
+
+  /**
+   * How the run of the session just drawn stands, by the run events (shell.js, after every draw and once the tree
+   * above the sessions has its list): `run`, or null.
+   *
+   * One at work that this page follows by no stream is read along from here on -- its end too: a run in a long
+   * call says nothing before it, and a session opened meanwhile went on showing that call. Not a chat's own
+   * turn: joined by its stream where this server runs it, read at its end where another process does
+   * (watchForASuccessorRun).
+   */
+  function openRunStands(session, run) {
+    if (session !== currentSessionId) return;     // of a session left meanwhile (asked before the tree had its list)
+    runOfOpen = run;
+    if (run && (run.state === 'working' || run.state === 'queued') && run.source !== 'chat') liveRead = session;
+    showRunEnd(shownSession);
   }
 
   function rereadSoon(session, wait) {
@@ -3320,7 +3343,7 @@
     // the chat is asking for the session's run (a load just drew it): asked again once it knows -- what the run
     // said meanwhile, its end too, is not lost for that
     if (chatModule.askingForRun()) return rereadSoon(session, REREAD.afterMs);
-    if (!following || handOpened || chatContainer.querySelector(':scope > .row > .msg.note')) {
+    if (!following || handOpened || chatContainer.querySelector(':scope > .row > .msg.note:not([data-stored])')) {
       rereadWaits = session;
       offerNewSteps(session);
       return;
@@ -3330,10 +3353,17 @@
     // Straight to the new end: the chat scrolls smoothly, and from the top of a chat drawn anew that is a sweep
     // over the whole run at every step.
     if (el) el.style.scrollBehavior = 'auto';
+    let read = false;
     try {
-      await manager.readAgain(session);
+      read = await manager.readAgain(session);
     } finally {
       if (el) requestAnimationFrame(() => requestAnimationFrame(() => { el.style.scrollBehavior = ''; }));
+    }
+    // not read (the server did not answer): what the run did is still to be had -- offered, as to a viewer who
+    // reads further up, or a run's end that came with it was never shown
+    if (!read && session === currentSessionId && !chatModule.hasActiveRequest()) {
+      rereadWaits = session;
+      offerNewSteps(session);
     }
   }
 
@@ -3354,8 +3384,9 @@
     offer.addEventListener('click', () => {
       handOpened = false;
       following = true;
-      // taken: what stands in the chat alone (a command's answer) goes with it, as with any session opened
-      chatContainer.querySelectorAll(':scope > .row > .msg.note').forEach((note) => note.parentElement.remove());
+      // taken: what stands in the chat alone (a command's answer) goes with it, as with any session opened --
+      // not the session's own notes, which only the read brings back
+      chatContainer.querySelectorAll(':scope > .row > .msg.note:not([data-stored])').forEach((note) => note.parentElement.remove());
       if (rereadWaits === session) rereadSoon(session, 0);
     });
     chatEl.appendChild(offer);
@@ -3379,6 +3410,27 @@
     link.querySelector('span').textContent = title ? `Called from "${title}"` : 'Open the session that called it';
     link.addEventListener('click', () => window.sessionManager?.loadSession?.(parent));
     chatEl.insertBefore(link, chatEl.firstChild);
+  }
+
+  /**
+   * The session of work that outlived its turn, by itself: how that work ended where it ended without an answer
+   * -- what its box says in the caller's chat (settleBackground). Its steps end in a call, and read alone they
+   * looked like work still going. Stopped or failed: why. Done with nothing said: that. An end that was never
+   * written (the process died over it): what the run events say of it (openRunStands), where they say it failed.
+   */
+  function showRunEnd(session) {
+    const chatEl = document.getElementById('chat');
+    const kept = session?.metadata?.background;
+    if (!chatEl || !kept) return;
+    let said = '';
+    if (kept.state === 'failed' || kept.state === 'cancelled') said = kept.reason || '';
+    else if (kept.state === 'done') said = endsInAnswer(session.messages) ? '' : 'Done -- it said nothing at its end';
+    else if (runOfOpen?.state === 'failed') said = `Failed${runOfOpen.payload?.reason ? `: ${runOfOpen.payload.reason}` : ''}`;
+    if (!said) return;
+    const row = document.createElement('div');
+    row.className = 'row run-end';
+    row.innerHTML = `<div class="msg"><div class="response-text${kept.state === 'done' ? '' : ' error'}">${formatTextWithLineBreaks(said)}</div></div>`;
+    chatEl.appendChild(row);
   }
 
   /**
@@ -5485,6 +5537,7 @@
     chatModule.watchForASuccessorRun = watchForASuccessorRun;
     // The run events of the open session's run, from what works now (shell.js): read along where no stream is.
     chatModule.openRunMoved = openRunMoved;
+    chatModule.openRunStands = openRunStands;
     chatModule.REREAD = REREAD;
     chatModule.watchingForASuccessor = () => watchingForASuccessor;
     // Whether the chat is asking for the open session's run right now: its answer joins it, by how much of it a
@@ -5553,6 +5606,7 @@
     // drawn anew: nothing is open by hand any more, and nothing waits to be read
     handOpened = false;
     rereadWaits = '';
+    if (!again) runOfOpen = undefined;     // another session's, until the run events say how this one's stands
     if (liveRead !== session.session_id) liveRead = '';
 
     // The run of the session being LEFT goes on -- the chat just stops watching it.
@@ -5680,6 +5734,7 @@
           row.className = 'row';
           const note = document.createElement('div');
           note.className = 'msg note';
+          note.dataset.stored = '';     // the session's own: a read along brings it back (reread)
           const pre = document.createElement('pre');
           pre.className = 'note-text';  // the shape every other note in this chat has
           pre.textContent = noteLine(msg);

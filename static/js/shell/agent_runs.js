@@ -3,7 +3,8 @@
 // On every tab, whichever panel started them. A click opens the panel of the run that needs the person first, else of
 // the newest one at work; there its "Agent runs" sheet shows it. When a run comes to need the person while they look
 // elsewhere, a system notification says so (once they allowed it with the bell beside the pill). Fed by the run events
-// (run-events.js); hidden while no agent works and none waits.
+// (run-events.js); hidden while no agent works and none waits. While the tree above the sessions shows the same runs
+// (activity.js), the pill shows only its warnings (shell.css).
 import { html, icon, update } from '/static/kit/panel-kit.js';
 import { ACTIVE, FINAL, TURNS, followRuns, isSilent, liveRun, stepLabel } from '/static/kit/run-events.js';
 

@@ -347,6 +347,13 @@ async def get_session(
 
         if session_agent is not None and hasattr(session_agent, "_session_tracker"):
             await serve_live_state(session, session_id, session_agent)
+        # Work that outlived its turn, held by this process: as it stands now, not as it was last written. A chat
+        # that reads the session along asks as the run says it took a step -- sooner than the step is written
+        # (background_runs.SAVE_S) -- and showed each call only once the next one came.
+        from agent_system.core.background_runs import kept_so_far
+        held = kept_so_far(session_id)
+        if held is not None:
+            session["messages"] = held
 
         # Build hierarchical descendants tree with their context_vars (live-merged).
         # The Session Info panel uses this so users can see vars set on sub-agent

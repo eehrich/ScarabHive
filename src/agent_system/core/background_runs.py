@@ -26,6 +26,7 @@ A view, never the work's master: whatever fails here is logged, and the work goe
 from __future__ import annotations
 
 import asyncio
+import copy
 import contextlib
 import json
 import logging
@@ -103,6 +104,14 @@ ENDED = ("done", "failed", "cancelled")
 def held(session_id: str) -> bool:
     """Whether this process holds the run, and so can stop it (``cancel``)."""
     return session_id in _RUNS
+
+
+def kept_so_far(session_id: str) -> Optional[list[dict[str, Any]]]:
+    """The messages of the run this process holds in sub-session ``session_id`` as they stand now -- the steps not
+    written yet too (they are written within ``SAVE_S`` of the result that brought them); None when it holds none.
+    A copy: the run goes on writing its own."""
+    run = _RUNS.get(session_id or "")
+    return copy.deepcopy(run._messages) if run is not None else None
 
 
 def keeps_sessions() -> bool:

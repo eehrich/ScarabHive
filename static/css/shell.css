@@ -53,6 +53,15 @@ body.app {
 .app-runs { gap: var(--space-2); max-width: 22rem; min-width: 0; }
 .app-runs-step { color: var(--text-secondary); min-width: 0; max-width: 12rem; }
 @media (max-width: 900px) { .app-runs-step { display: none; } }
+/* ... and beside the open sessions, where the tree above them shows every run the pill counts, each with its
+   step (activity.js), the pill keeps to what warns: a run gone quiet, one that waits for its person. With the
+   sessions closed it says it all, as before.
+   Out of sight only (as .pk-sr-only): a screen reader is still told what the pill says (aria-live), and the
+   keyboard still reaches it -- there it shows */
+body:has(.app-body:not([data-sessions="closed"])) .app-runs:not(:focus-visible) > :not(.pk-badge),
+body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"][data-runs-needs="0"]:not(:focus-visible) {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 .app-avatar {
   width: 28px; height: 28px; margin-left: var(--space-1); border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;

@@ -280,6 +280,35 @@ async def test_a_call_is_in_its_sub_session_while_it_runs(sessions, store):
     await run.close("cancelled")
 
 
+async def test_a_session_read_while_its_run_works_has_the_steps_not_written_yet(sessions, store, monkeypatch):
+    """A chat that reads the sub-session along asks as the run says it took a step -- before the step is written.
+    It showed each call only once the next one came, and one that took ten minutes not while it ran."""
+    from agent_system.api.session_endpoints import get_session
+
+    manager, parent = sessions
+    monkeypatch.setattr(background_runs, "SAVE_S", 30)       # not written while the test looks
+    run, _ = await _opened(manager, parent)
+    await run.event({"type": "tool_call", "step": 1, "request_id": "c1", "action": "Bash", "params": {"cmd": "make"}})
+
+    async def read(session_id):
+        return await get_session(session_id, descendants=False, current_user=SimpleNamespace(username=USER),
+                                 session_manager=manager, default_agent=None, tool_registry=None)
+
+    assert [m["role"] for m in (await manager.load_session(USER, run.session_id))["messages"]] == ["user"]
+    shown = await read(run.session_id)
+    assert [m["role"] for m in shown["messages"]] == ["user", "assistant"], "the call at hand is not handed out"
+    assert shown["messages"][1]["tool_calls"][0]["function"]["name"] == "Bash"
+    # a copy: what a reader does with it is not the run's
+    shown["messages"].clear()
+    assert len(run._messages) == 2
+    # the session that called it is no such work, and is handed out as it is written
+    assert [m["role"] for m in (await read(parent))["messages"]] == []
+    # once the run is over nothing is held: the session is read as it was written at the end
+    await run.close("cancelled")
+    assert background_runs.kept_so_far(run.session_id) is None
+    assert [m["role"] for m in (await read(run.session_id))["messages"]] == ["user", "assistant"]
+
+
 async def _end(run, parent, **kwargs):
     return await BackgroundRun.ended(system_config=AUTH_ON, parent=parent, user_id=USER, run_id=run.run_id,
                               agent="claude_code", task="fix the parser", session_id=run.session_id, **kwargs)

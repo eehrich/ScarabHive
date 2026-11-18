@@ -46,11 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn, its sub-agents, theirs --, each with the step it is on, how long, and a Stop; under it what needs you and
   what just ended. A click opens a run where it is followed. "All sessions" folds the session list away below it.
   The terminal has the same reading: `agent-cli runs` (`--watch` follows), and `/runs` in a chat on both surfaces.
+  Beside it the pill in the shell's head no longer says the same again: it keeps to what warns (a run gone quiet,
+  one that needs you) and counts the agents at work only with the sessions closed. Runs that name each other as
+  the session they work below are listed on their own, in the shell and in the terminal.
 - A run's session by itself: a sub-agent's session opened from what works now is read along as its run goes on
   -- it showed how it stood when it was opened and nothing since -- and once more at its end. Not under a viewer
   who scrolled up or unfolded something, nor over a command's answer: what they miss is offered at the chat's end
   ("New steps"). The session names the one it was called from and leads back there, and the box of a run read
-  back in its caller's chat offers its own session at the chat's full width.
+  back in its caller's chat offers its own session at the chat's full width. Work that outlived its turn opens
+  the same way from what works now: its session takes no message -- no agent answers there --, shows the call
+  at hand as the run makes it, and says how the work ended where it was stopped or failed. A run that ends
+  without another step is read at its end all the same, and a read the server did not answer is offered again.
 - Work a turn starts that goes on after it is shown where the chat shows a sub-agent, after the turn too:
   `core/background_runs.py` keeps it as a sub-session of the chat's session (its steps, as an agent's are stored)
   and as a run in the run events below that session. Switched back to the session, or after a reload, the box is
