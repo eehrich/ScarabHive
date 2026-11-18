@@ -3081,17 +3081,18 @@
     }
   }
 
-  //: How long a run that ends is watched for a successor, and how patiently.
-  //: A woken run is a process that has to come up first -- measured on a real
-  //: wake: its first tool result 23 s after the run that woke it ended. The
-  //: steps get further apart so the common case, no successor at all, costs
-  //: seven requests rather than thirty.
-  const SUCCESSOR_WAITS = [1000, 2000, 3000, 5000, 8000, 15000, 25000];
+  //: When a run that ends is asked after for a successor: soon, for the turn that follows at once -- a wake the API
+  //: rang meanwhile starts its turn in milliseconds. A successor that comes later, however much later, is found by
+  //: the session pane's activity tick (sessions.js, joinRunOfOpenSession): that one asks on its own clock, so this
+  //: watch is only the quick way in, not the only one.
+  const SUCCESSOR_WAITS = [1000, 3000];
   //: How often a session held by ANOTHER process is asked about. No cap on
   //: the number of those: a woken run is a whole turn, and while the lock
   //: file says it is working, waiting is the right thing to do.
   const ELSEWHERE_WAIT = 4000;
   let successorWatch = 0;
+  //: Whether a watch for a successor is asking now -- the session pane's activity tick starts none beside it.
+  let watchingForASuccessor = false;
   //: attachRunOfOpenSession calls whose question about the session's run is on its way.
   let askingForRun = 0;
 
@@ -3107,11 +3108,12 @@
    * followRunOfOpenSession already knows how to find and join the run a
    * session has. It was simply never asked again once a run was over.
    *
-   * ponytail: a bounded poll, not a subscription. The ceiling is honest -- a
-   * successor that takes longer than the waits above to register is missed,
-   * and its turn is then seen on the next load, as before. A push would mean
-   * the run's end carrying "a wake was started for this session", which is a
-   * change across app.py, the event payload and session_presence.
+   * ponytail: a bounded poll, not a subscription. A successor that takes
+   * longer than the waits above to register is left to the session pane's
+   * activity tick (sessions.js, joinRunOfOpenSession), which asks on its own
+   * clock, hidden tab included. A push would mean the run's end carrying "a
+   * wake was started for this session", which is a change across app.py, the
+   * event payload and session_presence.
    */
   function watchForASuccessorRun() {
     const session = currentSessionId;
@@ -3119,18 +3121,19 @@
     const token = ++successorWatch;   // a newer watch, a new run or a new session wins
     let step = 0;
     let sawItWorking = false;
+    const over = () => { if (token === successorWatch) watchingForASuccessor = false; };
     // A run followed again ends the watch -- not the stream of the run that ended: it is
     // still open while that run saves, and asking about it would end the watch on the
     // very first tick. (followRunOfOpenSession does not attach while it is open.)
     const tick = async () => {
-      if (token !== successorWatch || currentSessionId !== session) return;
-      if (chatModule.activeRun()) return;   // something is being followed again
+      if (token !== successorWatch || currentSessionId !== session) return over();
+      if (chatModule.activeRun()) return over();   // something is being followed again
       const elsewhere = await sessionIsWorkingElsewhere(session);
       // Asked again after the answer: a run of this page's own may have started
       // while it was on its way, and an answer from before it would put the mark
       // back under that run, where nothing takes it down again.
-      if (token !== successorWatch || currentSessionId !== session) return;
-      if (chatModule.activeRun()) return;
+      if (token !== successorWatch || currentSessionId !== session) return over();
+      if (chatModule.activeRun()) return over();
       if (elsewhere || (elsewhere === null && sawItWorking)) {
         // null is "could not ask", which is not "not working". Read as an answer
         // it would end the wait on one bad request and lose the very turn this
@@ -3146,12 +3149,15 @@
         // session again -- which now brings the run with it, tool calls and
         // thinking included.
         showWorkingElsewhere(false);
+        over();
         window.sessionManager?.loadSession?.(session);
         return;
       }
       chatModule.followRunOfOpenSession?.({ session_id: session }, {});
       if (step < SUCCESSOR_WAITS.length) setTimeout(tick, SUCCESSOR_WAITS[step++]);
+      else over();
     };
+    watchingForASuccessor = true;
     setTimeout(tick, SUCCESSOR_WAITS[step++]);
   }
 
@@ -5074,6 +5080,10 @@
     }
 
     chatModule.followRunOfOpenSession = attachRunOfOpenSession;
+    // The session pane's activity tick, for a session that starts working in a process this page cannot follow
+    // long after the watch below has stopped asking: it says so, and reads the session again once it lets go.
+    chatModule.watchForASuccessorRun = watchForASuccessorRun;
+    chatModule.watchingForASuccessor = () => watchingForASuccessor;
     // Whether the chat is asking for the open session's run right now: its answer joins it, by how much of it a
     // load shows -- the session pane's activity tick leaves the run to it (joinRunOfOpenSession).
     chatModule.askingForRun = () => askingForRun > 0;

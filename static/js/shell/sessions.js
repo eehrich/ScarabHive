@@ -417,12 +417,16 @@ export class SessionManager {
    * Better a mark one tick stale than a list that flickers empty on one bad request.
    */
   async refreshActivity() {
-    if (document.visibilityState !== 'visible') return;
-    const unlisted = [...this.unlisted];
     const open = this.currentSessionId;
+    // A hidden tab asks about the open session alone: a turn that starts and ends in it while nobody looks is
+    // joined all the same, and on screen when the viewer comes back -- nothing else would read it.
+    const hidden = document.visibilityState !== 'visible';
+    if (hidden && !open) return;
+    const unlisted = hidden ? [] : [...this.unlisted];
     // those first: past the cap, the server answers for the first ids only -- and the open session, which a long
     // list can put past it: a run starting in it is joined from here (joinRunOfOpenSession)
-    const ids = [...new Set([...unlisted, ...(open ? [open] : []), ...this.visibleIds()])].slice(0, ACTIVITY_POLL_MAX_IDS);
+    const ids = hidden ? [open]
+      : [...new Set([...unlisted, ...(open ? [open] : []), ...this.visibleIds()])].slice(0, ACTIVITY_POLL_MAX_IDS);
     if (!ids.length) return;
     const poll = ++this.activityPolls;
     const data = await api(`/api/sessions/active?ids=${encodeURIComponent(ids.join(','))}`,
@@ -434,7 +438,12 @@ export class SessionManager {
     // the open session was open at the last tick too: its load has joined whatever ran in it then
     const settled = this.openAtPoll === this.currentSessionId && open === this.currentSessionId;
     this.openAtPoll = open;
-    this.active = new Map(Object.entries(data.active || {}));
+    if (hidden) {
+      // the other rows keep their marks until the tab is looked at again
+      const entry = data.active?.[open];
+      if (entry) this.active.set(open, entry);
+      else this.active.delete(open);
+    } else this.active = new Map(Object.entries(data.active || {}));
     this.markActive();
     if (settled) this.joinRunOfOpenSession();
     if (unlisted.length) await this.lookForUnlisted(unlisted);
@@ -442,7 +451,7 @@ export class SessionManager {
 
   /**
    * The open session's run, joined when the chat follows none. The chat watches for the run after its own only
-   * for a minute (watchForASuccessorRun); a session the API woke much later -- a background command that ran for
+   * for a few seconds (watchForASuccessorRun); a session the API woke much later -- a background command that ran for
    * an hour -- was shown only on the next load, and could not be stopped or written to from the chat. Not in a
    * session opened since the last tick (refreshActivity), nor while the chat asks for the session's run itself:
    * its load joins the run it finds, by how much of it is on screen, and this would replay it whole beside that.
@@ -450,8 +459,16 @@ export class SessionManager {
   joinRunOfOpenSession() {
     const id = this.currentSessionId;
     const entry = id && this.active.get(id);
-    if (!entry?.attachable || !entry.request_id || entry.answered) return;
     const chat = window.chatModule;
+    if (entry?.elsewhere && chat) {
+      // A process this page cannot follow works on it (an agent-cli it woke): the chat's watch says so and reads
+      // the session again once it lets go -- the turn arrives only that way.
+      if (!chat.hasActiveRequest() && !chat.watchingForASuccessor()) chat.watchForASuccessorRun();
+      return;
+    }
+    // A run past its answer is joined too: one that started and answered between two ticks is on screen no other
+    // way. The chat's own run, which it has followed to its answer, it leaves out itself (attachRunOfOpenSession).
+    if (!entry?.attachable || !entry.request_id) return;
     // the run the chat lost the stream of is its own to rejoin; one that started since is not
     if (!chat || chat.hasActiveRequest() || chat.askingForRun() || chat.lostRunIn(id) === entry.request_id) return;
     chat.followRunOfOpenSession?.({ session_id: id }, {});

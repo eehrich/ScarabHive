@@ -249,6 +249,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused a wake by basic_operations, coding_cli and n8n as a run "that ends with its turn".
 - A message typed while a run started with attached files goes on reaches that run. Such a run streams without a
   job, so the message went to the default agent, which did not know the run, and waited for the next turn.
+- The web chat's watch for the turn that follows a run asks for four seconds, not a minute: a later one is joined by
+  the session pane's activity tick, which now asks about the open session in a hidden tab too, joins a turn already
+  past its answer, and starts no second watch beside one still asking.
 - file_ops: the ignore files of every folder apply to the searches and the index, not only the root's -- the deepest
   rule decides, as in git, and `.rgignore` counts too. `*.{ts,tsx}` and `[!a]*` are globs; they were taken
   literally. A line longer than 2000 characters is cut in a grep answer. A grep through the walk reads each file
