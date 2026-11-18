@@ -3581,6 +3581,127 @@
     }
   });
 
+  await check('work a turn started that goes on after it shows at work under its call, with its step and a Stop, and its end once it has one', async () => {
+    // A coding CLI the turn started ran on for an hour; once that turn had ended, coming back to the session showed
+    // nothing of it -- not that it ran, not what it did, no way to stop it.
+    const held = { 's-bg': [{ run_id: 'sub-bg', agent: 'claude_code', state: 'working', step_label: 'Bash pytest -q', seq: 3 }] };
+    try {
+      await stub('/__stub/background', { runs: held });
+      await stub('/__stub/sessions', { session_id: 's-bg', title: 'Backgrounded', run: 'bg-parent', has_children: true,
+        metadata: { background_runs: { 'sub-bg': { run_id: 'rb00000001_003_sub_bgbgbg', state: 'running' } } } });
+      await loadShell();
+      // the shell's own tick holds still: this check says when one comes -- taken from the page now loaded,
+      // a tick of the page before it asks from a document that is gone and never hears back
+      const pane = win().sessionManager;
+      const tick = () => Object.getPrototypeOf(pane).refreshActivity.call(pane);
+      pane.refreshActivity = async () => {};
+      sessionButton('s-bg', 'open').click();
+      await until('the session', () => $('#headerSessionId').textContent === 'Backgrounded');
+      const box = await until('the work under its call', () => $(
+        '#chat .tool-detail[data-key="rb00000001_003"] > .sub-run[data-run-id="rb00000001_003_sub_bgbgbg"]'), 3000);
+      unfold(box.closest('.step-section'));
+      await until('its steps so far', () => box.querySelector(':scope > .sub-run-body .step-section[data-step="1"]'), 3000);
+      // before any tick: at work, as its sub-session says
+      need(box.dataset.state === 'running' && !box.querySelector('.sub-run-stop').hidden,
+        `read back before the first tick, the run is shown ${box.dataset.state}`);
+      await tick();
+      const stop = box.querySelector('.sub-run-stop');
+      await until('at work, with its step and a Stop', () => box.dataset.state === 'running' && !stop.hidden
+        && box.querySelector('.sub-run-step').textContent === 'Bash pytest -q', 3000);
+      stop.click();
+      await until('the Stop asked for', async () => await hits('cancel-run:sub-bg') === 1, 3000);
+      need(box.dataset.state === 'running', 'a Stop folded or ended the box before the run said so');
+      // the tick asks about the session the run works below -- a sub-agent's, where its box is read back in one --
+      // and an answer that did not ask about it says nothing of the run
+      need(JSON.stringify(win().chatModule.backgroundParents()) === '["s-bg"]', 'the tick is not told what to ask about');
+      const asked = async () => { await tick(); return hits('sessions-active-ids'); };
+      const plain = await asked();
+      const parents = win().chatModule.backgroundParents;
+      win().chatModule.backgroundParents = () => ['s-bg', 's-sub-agent'];
+      const more = await asked();
+      win().chatModule.backgroundParents = parents;
+      need(more === plain + 1, `the tick did not ask about a sub-agent's session its box is in (${plain} -> ${more})`);
+      const before = await hits('session:sub-bg');
+      win().chatModule.showBackgroundRuns({}, ['s-elsewhere']);
+      await sleep(300);
+      need(box.dataset.state === 'running' && await hits('session:sub-bg') === before,
+        'an answer about other sessions ended the run');
+      // a tick that missed it -- the run store busy, or the run's process gone and back -- marks it unfinished; the
+      // next that has it at work again shows it at work, not the mark of an end beside a Stop
+      win().chatModule.showBackgroundRuns({}, ['s-bg']);
+      await until('read again and unfinished', () => box.dataset.state === 'unfinished', 3000);
+      await tick();
+      need(box.dataset.state === 'running' && box.querySelector('.sub-run-icon .spinner') && !stop.hidden,
+        `a run at work again stays marked ${box.dataset.state}`);
+      // ended: the tick no longer lists it, and its sub-session has its answer
+      const reads = await hits('session:sub-bg');
+      await stub('/__stub/background', { runs: {}, done: true });
+      await tick();
+      await until('its end read', () => box.dataset.state === 'done', 3000);
+      need(await hits('session:sub-bg') === reads + 1, 'the ended run was not read again once');
+      need(stop.hidden && box.querySelector('.sub-run-step').hidden
+        && box.querySelector('.response-text, .assistant-text').textContent.includes('Fixed the parser'),
+      'the ended run still offers a Stop, or its answer is missing');
+      // An end without an answer in its sub-session is told by how the run is listed there: failed, with why --
+      // or done with nothing to say. Neither is "unfinished": that is a run whose process went without a word.
+      const again = async (ended) => {
+        await stub('/__stub/background', { runs: held });
+        await tick();
+        await until('at work again', () => box.dataset.state === 'running', 3000);
+        await stub('/__stub/background', { runs: {}, ...ended });
+        await tick();
+        await until('read again', () => box.dataset.state !== 'running', 3000);
+      };
+      await again({ state: 'failed', reason: 'The subscription is used up' });
+      need(box.dataset.state === 'error' && box.textContent.includes('The subscription is used up') && stop.hidden,
+        `a run that failed is shown ${box.dataset.state}, or without why`);
+      await again({ state: 'done' });
+      need(box.dataset.state === 'done', `a run done with nothing to say is shown ${box.dataset.state}`);
+      // a run store that could not be read says nothing of the runs: no box is ended over it
+      await stub('/__stub/background', { runs: held });
+      await tick();
+      await until('at work once more', () => box.dataset.state === 'running', 3000);
+      // held by a process this server does not reach (one that took the run over): no Stop that would do nothing
+      need(!stop.hidden, 'a run at work again offers no Stop');
+      await stub('/__stub/background', { runs: { 's-bg': [{ ...held['s-bg'][0], stoppable: false }] } });
+      await tick();
+      need(box.dataset.state === 'running' && stop.hidden, 'a run this server cannot stop offers a Stop');
+      const unread = await hits('session:sub-bg');
+      await stub('/__stub/background', { runs: {}, unread: true });
+      await tick();
+      await sleep(300);
+      return need(box.dataset.state === 'running' && await hits('session:sub-bg') === unread,
+        'a run store that could not be read ended the run');
+    } finally {
+      await stub('/__stub/background', { runs: {} });
+      forgetRun();
+      await loadShell();
+    }
+  });
+
+  await check('work that goes on after the turn that started it is not marked unfinished when that turn ends', async () => {
+    try {
+      // held by its process all along, as the run events say
+      await stub('/__stub/background', { runs: { 's-1': [{ run_id: 'sub-bg-live', agent: 'claude_code', state: 'working',
+        step_label: '', seq: 1 }] } });
+      sessionButton('s-1', 'open').click();
+      await until('the kit session', () => $('#headerSessionId').textContent === 'Refactor the kit');
+      cookie('stub_stream', 'background');
+      $('#task').value = 'Fix the parser';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-background', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
+      const box = $('#chat .sub-run[data-run-id="r-background_001_sub_bgbgbg"]');
+      return need(box && box.dataset.state === 'running' && !box.querySelector('.sub-run-stop').hidden,
+        `the work was marked ${box && box.dataset.state} when the turn ended`);
+    } finally {
+      await stub('/__stub/background', { runs: {} });
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('the activity tick asks about the open session past the cap of a long list', async () => {
     // A session opened from a link or a search can sit past the first 200 of the list; woken, its run was never
     // asked about, and so never joined.

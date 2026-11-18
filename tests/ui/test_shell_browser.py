@@ -223,6 +223,10 @@ def _call(call_id, name):
 
 
 FLAKY = "rf00000001"
+#: A session whose turn started work that goes on after it (core/background_runs): its call, and the work's run,
+#: kept in the sub-session ``sub-bg``.
+BACKGROUND = "rb00000001"
+BACKGROUND_RUN = f"{BACKGROUND}_003_sub_bgbgbg"
 PIPING = "r-live-piping"  # a pipeline still at work: /events streams it, once POST /__stub/live/release says so
 CHAPTERS = 120  # more sub-agents than a screen holds
 #: Chapters still at work when the session is read. 0 is read before its live events
@@ -265,6 +269,25 @@ def _answers(*call_ids):
 #: id each call's tool ran under (ChatMessage.tool_request_ids) -- a sub-run's id
 #: extends its call's.
 STORED_RUNS = {
+    "bg-parent": [
+        {"role": "user", "content": "Fix the parser", "request_id": BACKGROUND},
+        {"role": "assistant", "content": "", "step": 1, **_calls(BACKGROUND, ("call_3", "coding_cli_run_task"))},
+        {"role": "tool", "tool_call_id": "call_3", "content": '{"state": "running", "run_id": "cc1"}'},
+        {"role": "assistant", "content": "It runs on; I will be woken.", "content_format": "text", "step": 2},
+    ],
+    "bg-run": [
+        {"role": "user", "content": "Fix the parser", "request_id": BACKGROUND_RUN, "injected_by": "background"},
+        {"role": "assistant", "content": "", "step": 1, "reasoning_content": "Reading it first.",
+         **_calls(BACKGROUND_RUN, ("call_1", "Read"))},
+        {"role": "tool", "tool_call_id": "call_1", "content": "print(1)"},
+    ],
+    "bg-run-done": [
+        {"role": "user", "content": "Fix the parser", "request_id": BACKGROUND_RUN, "injected_by": "background"},
+        {"role": "assistant", "content": "", "step": 1, "reasoning_content": "Reading it first.",
+         **_calls(BACKGROUND_RUN, ("call_1", "Read"))},
+        {"role": "tool", "tool_call_id": "call_1", "content": "print(1)"},
+        {"role": "assistant", "content": "Fixed the parser.", "content_format": "text"},
+    ],
     "helpers": [
         {"role": "user", "content": "Get help", "request_id": HELPED},
         # numbered as the server numbered them: its step 1 answered empty and stored nothing
@@ -461,6 +484,9 @@ def stub_app() -> FastAPI:
                               "runs": [f"{HELPED}_003_sub_aaaaaa", f"{HELPED}_004_sub_cont_bbbbbb",
                                        f"{HELPED}_005_sub_dddddd",  # listed, but not in its session (yet)
                                        f"{HELPED}_099_async_gone"]}]
+    children["s-bg"] = [{**sessions[0], "session_id": "sub-bg", "title": "Fix the parser", "agent_name": "claude_code",
+                         "depth": 1, "run": "bg-run", "runs": [BACKGROUND_RUN],
+                         "metadata": {"background": {"state": "running"}}}]
     children["sub-help"] = [{**sessions[0], "session_id": "sub-deep", "title": "Count them", "agent_name": "grand_agent",
                              "depth": 2, "run": "sub-deep", "runs": [f"{HELPED}_003_sub_aaaaaa_002_sub_cccccc"]}]
     children["s-flaky"] = [{**sessions[0], "session_id": "sub-flaky", "title": "First try", "agent_name": "skills_agent",
@@ -731,6 +757,22 @@ def stub_app() -> FastAPI:
                 yield event({"type": "final", "content": "Done"})
                 async for chunk in saving(session_id, request_id, request_goes_on=True):
                     yield chunk
+            if ending == "background":  # its tool starts work that goes on after the turn (core/background_runs)
+                call, tree = f"{request_id}_001", {"parent_id": request_id, "depth_level": 1, "child_count": 0,
+                                                   "is_leaf": True}
+                work = f"{call}_sub_bgbgbg"
+                yield event({"type": "status", "server": "coding_cli.run_task()", "phase": "start", "request_id": call,
+                             "message": "starting", "meta": {}, "tree": tree})
+                for inner in ({"type": "start", "task": "Fix the parser", "background": "sub-bg-live",
+                               "background_parent": session_id},
+                              {"type": "thinking", "step": 1}):
+                    yield event({"type": "sub_run", "run_id": work, "spawned_by": call, "depth_level": 2,
+                                 "agent": "claude_code", "event": inner})
+                yield event({"type": "status", "server": "coding_cli.run_task()", "phase": "end", "request_id": call,
+                             "message": "still going, wake armed", "meta": {}, "tree": tree})
+                yield event({"type": "final", "content": "It runs on."})
+                yield event({"type": "end"})
+                return
             if ending == "end-then-open":  # its end, and the connection open while the server saves
                 yield event({"type": "final", "content": "Done"})
                 yield event({"type": "end"})
@@ -1245,6 +1287,7 @@ def stub_app() -> FastAPI:
                    "ending": "r-ending", "late-start-drops": "r-late-started", "answered": "r-answered",
                    "saving": "r-saving", "saving-drops": "r-saving-dropped", "reasons": "r-reasons",
                    "steps": "r-steps", "subrun": "r-subrun", "last-answer": "r-last-answer",
+                   "background": "r-background",
                    "last-answer-whole": "r-last-answer-whole", "end-then-open": "r-end-then-open",
                    "left-unnamed": "r-left-unnamed", "left-unnamed-known": "r-left-unnamed-known",
                    "slimmed": "r-slimmed", "left-named-new": "r-left-named-new",
@@ -1526,6 +1569,30 @@ def stub_app() -> FastAPI:
     # as in the real app: FastAPI matches in order, and the parameterised route would
     # take "active" for a session id.
     active_runs: dict[str, str] = {}
+    # The background runs still held below a session, as /api/sessions/active reports them (`background`).
+    background_runs: dict[str, list] = {}
+    background_unread: list[bool] = []
+
+    @app.post("/__stub/background")
+    async def set_background(payload: dict):
+        """A test says which background runs are at work below which session, and whether sub-bg has ended: with
+        its answer (``done``), or without one as ``state`` and ``reason`` say. ``unread``: the run store cannot be
+        read, the answer says nothing of the runs."""
+        background_runs.clear()
+        background_runs.update(payload.get("runs") or {})
+        background_unread[:] = [True] if payload.get("unread") else []
+        child = children["s-bg"][0]
+        child["run"] = "bg-run-done" if payload.get("done") else "bg-run"
+        kept = {"state": payload.get("state") or ("done" if payload.get("done") else "running")}
+        if payload.get("reason"):
+            kept["reason"] = payload["reason"]
+        child["metadata"] = {"background": kept}
+        return {"ok": True}
+
+    @app.post("/api/agent-runs/{run_id}/cancel")
+    async def cancel_background_run(run_id: str):
+        hits[f"cancel-run:{run_id}"] = hits.get(f"cancel-run:{run_id}", 0) + 1
+        return {"status": "cancelling", "run_id": run_id}
 
     @app.post("/__stub/active-runs")
     async def set_active_runs(payload: dict):
@@ -1557,7 +1624,9 @@ def stub_app() -> FastAPI:
             return {"request_id": rid.rstrip("!~"), "agent_name": "assistant",
                     "attachable": "!" not in rid, "answered": "~" in rid,
                     "elsewhere": False}
-        return {"active": {sid: entry(active_runs[sid]) for sid in wanted if sid in active_runs}}
+        return {"active": {sid: entry(active_runs[sid]) for sid in wanted if sid in active_runs},
+                "background": None if background_unread else
+                {sid: background_runs[sid] for sid in wanted if sid in background_runs}}
 
     @app.get("/api/sessions/{session_id}/children")
     async def session_children(request: Request, session_id: str):
@@ -1770,6 +1839,8 @@ EXPECTED = [
     'a run that starts in the open session while the tab is hidden is joined all the same',
     'a run that has answered by the time the activity tick sees it is joined and replayed',
     'the activity tick starts no second watch beside one still asking',
+    'work a turn started that goes on after it shows at work under its call, with its step and a Stop, and its end once it has one',
+    'work that goes on after the turn that started it is not marked unfinished when that turn ends',
     'a run in a session opened since the last activity tick is left to its load for one tick',
     'the activity tick asks about the open session past the cap of a long list',
     'a run the chat lost the stream of in the session does not keep the activity tick from joining the next one',

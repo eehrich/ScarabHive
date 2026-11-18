@@ -97,9 +97,16 @@ for the end.
 Meanwhile the chat shows the run the way it shows a sub-agent: a box under
 the call with Claude Code's steps, its text and every tool call with its
 arguments and result, and a status line per tool call. The box goes on
-after the call has answered, as long as the turn that made the call is
-streaming; it is not stored -- after a reload, read the run with
-@{tt}get_run@{utt}.
+after the call has answered, live as long as the turn that made the call is
+streaming. It is also kept as a background run: a sub-session of the chat's
+session holds its steps, and the run events its state. After that turn has
+ended, after a reload or a switch to another session and back, the box is
+there again under its call, with its steps so far, the step it is on and a
+@{b}Stop@{ub}; the status pill in the head counts it among the agents at
+work. A process that takes the run over (a restart) goes on in the same
+box. One that keeps no sessions (agent-cli, while the server was away) keeps
+the run shown at work, without new steps and without a Stop; the server
+writes its end at its next sweep.
 
 A run that ends in time is answered in full. One still going is answered
 with its run id, its latest actions and a @{tt}wake@{utt}: when the run

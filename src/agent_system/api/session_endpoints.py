@@ -237,6 +237,14 @@ async def list_active_sessions(
     Not reported: a session the run itself creates, until its first turn has
     named it. It has no row in the sidebar yet either, and the chat that started
     it follows its own run directly.
+
+    ``background`` is a second map, apart from the runs a chat may follow: the
+    work a turn of the session started that goes on after it (core/background_runs),
+    still held by a live process -- ``{session_id: [{run_id, agent, state,
+    step_label, seq, stoppable}]}``, the run id being the work's sub-session
+    and ``stoppable`` whether this server holds it (a Stop reaches it). The asker's
+    runs only, as the run events keep them; null when the run store could not
+    be read.
     """
     wanted = [s for s in (i.strip() for i in ids.split(",")) if s][:_ACTIVE_IDS_LIMIT]
     if not wanted:
@@ -269,7 +277,28 @@ async def list_active_sessions(
     # measured). scandir hands the GIL back on every entry, and with one busy thread beside it the listing took
     # 7.5 s instead of 0.05 -- a stalled loop every time the sidebar asked, every four seconds.
     await asyncio.to_thread(_add_sessions_running_elsewhere, wanted, user_id, agent, answer)
-    return {"active": answer}
+    return {"active": answer, "background": await _background_runs_below(agent, wanted, user_id)}
+
+
+async def _background_runs_below(agent: Any, wanted: List[str], user_id: str) -> Optional[Dict[str, Any]]:
+    """The background runs still held below the sessions ``wanted`` (list_active_sessions); None when the run
+    store could not be read -- which is not "none at work": the chat would end every box it shows. Never fails the
+    answer it is part of: the sidebar's marks and the chat's joins do not wait on the run store."""
+    from agent_system.core.background_runs import held, run_who
+    from agent_system.run_events import run_event_store
+
+    try:
+        who = run_who(getattr(agent, "system_config", None), user_id)
+        found = await asyncio.to_thread(run_event_store().background, wanted, who)
+        # A Stop reaches a run through the process that holds it: one held elsewhere (a CLI that took it over)
+        # is not this server's to stop, and its box offers none.
+        for runs in found.values():
+            for run in runs:
+                run["stoppable"] = held(run["run_id"])
+        return found
+    except Exception:
+        logger.exception("Could not read the background runs of %d sessions", len(wanted))
+        return None
 
 
 @session_router.get("/{session_id}")

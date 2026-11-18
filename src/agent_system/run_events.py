@@ -68,6 +68,11 @@ ACTIVE = frozenset({"queued", "working"})
 HEARTBEAT_S = 5.0
 #: A run not ended that has said nothing this long is shown silent, in seconds.
 SILENT_S = 30.0
+#: Why the sweep ends a run whose process is gone.
+INTERRUPTED = "interrupted: the process that ran it has ended"
+#: A run's end is tried this often to be kept, this many seconds apart (a store another writer holds).
+END_TRIES = 3
+END_RETRY_S = 1.0
 #: A step's label at most this long (a layperson reads it at a glance); longer ones are cut.
 MAX_LABEL = 80
 #: Texts in a payload (a summary, a reason) at most this long.
@@ -79,7 +84,7 @@ MAX_TOUCHING = 5
 
 RUN_FIELDS = ("run_id", "agent", "who", "title", "source", "task", "state", "started", "updated", "ended",
               "last_seq", "step_index", "step_total", "step_label", "step_key", "step_labels", "progress", "eta_s", "acked",
-              "owner")
+              "owner", "parent_session")
 #: The states a run is in while its process holds it: a run in one of them whose process is gone was cut off.
 HELD = frozenset({"queued", "working", "needs_input"})
 
@@ -151,12 +156,14 @@ class RunEventStore:
                        "ended TEXT, last_seq INTEGER NOT NULL DEFAULT 0, step_index INTEGER, step_total INTEGER, "
                        "step_label TEXT NOT NULL DEFAULT '', step_key TEXT NOT NULL DEFAULT '', step_labels TEXT NOT NULL DEFAULT '', "
                        "progress REAL, eta_s INTEGER, updated_mono REAL, acked INTEGER NOT NULL DEFAULT 0, "
-                       "owner TEXT NOT NULL DEFAULT '')")
+                       "owner TEXT NOT NULL DEFAULT '', parent_session TEXT NOT NULL DEFAULT '')")
             columns = {row[1] for row in db.execute("PRAGMA table_info(agent_runs)").fetchall()}
             if "acked" not in columns:   # a store of stage 1
                 db.execute("ALTER TABLE agent_runs ADD COLUMN acked INTEGER NOT NULL DEFAULT 0")
             if "owner" not in columns:   # a store of stage 3
                 db.execute("ALTER TABLE agent_runs ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+            if "parent_session" not in columns:   # a store from before background runs (core/background_runs.py)
+                db.execute("ALTER TABLE agent_runs ADD COLUMN parent_session TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE TABLE IF NOT EXISTS agent_run_events (cursor INTEGER PRIMARY KEY AUTOINCREMENT, "
                        "event_id TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL, seq INTEGER NOT NULL, who TEXT NOT NULL, "
                        "body TEXT NOT NULL, UNIQUE (run_id, seq))")
@@ -169,23 +176,28 @@ class RunEventStore:
         """End as ``failed`` every run still held (queued, working, asking) whose process is gone -- a restart, a
         crash: nothing will say anything for it again, and its person sees that it stopped. Answers the events."""
         with self._lock, connection(self.path) as db:
-            held = db.execute(f"SELECT run_id, owner FROM agent_runs WHERE state IN ({', '.join('?' for _ in HELD)})",
-                              tuple(HELD)).fetchall()
+            held = db.execute("SELECT run_id, owner, parent_session FROM agent_runs "
+                              f"WHERE state IN ({', '.join('?' for _ in HELD)})", tuple(HELD)).fetchall()
         ended = []
-        for run_id, owner in held:
+        for run_id, owner, parent in held:
             if not owner_alive(owner):
-                event = self.append(run_id, "run.failed",
-                                    payload={"reason": "interrupted: the process that ran it has ended"})
+                # Work below a session (core/background_runs) needs nobody for that: its session shows how it
+                # stands, and whoever started it takes it over (a coding CLI outlives the API) -- an alarm for a run
+                # about to go on would be a false one.
+                event = self.append(run_id, "run.failed", seen=bool(parent),
+                                    payload={"reason": INTERRUPTED})
                 if event is not None:
                     ended.append(event)
         return ended
 
     def append(self, run_id: str, type_: str, *, agent: str = "", who: str = "", title: str = "", source: str = "",
-               task: str = "", step: dict[str, Any] | None = None, progress: float | None = None,
+               task: str = "", parent: str = "", seen: bool = False, step: dict[str, Any] | None = None,
+               progress: float | None = None,
                eta_s: int | None = None, touching: Iterable[str] = (), payload: dict[str, Any] | None = None,
                ) -> dict[str, Any] | None:
         """Write one event of ``run_id`` and the run's new state; answer the event (with its ``cursor``), or None when
-        the run is already ended (nothing more is said for it) or unknown and the event cannot start it."""
+        the run is already ended (nothing more is said for it) or unknown and the event cannot start it. ``seen``:
+        an end nobody has to look at (``needs_you`` stays false)."""
         if type_ not in TYPES:
             raise ValueError(f"unknown run event type {type_!r}")
         stamp = now_iso()
@@ -199,7 +211,8 @@ class RunEventStore:
                 run = {"run_id": run_id, "agent": agent, "who": who, "title": _cut(title, 120), "source": source,
                        "task": task, "state": "queued", "started": stamp, "updated": stamp, "ended": None,
                        "last_seq": 0, "step_index": None, "step_total": None, "step_label": "", "step_key": "",
-                       "step_labels": "", "progress": None, "eta_s": None, "acked": 0, "owner": OWNER}
+                       "step_labels": "", "progress": None, "eta_s": None, "acked": 0, "owner": OWNER,
+                       "parent_session": parent}
             elif type_ == "run.acknowledged":
                 # only an end is seen: a question is answered, a result checked (acknowledge: run.done)
                 if not needs_you(run["state"], run["acked"]) or run["state"] in ("review", "needs_input"):
@@ -213,6 +226,8 @@ class RunEventStore:
                            progress=None, eta_s=None, acked=0)
             if starts:
                 run["owner"] = OWNER   # the process that (re)starts a run holds it
+            if seen:
+                run["acked"] = 1
             state = TYPES[type_] or run["state"]
             if step is not None:
                 run.update(step_index=step.get("index"), step_total=step.get("total"), step_label=step.get("label", ""),
@@ -231,7 +246,8 @@ class RunEventStore:
             event = {
                 "v": SCHEMA_VERSION, "event_id": _event_id(), "run_id": run_id, "seq": run["last_seq"], "ts": stamp,
                 "type": type_, "agent": run["agent"], "source": run["source"], "task": run["task"],
-                "subject": {"title": run["title"]}, "state": state, "needs_you": needs_you(state, run["acked"]),
+                "subject": {"title": run["title"]}, "parent_session": run["parent_session"],
+                "state": state, "needs_you": needs_you(state, run["acked"]),
                 "step": (self._step(run) if state == "working" and run["step_label"] else None),
                 "progress": run["progress"], "eta_s": run["eta_s"],
                 "touching": [_cut(item, 200) for item in list(touching)[:MAX_TOUCHING]],
@@ -317,6 +333,24 @@ class RunEventStore:
             rows = db.execute("SELECT body FROM agent_run_events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?",
                               (run_id, after_seq, limit)).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def background(self, parents: Iterable[str], who: str) -> dict[str, list[dict[str, Any]]]:
+        """The runs of ``who`` still held (queued, at work, asking) that work below one of the sessions ``parents``
+        (``parent_session``), by that session: run id, agent, state, step label and ``last_seq`` -- what a chat that
+        shows those sessions marks, and whether it has to read one again."""
+        parents = [p for p in parents if p]
+        if not parents:
+            return {}
+        with self._lock, connection(self.path) as db:
+            rows = db.execute("SELECT parent_session, run_id, agent, state, step_label, last_seq FROM agent_runs "
+                              f"WHERE who = ? AND parent_session IN ({', '.join('?' for _ in parents)}) "
+                              f"AND state IN ({', '.join('?' for _ in HELD)}) ORDER BY started",
+                              (who, *parents, *HELD)).fetchall()
+        found: dict[str, list[dict[str, Any]]] = {}
+        for parent, run_id, agent, state, label, seq in rows:
+            found.setdefault(parent, []).append({"run_id": run_id, "agent": agent, "state": state,
+                                                 "step_label": label, "seq": seq})
+        return found
 
     def cursor_of(self, event_id: str) -> int | None:
         with self._lock, connection(self.path) as db:
@@ -423,9 +457,11 @@ class RunReporter:
     """
 
     def __init__(self, run_id: str, agent: str, *, who: str = "", title: str = "", source: str = "", task: str = "",
-                 store: RunEventStore | None = None, bus: RunEventBus | None = None,
+                 parent: str = "", store: RunEventStore | None = None, bus: RunEventBus | None = None,
                  heartbeat_s: float = HEARTBEAT_S):
         self.run_id, self.agent, self.who, self.title, self.source, self.task = run_id, agent, who, title, source, task
+        #: The session this run works below (a background run's: the session whose turn started it).
+        self.parent = parent
         self._store, self._bus = store, bus
         self.heartbeat_s = heartbeat_s
         self.plan: list[str] = []
@@ -444,14 +480,19 @@ class RunReporter:
     def bus(self) -> RunEventBus:
         return self._bus or run_event_bus()
 
-    async def _emit(self, type_: str, **fields: Any) -> dict[str, Any] | None:
+    async def _emit(self, type_: str, *, tries: int = 1, **fields: Any) -> dict[str, Any] | None:
         async with self._write:
-            try:
-                event = await asyncio.to_thread(self.store.append, self.run_id, type_, agent=self.agent, who=self.who,
-                                                title=self.title, source=self.source, task=self.task, **fields)
-            except Exception:
-                logger.exception("run %s: event %s not kept", self.run_id, type_)
-                return None
+            for left in range(tries, 0, -1):
+                try:
+                    event = await asyncio.to_thread(self.store.append, self.run_id, type_, agent=self.agent,
+                                                    who=self.who, title=self.title, source=self.source,
+                                                    task=self.task, parent=self.parent, **fields)
+                    break
+                except Exception:
+                    logger.exception("run %s: event %s not kept", self.run_id, type_)
+                    if left == 1:
+                        return None
+                    await asyncio.sleep(END_RETRY_S)
             self._last = time.monotonic()
         if event is not None:
             self.bus.publish(event)
@@ -459,12 +500,14 @@ class RunReporter:
 
     # ── the life of a run ────────────────────────────────────────────────────
 
-    async def started(self, plan: Iterable[str] = ()) -> dict[str, Any] | None:
-        """The run begins (again, when a person answered it); ``plan`` names its steps where they are known."""
+    async def started(self, plan: Iterable[str] = (), *, tries: int = 1) -> dict[str, Any] | None:
+        """The run begins (again, when a person answered it); ``plan`` names its steps where they are known.
+        ``tries``: as for an end, where the end that follows counts only if this was kept (a run begun again to be
+        ended as it ended)."""
         self.plan = [_cut(label, MAX_LABEL) for label in plan]
         self.index, self.label, self.ended = 0, "", False
         _REPORTERS[self.run_id] = self
-        return await self._emit("run.started", payload={"plan": self.plan} if self.plan else None)
+        return await self._emit("run.started", tries=tries, payload={"plan": self.plan} if self.plan else None)
 
     async def step(self, label: str, *, index: int | None = None, total: int | None = None, key: str = "",
                    labels: dict[str, str] | None = None, touching: Iterable[str] = (),
@@ -523,7 +566,8 @@ class RunReporter:
         self.stop_keep_alive()
         if _REPORTERS.get(self.run_id) is self:
             del _REPORTERS[self.run_id]
-        return await self._emit(type_, payload=payload)
+        # An end that was not kept leaves the run at work for as long as its process lives: nothing says it again.
+        return await self._emit(type_, tries=END_TRIES, payload=payload)
 
     async def review_ready(self, summary: str, check_in: str = "") -> dict[str, Any] | None:
         """The agent's work is done and waits for its person to check it (``check_in``: where, in plain words);

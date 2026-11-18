@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Work a turn starts that goes on after it is shown where the chat shows a sub-agent, after the turn too:
+  `core/background_runs.py` keeps it as a sub-session of the chat's session (its steps, as an agent's are stored)
+  and as a run in the run events below that session. Switched back to the session, or after a reload, the box is
+  under its call again, with its steps so far, the step it is on and a Stop; `/api/sessions/active` reports such
+  runs (`background`) apart from the runs a chat follows, and the activity tick reads a box again as its run goes
+  on and once it ends. The status pill counts them, and a click opens their session. coding_cli is the first to
+  use it -- before, a Claude Code run that outlived its turn showed nothing once that turn had ended. Only a
+  process that keeps sessions writes such a box: a CLI that takes the work over keeps it shown at work, without a
+  Stop (`stoppable`), and the server writes its end.
 - file_checkpoints: what a shell command or a coding CLI changes is recorded, not only counted. The directories of
   the agent's file tools are looked at before and after such a call: in a git work tree through git, copying only
   what `git status` lists (a clean file's earlier content is HEAD's, read with its checked-out line endings); outside
@@ -239,6 +248,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NotRewindable`, a compacted journal). Each such resume counts as a try of the key (`count_by_key`).
 
 ### Fixed
+
+- Run events: an end the run store refused (another writer held it) is tried again, three times a second apart.
+  Not kept, it left the run "at work" for as long as its process lived -- nothing says an end twice.
 
 - A session the API wakes runs its woken turn in the API, as a job, instead of an `agent-cli run --woken` of its
   own: the chat follows it, stops it and writes to it, and it ends with the API. Before, the session read "being

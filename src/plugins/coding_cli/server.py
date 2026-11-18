@@ -41,6 +41,7 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
+from agent_system.core.background_runs import BackgroundRun, keeps_sessions
 from agent_system.utils.proctree import run_bounded
 from agent_system.core.cancellation import CancellationToken, get_cancellation_manager
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_session, woken_process
@@ -53,7 +54,7 @@ from plugins.mcp_client.auth import build_auth_headers
 from plugins.mcp_client.connection import _SSE_ALIASES, _STREAMABLE_HTTP_ALIASES
 
 from . import run as cli
-from .live import LiveRun
+from .live import AGENT, LiveRun
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -122,11 +123,12 @@ _listings: dict[str, list] = {}
 
 
 class _Listing:
-    """The runs folder's records and wakes by name, sorted out once per listing for every caller."""
+    """The runs folder's records, wakes and views by name, sorted out once per listing for every caller."""
 
     def __init__(self, names: list[str]) -> None:
         self.records = frozenset(n for n in names if n.endswith(".json"))
         self.wakes = tuple(n for n in names if n.endswith(".wake"))
+        self.views = tuple(n for n in names if n.endswith(".view"))
 
 
 def _run_folder_listing(folder: Path) -> _Listing:
@@ -375,6 +377,11 @@ def _claim(path: Path, content: str = "") -> bool:
         raise
     os.close(fd)
     return True
+
+
+def _label(record: dict) -> str:
+    """The CLI a run is of, by name: whichever instance speaks of it (every instance sweeps every run)."""
+    return "Antigravity" if record.get("cli") == "antigravity" else "Claude Code"
 
 
 def _instance_alive(owner: Any) -> bool:
@@ -800,13 +807,21 @@ class CodingCliServer(SchemaBasedToolServer):
             logger.exception("coding_cli: sweeping the runs failed")
 
     async def _sweep(self) -> None:
-        for record in await asyncio.to_thread(self._unended):
+        unended = await asyncio.to_thread(self._unended)
+        for record in unended:
             if record.get("state") == "running" and not self._owner_alive(record):
                 await self._adopt(record)
+        listing = await asyncio.to_thread(_run_folder_listing, self._root() / "runs")
         # A wake still on disk is one nobody rang to the end; _ring reads whether its run has ended.
-        for name in (await asyncio.to_thread(_run_folder_listing, self._root() / "runs")).wakes:
+        for name in listing.wakes:
             if _RUN_ID.fullmatch(name[:-len(".wake")]):
                 self._ring(name[:-len(".wake")])
+        # A view still on disk is one nobody ended: its run may have ended where no process could write its end (one
+        # that keeps no sessions), or under one that died over it. _end_view reads whether its run has ended.
+        going = {record["run_id"] for record in unended}
+        for name in listing.views:
+            if _RUN_ID.fullmatch(name[:-len(".view")]) and name[:-len(".view")] not in going:
+                await self._end_view(name[:-len(".view")])
 
     async def _adopt(self, record: dict) -> None:
         """Becomes the owner of an orphaned run -- one instance per dead owner."""
@@ -846,6 +861,7 @@ class CodingCliServer(SchemaBasedToolServer):
         for stale in (self._root() / "runs").glob(f"{run_id}.released-*"):
             stale.unlink(missing_ok=True)         # it has an owner again: no release of an earlier one counts
         if alive(record.get("pid"), record.get("pid_started")) and not self._orphan_stop(record):
+            await self._reopen_view(record)
             self._watch(record, None)
         else:
             await self._settle(run_id)
@@ -1278,11 +1294,17 @@ class CodingCliServer(SchemaBasedToolServer):
         run id and a wake -- none when the caller waits with get_run itself (wake false: a state machine, whose
         session has nobody to wake)."""
         run_id = record["run_id"]
-        live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."))
+        live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."),
+                                  system_config=self.system_config, parent=session_id, user_id=user_id,
+                                  on_cancel=self._stopper(run_id, record))
         if live is not None:
             live.label = self.label
-        if live is not None:
             self._live[run_id] = live
+            if live.background is not None:
+                # for a process that takes the run over: its view goes on in the same sub-session
+                with contextlib.suppress(OSError):
+                    self._file(run_id, "view").write_text(json.dumps({**live.view, "task": task}),
+                                                          encoding="utf-8")
         self._listeners[run_id] = status
         sub_agent = False
         try:
@@ -1312,13 +1334,18 @@ class CodingCliServer(SchemaBasedToolServer):
                     if self._ended(run_id):
                         break
                     await asyncio.sleep(0.5)
-            if live is not None and self._ended(run_id):
-                await live.close(self._load(run_id) or {})      # the cancelled watch did not
+            if self._ended(run_id):
+                await self._end_view(run_id)      # the cancelled watch did not
             if not self._ended(run_id):
                 sub_agent = await self._is_sub_agent(session_id, user_id)
         # Only an end on disk is answered in full: a watch that ended early (a broken status channel, the plugin
         # stopped, a finalize still under way) leaves the run going -- it is answered as going, with its wake.
         if self._ended(run_id):
+            # The watch may have seen the end before the view was open (a run refused at once): it ended nothing,
+            # and let go of nothing either.
+            await self._end_view(run_id)
+            if run_id not in self._monitors:
+                self._live.pop(run_id, None)
             return await self._finished(status, run_id, session_id)
         # No await from the look above to the armed wake: a monitor still
         # watching rings when the run ends, after the wake is there.
@@ -1452,6 +1479,25 @@ class CodingCliServer(SchemaBasedToolServer):
         return await self._finished(status, run_id, session_id)
 
     # ── a run's life ──
+
+    def _stopper(self, run_id: str, record: dict):
+        """Stop from outside the turn -- the chat's Stop on the run's box (core/background_runs)."""
+        async def stop() -> None:
+            await self._stop_run(self._load(run_id) or record, "stopped from the chat")
+        return stop
+
+    async def _reopen_view(self, record: dict) -> None:
+        """The view of a run this process takes over, where the process that started it kept one (_answer)."""
+        run_id = record["run_id"]
+        try:
+            view = json.loads(self._file(run_id, "view").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        live = await LiveRun.reopen(view, str(view.get("task") or ""), Path(record.get("worktree") or "."),
+                                    system_config=self.system_config, on_cancel=self._stopper(run_id, record))
+        if live is not None:
+            live.label = _label(record)
+            self._live[run_id] = live
 
     def _stop(self, run_id: str, reason: str) -> None:
         """Why the run ends early; _finalize reads it unless the run finished anyway."""
@@ -1743,15 +1789,16 @@ class CodingCliServer(SchemaBasedToolServer):
                     if (self._load(run_id) or {}).get("state") in FINAL_STATES:
                         break
                     await asyncio.sleep(0.5)
-            if live is not None:
-                await live.close(self._load(run_id) or {})
+            await self._end_view(run_id)
             self._ring(run_id)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a broken watch costs progress and the ring, never the process
             logger.exception("coding_cli: watching run %s failed", run_id)
         finally:
-            self._live.pop(run_id, None)
+            live = self._live.pop(run_id, None)
+            if live is not None:
+                live.detach()   # a watch stopped before the end (the plugin stops): another takes the run over
             self._turns.pop(run_id, None)
 
     def _turn_stopped(self, run_id: str) -> bool:
@@ -1783,8 +1830,91 @@ class CodingCliServer(SchemaBasedToolServer):
         if record.get("state") in FINAL_STATES:
             if reader:
                 self._mark_read(run_id, reader)
+            await self._end_view(run_id)
             self._ring(run_id)
         return record
+
+    async def _end_view(self, run_id: str) -> None:
+        """The ended run's view ends with it, once -- whoever saw the end first: the watch, the call still waiting,
+        a reader that settled a run no watch had (a watch that stopped first), or a sweep (a view nobody ended).
+        The live view where this process holds one (its box gets the end live), else the background run its view
+        file names (core/background_runs). The lease <id>.view-ended names who ends it -- one whose holder died
+        over it is taken over -- and the view file is gone once it is ended."""
+        record = self._load(run_id) or {}
+        if record.get("state") not in FINAL_STATES:
+            return
+        live = self._live.get(run_id)
+        view = self._file(run_id, "view")
+        if live is None and not view.exists():
+            return
+        mine = (record.get("owner") or {}).get("instance") == self._instance
+        if live is None and not mine and self._owner_alive(record):
+            return   # its owner holds its view and ends it: what it fed last is not on disk yet
+        if live is not None and live.background is not None:
+            writes = live.background.kept
+        else:
+            writes = keeps_sessions() or not view.exists()    # no view kept: only its live box ends
+        if not writes:
+            # The end belongs in the run's sub-session, and this process keeps no sessions (a CLI that took the run
+            # over): one that does ends the view at its next sweep. Said on disk -- the run's owner, alive, would
+            # hold them off.
+            if mine and not self._file(run_id, f"released-{self._instance}").exists():
+                with contextlib.suppress(OSError):
+                    self._release(run_id)
+            return
+        try:
+            if not self._take(self._file(run_id, "view-ended")):
+                return
+        except OSError:
+            return
+        # Taken, the end is the run's: a stop of whoever got here (the plugin, a turn) must not cut it short.
+        await asyncio.shield(self._close_view(run_id, record, live, view))
+
+    def _take(self, lease: Path) -> bool:
+        """Takes ``lease`` unless a live process holds it: one left by a process that died over its work is taken
+        over."""
+        if lease.exists():
+            try:
+                held = json.loads(lease.read_text(encoding="utf-8"))
+            except ValueError:
+                held = None
+            if isinstance(held, dict):
+                if _instance_alive(held):
+                    return False
+            elif time.time() - lease.stat().st_mtime < STALE_LEASE_S:
+                return False                      # being written this moment
+            lease.unlink(missing_ok=True)
+        return _claim(lease, json.dumps(self._me))
+
+    async def _close_view(self, run_id: str, record: dict, live: Optional[LiveRun], view: Path) -> None:
+        said = await live.close(record) if live is not None else None
+        if live is None or live.background is None:
+            # No background run held here -- none was (the run ended where no watch kept it), or it could not be
+            # opened again when the run was taken over: the view file names the sub-session that waits for its end.
+            try:
+                kept = json.loads(view.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                kept = None
+            if isinstance(kept, dict) and kept.get("session") and keeps_sessions():
+                answer = str(record.get("result") or "")
+                state = record.get("state")
+                said = await BackgroundRun.ended(
+                    system_config=self.system_config, parent=str(kept.get("parent") or ""),
+                    user_id=str(kept.get("user") or ""), run_id=str(kept.get("run") or ""), agent=AGENT,
+                    task=str(kept.get("task") or ""), session_id=str(kept.get("session") or ""),
+                    state=state if state in ("done", "cancelled") else "failed", answer=answer,
+                    reason=f"{_label(record)}: {record.get('note') or answer.strip()[:300] or 'the run failed'}")
+        lease = self._file(run_id, "view-ended")
+        if said is False:
+            # The run events did not take the end (a store another writer held): the view stays, and the next sweep
+            # says it again -- the sub-session has its end by then, nothing is written twice (BackgroundRun.ended).
+            with contextlib.suppress(OSError):
+                lease.unlink(missing_ok=True)
+            return
+        # Ended: nothing asks for it again. The view first -- without it the lease means nothing.
+        for done in (view, lease):
+            with contextlib.suppress(OSError):
+                done.unlink(missing_ok=True)
 
     def _ring(self, run_id: str) -> None:
         """Wakes the session that asked for it, unless it read the end already.
@@ -1936,8 +2066,7 @@ class CodingCliServer(SchemaBasedToolServer):
                         err = self._file(run_id, "err").read_text(encoding="utf-8", errors="replace").strip()
                     except OSError:
                         err = ""
-                    label = "Antigravity" if record.get("cli") == "antigravity" else "Claude Code"
-                    notes.append(f"{label} ended without a result" + (", its stderr is in details" if err else ""))
+                    notes.append(f"{_label(record)} ended without a result" + (", its stderr is in details" if err else ""))
                     if err:
                         details.append(err[-CAP_STDERR:])
             if result:

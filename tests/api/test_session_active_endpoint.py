@@ -1179,3 +1179,62 @@ async def test_a_message_taken_in_at_the_runs_end_is_in_what_a_load_is_served():
     assert [m.content for m in working][-1] == "one more thing", "fixture: nothing was taken in"
     assert [m.content for m in agent.get_live_conversation(session_id)] == [
         "the question", "the answer", "one more thing"]
+
+
+@pytest.mark.asyncio
+async def test_work_a_turn_started_that_goes_on_is_reported_apart_from_the_runs_to_follow(monkeypatch, tmp_path):
+    """A background run (core/background_runs) below a session asked about: reported while a process holds it, to
+    the user it is of -- never as a run the chat would follow, and not once it has ended."""
+    from types import SimpleNamespace
+
+    from agent_system import run_events
+    from agent_system.core import background_runs
+    from agent_system.run_events import RunEventBus, RunEventStore, RunReporter
+
+    store = RunEventStore(tmp_path / "run_events.db")
+    run_events.use_run_events(store, RunEventBus())
+    manager, release = await _manager_with()
+    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: manager)
+    try:
+        mine = RunReporter("sub1", "claude_code", who="u1", source="background", parent="asked")
+        theirs = RunReporter("sub2", "claude_code", who="u2", source="background", parent="asked")
+        ended = RunReporter("sub3", "claude_code", who="u1", source="background", parent="asked")
+        for run in (mine, theirs, ended):
+            await run.started()
+        await mine.step("Bash: pytest -q")
+        await ended.done("ok")
+        agent = SimpleNamespace(system_config=SimpleNamespace(auth=SimpleNamespace(enabled=True)))
+        answer = await list_active_sessions(ids="asked,other", current_user=_User("u1"), session_manager=_Owns(),
+                                            agent=agent)
+        assert answer["active"] == {}, "background work was offered as a run to follow"
+        assert answer["background"] == {"asked": [{"run_id": "sub1", "agent": "claude_code", "state": "working",
+                                                   "step_label": "Bash: pytest -q", "seq": 2, "stoppable": False}]}
+        # a run this process holds is its to stop; one held elsewhere (above) offers no Stop that does nothing
+        monkeypatch.setitem(background_runs._RUNS, "sub1", object())
+        answer = await list_active_sessions(ids="asked", current_user=_User("u1"), session_manager=_Owns(),
+                                            agent=agent)
+        assert answer["background"]["asked"][0]["stoppable"] is True
+    finally:
+        run_events.use_run_events(None)
+        await _stop(manager, release)
+
+
+@pytest.mark.asyncio
+async def test_a_run_store_that_cannot_be_read_is_no_answer_about_background_work(monkeypatch):
+    """Read as "nothing at work", the chat ended every background box it showed at one failed read."""
+    from types import SimpleNamespace
+
+    from agent_system import run_events
+
+    def broken():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(run_events, "run_event_store", broken)
+    manager, release = await _manager_with()
+    monkeypatch.setattr(session_endpoints, "get_background_job_manager", lambda: manager)
+    try:
+        answer = await list_active_sessions(ids="asked", current_user=_User("u1"), session_manager=_Owns(),
+                                            agent=SimpleNamespace(system_config=None))
+        assert answer["background"] is None
+    finally:
+        await _stop(manager, release)

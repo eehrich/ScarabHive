@@ -3825,6 +3825,8 @@
         <span class="sub-run-icon"><div class="spinner"></div></span>
         <span class="sub-run-agent"></span>
         <span class="sub-run-task pk-muted"></span>
+        <span class="sub-run-step pk-muted" hidden></span>
+        <button type="button" class="sub-run-stop" hidden>Stop</button>
       </div>
       <div class="sub-run-body"></div>`;
     element.querySelector('.sub-run-agent').textContent = agent || 'sub-agent';
@@ -3884,6 +3886,9 @@
   const storedRunViews = new Map();
   const storedSessions = new Map();
   const storedChildren = new Map();
+  // The boxes of background runs (core/background_runs.py) in the session on screen, by the run's sub-session:
+  // work a turn started that goes on after it. The session pane's activity tick says which still run.
+  const backgroundViews = new Map();
   let storedWatch = null;
   let sessionGate = null;   // {waiting} while the session on screen lists its sub-sessions
   // A stored read live events may wait for gives up, or a stalled one would hold them for
@@ -3902,8 +3907,140 @@
     storedRunViews.clear();
     storedSessions.clear();
     storedChildren.clear();
+    backgroundViews.clear();
     if (storedWatch) storedWatch.disconnect();
   }
+
+  /**
+   * A box that is a background run's: the work goes on after the turn that started it, in the sub-session
+   * `session`. Its state comes from the session pane's activity tick (showBackgroundRuns), its history from that
+   * sub-session, its Stop goes to the run.
+   */
+  function markBackground(view, session, parent) {
+    if (view.background) return;
+    // `parent`: the session the run works below -- the open one's, or a sub-agent's whose box is read back in it
+    view.background = { session, parent, listed: undefined, seq: null };
+    backgroundViews.set(session, view);
+    const stop = view.element.querySelector('.sub-run-stop');
+    stop.addEventListener('click', async (event) => {
+      event.stopPropagation();   // the header folds the box
+      stop.disabled = true;
+      stop.textContent = 'Stopping…';
+      try {
+        const response = await fetch(`/api/agent-runs/${encodeURIComponent(session)}/cancel`,
+          { method: 'POST', credentials: 'include' });
+        if (!response.ok) throw new Error(`${response.status}`);
+      } catch (error) {
+        console.warn('[chat_module] The background run could not be stopped:', error);
+        stop.disabled = false;
+        stop.textContent = 'Stop';
+      }
+    });
+    stop.addEventListener('keydown', (event) => event.stopPropagation());
+  }
+
+  /** Whether a background run's box is at work: its Stop and the step it is on, or neither. */
+  function showBackgroundWorking(view, working, label = '') {
+    const step = view.element.querySelector('.sub-run-step');
+    const stop = view.element.querySelector('.sub-run-stop');
+    step.hidden = !working || !label;
+    step.textContent = working ? label : '';
+    stop.hidden = !working || (view.background || {}).stoppable === false;   // held where no Stop reaches it
+    if (!working) {
+      stop.disabled = false;
+      stop.textContent = 'Stop';
+    }
+  }
+
+  /**
+   * A background run's box read from its sub-session without an answer: how the run stands, from the activity
+   * tick -- or, before the first tick, from what the run wrote into its sub-session. True when that settled the
+   * box; false leaves it to be marked unfinished (its process ended without a word: no run holds it any more).
+   */
+  function settleBackground(view, session) {
+    const kept = (session.metadata && session.metadata.background) || {};
+    const working = view.background.listed !== undefined ? view.background.listed : kept.state === 'running';
+    if (working) {
+      if (view.element.dataset.state !== 'running') {
+        view.element.dataset.state = 'running';
+        view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
+      }
+      showBackgroundWorking(view, true, view.background.label || '');
+      return true;
+    }
+    showBackgroundWorking(view, false);
+    if (kept.state === 'done') {   // done with nothing to say: no answer in its sub-session
+      markSubRun(view, 'done');
+      return true;
+    }
+    if (kept.state === 'failed' || kept.state === 'cancelled') {
+      if (kept.reason) {
+        showReason(view.t);
+        view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(kept.reason)}</div>`;
+      }
+      markSubRun(view, 'error');
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * A background run's box read again from its sub-session -- its steps since, or its end -- once it is in view
+   * (watchStoredSubRun): the sub-session is read whole, and a box folded away or scrolled off need not be read at
+   * every step its run takes. One waiting for that already is read as it stands then.
+   */
+  function rereadBackground(view) {
+    if (view.live || !view.element.isConnected || view.element.dataset.stored === 'pending') return;
+    storedSessions.delete(view.background.session);
+    storedSubRuns.set(view.element, { view, sessionId: view.background.session, runId: view.runId });
+    view.element.dataset.stored = 'pending';
+    watchStoredSubRun(view.element);
+  }
+
+  /** The sessions the background runs on screen work below: the activity tick asks about these too. */
+  function backgroundParents() {
+    return [...new Set([...backgroundViews.values()]
+      .filter((view) => view.element.isConnected).map((view) => view.background.parent))];
+  }
+  chatModule.backgroundParents = backgroundParents;
+
+  /**
+   * The background runs a process still holds below the sessions the session pane's activity tick asked about
+   * (`asked`; /api/sessions/active `background`, by session): each box shows the step its run is on and offers
+   * Stop, a box whose run said more is read again, and one no longer held is read once more for how it ended. A
+   * box below a session the tick did not ask about -- one shown since it asked -- is left to the next tick.
+   */
+  function showBackgroundRuns(background, asked) {
+    const held = new Map(Object.values(background || {}).flat().map((run) => [run.run_id, run]));
+    const askedAbout = new Set(asked || []);
+    for (const [session, view] of backgroundViews) {
+      if (!view.element.isConnected) {
+        backgroundViews.delete(session);
+        continue;
+      }
+      if (!askedAbout.has(view.background.parent)) continue;
+      const run = held.get(session);
+      const was = view.background.listed;
+      view.background.listed = Boolean(run);
+      view.background.label = run ? run.step_label || '' : '';
+      view.background.stoppable = !run || run.stoppable !== false;
+      if (view.live) continue;   // the stream of the turn that started it shows it as it goes
+      if (run) {
+        if (view.element.dataset.state !== 'running') {
+          view.element.dataset.state = 'running';
+          view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
+        }
+        showBackgroundWorking(view, true, view.background.label);
+        if (run.seq !== view.background.seq) {
+          view.background.seq = run.seq;
+          if (was !== undefined) rereadBackground(view);   // the first tick: the box was read just now
+        }
+      } else if (was !== false && view.element.dataset.state === 'running') {
+        rereadBackground(view);
+      }
+    }
+  }
+  chatModule.showBackgroundRuns = showBackgroundRuns;
 
   /** Read a stored sub-run once its box comes near the viewport -- never while folded away. */
   function watchStoredSubRun(element) {
@@ -3983,7 +4120,9 @@
    * listing (waitingFor).
    */
   async function attachStoredSubRuns(session, views) {
-    if (!session || !Object.keys((session.metadata && session.metadata.sub_agents) || {}).length) return;
+    const metadata = (session && session.metadata) || {};
+    const background = metadata.background_runs || {};
+    if (!session || !Object.keys({ ...(metadata.sub_agents || {}), ...background }).length) return;
     const id = session.session_id;
     let listed;
     if (!storedChildren.has(id)) {
@@ -4023,6 +4162,7 @@
       if (!call) return;
       if (chatContainer.querySelector(`.sub-run[data-run-id="${CSS.escape(runId)}"]`)) return;
       const view = makeSubRun(call.view, call.el, runId, depthOf(runId), node.agent_name);
+      if (background[node.session_id]) markBackground(view, node.session_id, id);
       view.element.dataset.stored = 'pending';
       storedSubRuns.set(view.element, { view, sessionId: node.session_id, runId });
       storedRunViews.set(runId, view);
@@ -4081,8 +4221,9 @@
     const answered = replayRun(view, own.slice(1));
     if (answered) {
       settleView(view);
+      if (view.background) showBackgroundWorking(view, false);
       markSubRun(view, 'done');
-    } else if (!view.live) {
+    } else if (!view.live && !(view.background && settleBackground(view, session))) {
       markSubRun(view, 'unfinished');
     }
     await attachStoredSubRuns(session, [view]);
@@ -4155,7 +4296,14 @@
   }
 
   function endSubRun(view) {
-    if (view.live || !view.element.dataset.stored) markSubRun(view, 'unfinished');
+    if (view.background) {
+      // It outlives the turn: from here on the activity tick says how it stands, and its sub-session what it did.
+      view.live = false;
+      view.openStep = null;
+      if (view.element.dataset.state === 'running') showBackgroundWorking(view, true, view.background.label || '');
+    } else if (view.live || !view.element.dataset.stored) {
+      markSubRun(view, 'unfinished');
+    }
     endSubRuns(view);
   }
 
@@ -4187,18 +4335,22 @@
     switch (ev.type) {
       case 'start':
         showSubRunTask(view, String(ev.task || ''));
+        if (ev.background) markBackground(view, String(ev.background), String(ev.background_parent || currentSessionId));
         break;
       case 'final':
         renderRunEvent(view, ev);
+        if (view.background) showBackgroundWorking(view, false);
         markSubRun(view, 'done');
         break;
       case 'error':
         showReason(view.t);
         view.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(ev.message || ev.error || 'Error')}</div>`;
+        if (view.background) showBackgroundWorking(view, false);
         markSubRun(view, 'error');
         endThinking(view.steps);
         break;
       case 'cancelled':
+        if (view.background) showBackgroundWorking(view, false);
         markSubRun(view, 'error');
         endThinking(view.steps);
         break;

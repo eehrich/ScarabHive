@@ -47,7 +47,8 @@ waits, `GET /api/agent-runs` and the stream's snapshot carry its `question`.
   "v": 1, "event_id": "evt_18a3c…", "run_id": "a1b2c3", "seq": 4,
   "ts": "2026-10-31T20:41:05.120Z", "type": "run.step",
   "agent": "code_analyst", "source": "code_audit", "task": "assess",
-  "subject": {"title": "Assess the issues"}, "state": "working",
+  "subject": {"title": "Assess the issues"}, "parent_session": "",
+  "state": "working",
   "step": {"index": 2, "total": null, "key": "read_code",
            "label": "Reading the code behind a finding",
            "labels": {"de": "Liest den Code hinter einem Befund"}},
@@ -67,7 +68,8 @@ Each run names the process that reports it. When the store is opened by a later
 process (a restart, a crash before it), every run that was still queued, at
 work or asking and whose process is gone is ended as `run.failed` ("interrupted:
 the process that ran it has ended"): it needs its person until they see it,
-and none stays at work for good.
+and none stays at work for good -- except a background run (below): its session
+shows how it stands and its starter may take it over, so it needs nobody.
 
 ## Routes
 
@@ -78,7 +80,7 @@ Each person reads their own runs (auth off: everyone is `local`).
 | `GET /api/agent-runs?limit=20` | The runs, those not ended first. |
 | `GET /api/agent-runs/{run_id}/events?after_seq=0` | The run and its events after `after_seq`. |
 | `POST /api/agent-runs/{run_id}/ack` | The person checked the result or saw the failure (409 when the run waits for nobody). |
-| `POST /api/agent-runs/{run_id}/cancel` | Stop a run at work or waiting for its person's answer: through its own request id, as `/api/requests/{id}/cancel` stops any run; its end comes as `run.cancelled` with `payload.by`. 409 when no run of this server works there. |
+| `POST /api/agent-runs/{run_id}/cancel` | Stop a run at work or waiting for its person's answer: through its own request id, as `/api/requests/{id}/cancel` stops any run; its end comes as `run.cancelled` with `payload.by`. A background run is stopped by whoever started it (its `on_cancel`), and ends as `run.cancelled` without `payload.by`. 409 when no run of this server works there. |
 | `GET /api/agent-runs/stream` | Server-Sent Events: first `{"type": "runs.snapshot", "runs": [...]}`, then each event as one `data:` line, a kept one with `id: <event_id>` (a heartbeat has none, so `Last-Event-ID` stays at the last kept event). A reconnect with `Last-Event-ID` (the browser sends it) reads on from there instead. A comment every 15 s keeps the connection open. |
 
 ## Where a person sees them
@@ -93,7 +95,8 @@ Each person reads their own runs (auth off: everyone is `local`).
 | A run that needs its person, in the sheet | "Done -- please check it", where to look in the panel, "Checked"; or "Handed over to you", "Seen". Its badge reads "needs you"; the runs button counts them. | `static/kit/ai-tasks.js` |
 | A result to check, in the sheet | A task a person checks (`AgentTask(review=True)`) asks the agent for three sections in the panel's language (`### Changed`, `### Could go wrong`, `### Checked`; `review_note()` in `agent_tasks.py`). When all three are there, the sheet shows them as three cards instead of the raw answer, and "Ask first" puts the cursor in the reply box. | `static/kit/ai-tasks.js` (`reviewParts`) |
 | A question of the agent, in the sheet | The question, its options (radio, or checkboxes where several fit), a field for own words, how long it waits; "Answer" posts to `answer_url`. What is picked and typed survives the redraws. The badge reads "has a question". | `static/kit/ai-tasks.js` (`questionView`) |
-| The shell's pill | "1 needs you" beside the agents at work; a click leads to the run that needs the person first. A bell beside it asks once to allow notifications; then a run that comes to need its person (or ends) while they look elsewhere is told as a system notification. | `static/js/shell/agent_runs.js` |
+| The shell's pill | "1 needs you" beside the agents at work; a click leads to the run that needs the person first. A bell beside it asks once to allow notifications; then a run that comes to need its person (or ends) while they look elsewhere is told as a system notification. A click on a background run opens its session in the chat, and marks a failed one seen. | `static/js/shell/agent_runs.js`, `static/js/shell/shell.js` |
+| The chat, under the call that started a background run | Its box with its steps so far (read from its sub-session once it is in view), the step it is on, "Stop" while it works, its answer or why it ended -- after the turn that started it has ended too. The session pane's activity tick asks `/api/sessions/active` for it (`background`). | `static/js/chat_module.js` (`showBackgroundRuns`) |
 
 Both follow the stream through `static/kit/run-events.js`: ONE `EventSource`
 for every page of the origin, held by the SharedWorker
@@ -113,6 +116,24 @@ asking its plugin as before, so it works without the stream too; the stream
 makes a step appear the moment it is said and tells an end at once. The
 running time is written into its place every second and never redraws the
 sheet: an open fold or a selection stays.
+
+## Background runs
+
+Work a tool call starts that goes on after the turn that called it (a coding
+CLI) is a run too: `agent_system/core/background_runs.py` (`BackgroundRun`)
+reports it with `source` and `task` `background`, under the id of a
+sub-session of the calling session that holds its steps as an agent's run is
+stored, and with that calling session as `parent_session`. The parent lists
+it in `metadata.background_runs`. `RunEventStore.background(parents, who)`
+answers the runs still held below given sessions.
+
+Only a process that keeps sessions (the server) writes the sub-session. One
+that keeps none and takes the work over (a CLI, while the server was away)
+keeps the run said at work: no new steps in its box, and no Stop -- a Stop
+reaches a run through the process that holds it, and `/api/sessions/active`
+says per run whether this server does (`stoppable`). The end of such a run
+is written by the server: whoever started the work leaves it on disk until a
+process that keeps sessions has ended its box.
 
 ## Writing events for a new kind of run
 

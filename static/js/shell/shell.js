@@ -385,7 +385,14 @@ async function start() {
     onOpen: (run) => {
       const panel = run.source && workspace.panelAt(`/plugins/${run.source}/`);
       if (panel) workspace.open(panel.id);
-      else showToast(document, `${run.agent || 'The agent'} was started outside a panel; follow it in its session`, 'info');
+      else if (run.parent) {
+        // work a turn started that goes on after it: its box is in that session's chat, and its end has been seen
+        window.sessionManager?.loadSession?.(run.parent);
+        if (run.needsYou) {
+          fetch(`/api/agent-runs/${encodeURIComponent(run.run_id)}/ack`, { method: 'POST', credentials: 'include' })
+            .catch(() => { /* still listed: the next click tries again */ });
+        }
+      } else showToast(document, `${run.agent || 'The agent'} was started outside a panel; follow it in its session`, 'info');
     },
   }).start();
 

@@ -175,6 +175,8 @@ async def test_a_new_store_ends_the_runs_whose_process_is_gone(tmp_path, monkeyp
     bus = RunEventBus()
     for run_id in ("working", "asking", "checking", "done"):
         await RunReporter(run_id, "code_analyst", who="alice", store=first, bus=bus).started()
+    # work below a session (core/background_runs): its session shows it, its starter may take it over
+    await RunReporter("background", "claude_code", who="alice", parent="s-chat", store=first, bus=bus).started()
     await RunReporter("asking", "code_analyst", who="alice", store=first, bus=bus).needs_input(
         "Which one?", question_id="q1", answer_url="/plugins/ask_user/answer")
     await RunReporter("checking", "code_analyst", who="alice", store=first, bus=bus).review_ready("look")
@@ -185,9 +187,11 @@ async def test_a_new_store_ends_the_runs_whose_process_is_gone(tmp_path, monkeyp
     # work or asking is cut off; a result to check and an end stay
     monkeypatch.setattr(run_events, "OWNER", run_events.OWNER.rsplit(":", 1)[0] + ":another")
     swept = RunEventStore(path).swept
-    assert sorted(e["run_id"] for e in swept) == ["asking", "working"]
+    assert sorted(e["run_id"] for e in swept) == ["asking", "background", "working"]
+    assert [e["needs_you"] for e in swept if e["run_id"] == "background"] == [False],         "a background run about to be taken over raised an alarm"
     runs = {r["run_id"]: r for r in RunEventStore(path).runs("alice")}
     assert (runs["working"]["state"], runs["working"]["needs_you"]) == ("failed", True)
+    assert (runs["background"]["state"], runs["background"]["needs_you"]) == ("failed", False)
     assert runs["asking"]["state"] == "failed"
     assert (runs["checking"]["state"], runs["done"]["state"]) == ("review", "done")
     assert "interrupted" in RunEventStore(path).events("working")[-1]["payload"]["reason"]
@@ -396,3 +400,25 @@ def test_a_process_that_cannot_be_inspected_is_not_taken_for_dead(monkeypatch):
 
     monkeypatch.setattr(run_events.psutil, "Process", Hidden)
     assert run_events.owner_alive("4242:1700000000.000:theirs")
+
+
+async def test_an_end_the_store_refused_once_is_kept_at_the_next_try(bus, tmp_path, monkeypatch):
+    """An end that was not kept left the run at work for as long as its process lived: nothing says an end again."""
+    from agent_system import run_events
+
+    class Busy(RunEventStore):
+        refused = 0
+
+        def append(self, run_id, type_, **kwargs):
+            if type_ == "run.done" and not self.refused:
+                self.refused += 1
+                raise OSError("database is locked")
+            return super().append(run_id, type_, **kwargs)
+
+    monkeypatch.setattr(run_events, "END_RETRY_S", 0.01)
+    store = Busy(tmp_path / "busy.db")
+    run = reporter(store, bus)
+    await run.started()
+    await run.done("3 issues")
+    assert store.refused == 1, "fixture: the store never refused"
+    assert store.run("s1")["state"] == "done"

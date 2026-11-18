@@ -20,6 +20,8 @@ export function liveRun(data, previous = null) {
     run_id: data.run_id,
     agent: data.agent || previous?.agent || '',
     source: data.source || previous?.source || '',
+    // the session a run works below (a background run: the session whose turn started it), where it is followed
+    parent: data.parent_session || previous?.parent || '',
     task: data.task || previous?.task || '',
     title: (fromEvent ? data.subject?.title : data.title) || previous?.title || '',
     state: data.state,

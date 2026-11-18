@@ -31,6 +31,7 @@ EXPECTED = [
     "a run that ends leaves the pill, and with the last one the pill goes",
     "an agent that asks its person is counted as needing them, named so, and told while they look elsewhere",
     "a run silent at a reconnect is marked at once",
+    "a run below a session keeps that session for the click, whatever its later events say",
 ]
 
 

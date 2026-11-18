@@ -117,6 +117,14 @@
 .sub-run-icon { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .sub-run-agent { font-weight: 500; color: var(--accent-text); flex: none; }
 .sub-run-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A background run's (core/background_runs.py): the step it is on, and its Stop. */
+.sub-run-step { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-run-stop {
+  flex: none; padding: 0 var(--space-2); border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+  background: var(--surface-1); color: var(--danger); font: inherit; cursor: pointer;
+}
+.sub-run-stop:hover:not(:disabled) { background: var(--surface-3); }
+.sub-run-stop:disabled { cursor: default; opacity: 0.6; }
 .sub-run-body { padding-top: var(--space-1); }
 
 /* What a tool was asked and what it answered: ONE folded block under its status line,

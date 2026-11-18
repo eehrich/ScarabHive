@@ -182,6 +182,17 @@
     return button.querySelector('[data-runs-step]').textContent === 'Recording an assessment';
   });
 
+  await check('a run below a session keeps that session for the click, whatever its later events say', async () => {
+    // work a turn started that goes on after it (core/background_runs): no panel started it, its session shows it
+    event({ run_id: 'b1', type: 'run.started', state: 'working', agent: 'claude_code', source: 'background',
+      parent_session: 's-chat', step: null });
+    event({ run_id: 'b1', type: 'run.failed', state: 'failed', needs_you: true, agent: 'claude_code', step: null });
+    await until('needs you', () => button.querySelector('[data-runs-needs]'));
+    opened.length = 0;
+    button.click();
+    return opened.length === 1 && opened[0].run_id === 'b1' && opened[0].parent === 's-chat';
+  });
+
   pill.stop();
   await fetch('/__results', { method: 'POST', body: JSON.stringify(results) });
 </script>

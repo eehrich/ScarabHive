@@ -423,10 +423,12 @@ export class SessionManager {
     const hidden = document.visibilityState !== 'visible';
     if (hidden && !open) return;
     const unlisted = hidden ? [] : [...this.unlisted];
+    // the sessions the background runs in the chat work below: the open one, or a sub-agent's read back in it
+    const below = window.chatModule?.backgroundParents?.() || [];
     // those first: past the cap, the server answers for the first ids only -- and the open session, which a long
     // list can put past it: a run starting in it is joined from here (joinRunOfOpenSession)
-    const ids = hidden ? [open]
-      : [...new Set([...unlisted, ...(open ? [open] : []), ...this.visibleIds()])].slice(0, ACTIVITY_POLL_MAX_IDS);
+    const ids = hidden ? [...new Set([open, ...below])]
+      : [...new Set([...unlisted, ...(open ? [open] : []), ...below, ...this.visibleIds()])].slice(0, ACTIVITY_POLL_MAX_IDS);
     if (!ids.length) return;
     const poll = ++this.activityPolls;
     const data = await api(`/api/sessions/active?ids=${encodeURIComponent(ids.join(','))}`,
@@ -445,6 +447,8 @@ export class SessionManager {
       else this.active.delete(open);
     } else this.active = new Map(Object.entries(data.active || {}));
     this.markActive();
+    // the work the turns started that goes on after them: its boxes in the chat
+    if (data.background) window.chatModule?.showBackgroundRuns?.(data.background, ids);
     if (settled) this.joinRunOfOpenSession();
     if (unlisted.length) await this.lookForUnlisted(unlisted);
   }
