@@ -172,7 +172,11 @@ call hands out the run id of a run still going) and watches the
 others on, with the time limit of the instance that started the run. Any
 @{tt}get_run@{utt}, @{tt}cancel_run@{utt} or @{tt}run_task@{utt} also ends a
 run whose owner is gone and whose process has ended, is past its time limit
-or never answered. Until its starting call has answered, a run is held by
+or never answered. A run that is its caller's model call (a coding CLI as an
+LLM; @{tt}with_caller@{utt} in its record names the process that made the
+call) is stopped as well once that process is gone, whoever owns the run by
+then: the call that waited for its answer died there, and its grant with it.
+Until its starting call has answered, a run is held by
 that call's instance, its watch dead or not: no sweep takes it over -- after
 a plugin stop, the call releases it once it has answered. Every instance
 looks only at its own data folder.
@@ -315,8 +319,28 @@ shell. Without it a run that was to edit a
 file outside took its own tools, was refused and ended without an answer.
 An agy run without a grant gets the shell sentence alone: a headless run's
 command is refused, and a run that tried one ended without an answer.
+@{bullet}@{tt}caller: true@{utt}: the run reaches the tools of the agent
+that made the call -- its own, not a runner's. The grant names that agent as
+the one that runs its calls: its allowlist is the ceiling, its hooks see
+every call as a call of its model (a hook that asks a person before a
+model's call asks before these), and the session is its own, so nothing is
+handed over. The caller is the agent whose tool call starts the run, or --
+for a coding CLI as an LLM -- the agent whose model call the run is; that
+call names its tools (the ones the agent would have sent an API model), and
+the run gets exactly those. @{tt}tools@{utt} narrows them further (every one
+without it), the instance's own tools stay out, and a caller with no tool
+gets a run without a gateway. The tool bindings the calling run is held to
+hold its tools in the run as well, as for a sub-agent it spawns; a
+@{tt}pin@{utt} of the call only adds to them, and one that sets a bound
+parameter to another value is refused. Without a calling agent (a state
+machine) the run is not started.
 @{bullet}With @{tt}web@{utt} -- for agy always -- the workdir needs
-@{tt}read_only: true@{utt} or @{tt}confined: true@{utt}. read_only: the
+@{tt}read_only: true@{utt} or @{tt}confined: true@{utt}; a @{tt}caller@{utt}
+gateway needs @{tt}with_web: true@{utt} instead: the operator accepts that a
+page the run reads could steer the caller's tools, as for an agent that has a
+web tool beside its others. read_only and confined are refused beside
+@{tt}caller@{utt} -- they vouch for the tools a workdir names, and a caller's
+are whichever agent calls. read_only: the
 operator vouches that its tools and allowed values only read. confined (needs a
 @{tt}pin@{utt}): that every write the tools can make is held by the run's
 bindings to what the run writes anyway -- its own file -- where a page could
@@ -479,6 +503,9 @@ json_schema | a JSON schema, an object of at most 20,000 characters as JSON on t
 wake | @{tt}true@{utt} (default): a run still going when the call answers wakes the session at its end, where a wake can be armed (the answer's @{tt}wake@{utt} and @{tt}wake_note@{utt} say whether); @{tt}false@{utt}: it wakes nobody -- the caller waits with @{" get_run " link get_run} itself (see @{" What the model sees " link model})
 max_run_minutes | a shorter time limit for this run, in minutes (a number above 0); one above the instance's @{tt}max_run_minutes@{utt} counts as the instance's. A resume without one keeps the one its run asked for; a run that asked none resumes under the instance's
 max_window_utilization | a lower threshold for the subscription's windows than the instance's (a share above 0, at most 1); one above it counts as the instance's. Refused for it, the answer carries @{tt}limit@{utt} (see @{" How a run goes " link run}). A resume without one keeps the one its run asked for
+model | only where the instance lists @{tt}models@{utt}: one of them (or the instance's own) for this run. A resume without one keeps the one its run asked for
+effort | the reasoning effort for this run (low, medium, high, xhigh, max) instead of the instance's; dropped for an agy model whose id names its level. A resume without one keeps the one its run asked for
+_pin, _tools, _background, _label | set by code, never by a model (the framework strips them from a model's call): what a run that is an agent's model call brings -- the agent run's tool bindings (as @{tt}pin@{utt}, but dropped where the workdir has no gateway), the names of the call's tools for a @{tt}caller@{utt} gateway, no background run for its view, and what the view shows as its task
 pin | only for a workdir with a @{tt}gateway@{utt}: the run's tool bindings, @{tt}{tool pattern: {parameter: value}}@{utt} (values text, number or true/false), at least what the workdir requires; a resume keeps its run's and refuses another (see @{" What a run may do " link lockdown})
 @{body}
 
@@ -523,7 +550,17 @@ characters each), and @{tt}wake@{utt} with @{tt}wake_note@{utt} (see
 
 @{h2}Errors
 
-@{tt}{"status": "error", "error": "..."}@{utt}, verbatim:
+@{tt}{"status": "error", "error": "..."}@{utt}, verbatim. A refusal a
+caller decides by carries a @{tt}code@{utt} beside its words -- a new caller
+reads the code, not the words:
+
+@{table}
+code | Means | What a caller can do
+resume_refused | the run it was to resume cannot go on: unknown, still running, its worktree gone or busy, another repository, other bindings, a file agy would run left in it | start a fresh run with the whole task
+busy | @{tt}max_parallel@{utt} reached, or the machine short of memory | ask again later
+task_too_long | over @{tt}max_task_chars@{utt}, or over what agy takes whole | send a shorter task, or use another way
+limit | the subscription's budget; @{tt}limit@{utt} names the window and its reset | wait for the reset
+@{body}
 
 @{table}
 Error | Cause
@@ -532,7 +569,11 @@ Claude Code is not installed here: <command> is not on this process's PATH (codi
 Claude Code is not installed here: no executable at <path> (coding_cli command) | command names a path that holds none
 no usable workdir (coding_cli workdirs: a git repository each -- the log at the start says why) | every configured workdir was skipped at the start
 task: the complete task as text | task empty or not a string
-task: at most <max_task_chars> characters | too long
+task: <n> characters, at most <max_task_chars> (coding_cli max_task_chars) | too long
+model: one of <names> | a model the instance does not list (@{tt}models@{utt})
+model: this instance runs <model> only (coding_cli models) | a model named where the instance lists none
+effort: one of low, medium, high, xhigh, max | another effort
+not started: this workdir hands its caller's own tools to the run (gateway caller), and no agent made this call | a @{tt}caller@{utt} workdir, called without an agent
 task: about <n> tokens, agy takes at most <max_task_tokens> whole (it cuts the middle out of a longer one) -- send a shorter task, or run it on another link | an agy task, the note it reads first included, estimated over the bound
 task: not valid text (a broken character escape) -- send it again | a lone surrogate in the text
 mode: edit (change the code) or plan (read and answer with a plan) | another mode
@@ -819,7 +860,7 @@ command | claude | the CLI's executable, a name on the PATH or a path; @{tt}agy@
 workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning. A path with a @{tt}*@{utt} (@{tt}data/workspace/*@{utt}) names every git repository it matches, looked up at each call: a repository made after the start is a workdir at once, named by its folder in lower case, with the entry's settings; a workdir of that name configured or added by a caller wins. The tool then names the pattern and the repositories found at the start instead of a fixed choice. A name two repositories give (@{tt}Foo@{utt} and @{tt}foo@{utt}, or one under two patterns) opens neither, with a warning in the log. A repository a configured workdir already opens is not matched again, nor a configured name in another case. The workdir parameter takes the folder's own spelling too. Whoever can write into the pattern's folder decides which repository a run works in (a @{tt}.git@{utt} that points elsewhere), and its filters (a smudge command in its config) run in this process when the worktree is made -- its hooks and fsmonitor do not, for any workdir: put a pattern over a folder only trusted callers write into
 workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
 workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and get no shell unless @{tt}web_with_shell@{utt}; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
-workdirs.<name>.gateway | none | @{tt}{tools, pin, allowed, read_only, confined, instance}@{utt}: tools of this installation through the MCP gateway (see @{" What a run may do " link lockdown}). @{tt}tools@{utt} a list of name patterns; @{tt}pin@{utt} @{tt}{tool pattern: [parameters]}@{utt}, the bindings each run must bring; @{tt}allowed@{utt} as the gateway takes it; @{tt}read_only@{utt} true where the tools only read, @{tt}confined@{utt} true where the bindings hold every write to the run's own file (one of them needed beside web); @{tt}instance@{utt} the gateway plugin's, default @{tt}mcp_gateway@{utt}. Malformed, beside web with neither, or with an @{tt}mcp_servers@{utt} entry named @{tt}gateway@{utt}: the workdir is skipped with a warning
+workdirs.<name>.gateway | none | @{tt}{tools, pin, allowed, read_only, confined, caller, with_web, instance}@{utt}: tools of this installation through the MCP gateway (see @{" What a run may do " link lockdown}). @{tt}tools@{utt} a list of name patterns; @{tt}pin@{utt} @{tt}{tool pattern: [parameters]}@{utt}, the bindings each run must bring; @{tt}allowed@{utt} as the gateway takes it; @{tt}read_only@{utt} true where the tools only read, @{tt}confined@{utt} true where the bindings hold every write to the run's own file (one of them needed beside web); @{tt}caller@{utt} true: the tools are those of the agent that made the call, run by that agent (@{tt}tools@{utt} then optional; read_only and confined are refused beside it, and beside web it needs @{tt}with_web: true@{utt}); @{tt}instance@{utt} the gateway plugin's, default @{tt}mcp_gateway@{utt}. Malformed, beside web with none of them, or with an @{tt}mcp_servers@{utt} entry named @{tt}gateway@{utt}: the workdir is skipped with a warning
 workdirs.<name>.files | true | false: the workdir's runs work on no files. They start in one room, @{tt}rooms/<name>@{utt} beside the runs, a repository of its own with one empty commit, the same for every run -- no worktree, no branch, nothing committed, no file tool and no shell -- and take their task as text blocks: a task that begins with a whole earlier task of the room (a verify pass that sends the reviewed task again) has that part as a block of its own and reads it from the subscription's cache. Measured: Claude Code writes the working directory and the git status ahead of the task, so a run in a worktree of its own shares no cached prefix with any other. Claude Code only; on an Antigravity instance the workdir is skipped with a warning
 workdirs.<name>.mcp_servers | none | names in @{tt}external_servers.remote_servers@{utt} whose servers the workdir's edit runs load -- enabled, with a url without user, password or query, an HTTP or SSE transport, a plain name; otherwise the workdir is skipped with a warning. The server's @{tt}tools.blocked@{utt} stay refused
 allowed_users | none | user ids that may start runs; empty: nobody
@@ -828,12 +869,13 @@ web_with_shell | false | true: a @{tt}web@{utt} workdir's edit runs keep the she
 pass_env | none | environment variable names Claude Code gets beyond its allowlist
 env | none | @{tt}{NAME: value}@{utt} every run of this instance gets in its environment, e.g. Claude Code's @{tt}MAX_MCP_OUTPUT_TOKENS@{utt} for long tool results; what the plugin sets itself (home, MCP tokens, the tool timeout) wins, and an agy run gets none of Claude Code's login variables. The quota probe runs under it too. A @{tt}PATH@{utt} here replaces the runs' own, whose first entry is this process's interpreter (what @{tt}allowed_commands@{utt} such as @{tt}python -m pytest@{utt} run); a name or value that is no plain one is left out with a warning
 model | "" | Claude Code's @{tt}--model@{utt}; empty: the subscription's default
+models | none | models a call may name instead (@{tt}run_task@{utt}'s @{tt}model@{utt}); none: every run is on the instance's own. The subscription pays for each differently, so the operator lists them
 effort | "" | Claude Code's @{tt}--effort@{utt} (low, medium, high, xhigh, max); empty: its default -- @{tt}--restricted@{utt} leaves the user's settings, their effortLevel too, unread; any other value: a warning in the log, and its default
 max_window_utilization | 0.8 | no run starts while a window is at or past this share (0.05 to 1)
 wait_s | 300 | how long @{tt}run_task@{utt} waits before answering with a run id (0 to 3600)
 max_run_minutes | 60 | a run still going after this is stopped (1 to 10080, a week)
 max_parallel | 1 | this instance's runs going at the same time, counted over the data folder (1 to 50)
-max_task_chars | 20000 | longest task @{tt}run_task@{utt} takes, in characters (1000 to 1000000)
+max_task_chars | 20000 | longest task @{tt}run_task@{utt} takes, in characters (1000 to 1000000). An instance that answers model calls (llm_coding_cli) gets the whole conversation as its task: raise it there
 max_task_tokens | 55000 | agy only: the most tokens an agy task may have, estimated (some 3.3 characters a token), the note before it included (1000 to 55000, lower only). agy hands its model some 60k tokens of a task and cuts the middle out of a longer one without a word -- the run answers, without what stood there; a longer task is refused, and its caller falls back. Claude Code takes the whole task
 max_output_chars | 12000 | longest structured output a run returns, in characters as JSON (1000 to 100000); a longer one is dropped
 max_result_chars | 12000 | longest final report a run returns, in characters (1000 to 200000); a longer one is cut (@{tt}result_cut@{utt}). Raise it for a caller that takes the report as its answer, not for a chat: it lands in the caller's context

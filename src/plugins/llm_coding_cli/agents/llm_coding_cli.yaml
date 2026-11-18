@@ -1,0 +1,142 @@
+# Coding CLIs as LLM profiles any agent can run on: pick one in the chat's profile selector (or --llm, /model) and
+# the agent's model calls go to Claude Code or Antigravity on the operator's subscription instead of an API.
+#
+# What is here:
+#   - two coding_cli instances that only answer model calls (claude_code_llm, agy_llm),
+#   - the gateway through which Claude Code calls the tools of the agent it answers for (mcp_gateway_llm),
+#   - a model entry and a profile per model of the two CLIs.
+# Without the CLI's executable an instance offers nothing and its profiles fail at once -- an agent's chain moves
+# on to its next profile, a chat that picked the profile says why. The guide (Help panel, "Coding CLI as an LLM")
+# says what a call does and where its limits are.
+plugins:
+  servers:
+
+    # The agent's own tools for the CLI that answers as its model. No runner agent of its own: every grant here
+    # is run by the agent that made the call (gateway caller), held to that agent's allowlist, hooks and tool
+    # bindings -- the gateway hands out nothing an agent could not call itself. config/security.yaml opens
+    # /plugins/mcp_gateway*/mcp to requests without a login; the route lets nothing in without the token of a run
+    # going now. enabled: false closes the route -- the claude-code profiles then fail for an agent with tools.
+    mcp_gateway_llm:
+      type: mcp_gateway
+      enabled: true
+      description: "MCP endpoint through which a coding CLI that answers as an agent's model calls that agent's tools"
+      # A longer tool result is refused, and the CLI told to ask for less: it would flood the CLI's context.
+      max_result_chars: 60000
+
+    claude_code_llm:
+      type: coding_cli
+      enabled: true
+      description: "Claude Code as an LLM: answers an agent's model calls on the operator's subscription"
+      cli: claude
+      # The subscription belongs to one person: only these ScarabHive users' agents run on it.
+      allowed_users: [admin, cli_user]
+      workdirs:
+        # files: false -- no worktree and no file tools of Claude Code's own: every run works in the instance's
+        # one room and reads the same prefix from the cache. The agent's tools come through the gateway, where they
+        # work on the agent's real files; Claude Code's own would work in a scratch folder.
+        chat:
+          path: data/coding_cli_llm/claude
+          files: false
+          gateway: {instance: mcp_gateway_llm, caller: true}
+      # The model of a model entry that names none; `models` are the ones an entry may name (<instance>/<model>).
+      model: sonnet
+      models: [opus, sonnet, haiku]
+      # No run starts while a subscription window is at or past this share.
+      max_window_utilization: 0.8
+      wait_s: 300
+      max_run_minutes: 60
+      # Model calls going at the same time; each spends the subscription. An agent's call holds its place while
+      # its tools run -- sub-agents on the same profile among them -- so an agent with four parallel sub-agents needs
+      # five. A full instance does not wait: the call fails, and an agent's chain moves on to its next profile.
+      max_parallel: 8
+      # The whole conversation is the task; only the model's context bounds it.
+      max_task_chars: 1000000
+      # The longest answer handed back; a longer one fails the call.
+      max_result_chars: 200000
+      pass_env: []
+
+    agy_llm:
+      type: coding_cli
+      enabled: true
+      description: "Antigravity (agy) as an LLM: answers an agent's model calls on the operator's Google login"
+      cli: antigravity
+      command: agy
+      allowed_users: [admin, cli_user]
+      workdirs:
+        # agy searches the web in every run (it cannot be switched off), and a page it reads could steer tools:
+        # so its runs get none of the agent's. To accept that -- as for an agent that has a web tool beside its
+        # others -- add:  gateway: {instance: mcp_gateway_llm, caller: true, with_web: true}
+        # Each run leaves a worktree and a branch in this repository of its own (coding_cli guide, Known gaps).
+        chat:
+          path: data/coding_cli_llm/agy
+          web: true
+      # One of `agy models`; the level is in the name.
+      model: gemini-3.8-flash-medium
+      models: [gemini-3.8-flash-medium, gemini-3.8-flash-high, gemini-4-hydrogen-medium, gemini-4-hydrogen-high,
+               gemini-4-argon-medium, gemini-4-argon-high, gemini-4-carbon-medium, gemini-4-carbon-high]
+      wait_s: 300
+      max_run_minutes: 60
+      max_parallel: 8
+      # agy hands its model about 55,000 tokens of a task whole and cuts the middle out of a longer one: the
+      # instance refuses a longer task (max_task_tokens), whatever this says.
+      max_task_chars: 1000000
+      max_result_chars: 200000
+      pass_env: []
+
+llm_system:
+  models:
+    # model: <coding_cli instance>/<the CLI's model>. context_window is what the agent's context management keeps
+    # the conversation under (context_engineer binds its thresholds to it), not a limit the CLI is sent.
+    claude-code-opus:
+      provider: claude_code
+      model: claude_code_llm/opus
+      context_window: 200000
+    claude-code-sonnet:
+      provider: claude_code
+      model: claude_code_llm/sonnet
+      context_window: 200000
+    claude-code-haiku:
+      provider: claude_code
+      model: claude_code_llm/haiku
+      context_window: 200000
+    # agy takes about 55,000 tokens of a conversation whole (coding_cli max_task_tokens): with that as the window
+    # the agent compacts its history before a call would be refused.
+    agy-gemini-flash:
+      provider: antigravity
+      model: agy_llm/gemini-3.8-flash-medium
+      context_window: 55000
+    agy-gemini-hydrogen:
+      provider: antigravity
+      model: agy_llm/gemini-4-hydrogen-medium
+      context_window: 55000
+    agy-gemini-argon:
+      provider: antigravity
+      model: agy_llm/gemini-4-argon-medium
+      context_window: 55000
+    agy-gemini-carbon:
+      provider: antigravity
+      model: agy_llm/gemini-4-carbon-medium
+      context_window: 55000
+
+  profiles:
+    claude-code-opus:
+      model_ref: claude-code-opus
+      description: "Claude Code (Opus) on the subscription, with the agent's tools"
+    claude-code-sonnet:
+      model_ref: claude-code-sonnet
+      description: "Claude Code (Sonnet) on the subscription, with the agent's tools"
+    claude-code-haiku:
+      model_ref: claude-code-haiku
+      description: "Claude Code (Haiku) on the subscription, with the agent's tools"
+    agy-gemini-flash:
+      model_ref: agy-gemini-flash
+      description: "Antigravity (Gemini Flash) on the Google login: answers and web search, no agent tools"
+    agy-gemini-hydrogen:
+      model_ref: agy-gemini-hydrogen
+      description: "Antigravity (Gemini Hydrogen) on the Google login: answers and web search, no agent tools"
+    agy-gemini-argon:
+      model_ref: agy-gemini-argon
+      description: "Antigravity (Gemini Argon) on the Google login: answers and web search, no agent tools"
+    agy-gemini-carbon:
+      model_ref: agy-gemini-carbon
+      description: "Antigravity (Gemini Carbon) on the Google login: answers and web search, no agent tools"

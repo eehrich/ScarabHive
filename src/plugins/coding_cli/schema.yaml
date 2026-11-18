@@ -1,4 +1,4 @@
-# Jinja2 variables: {{ name }}, {{ configured }}, {{ workdirs }}, {{ workdirs_open }}
+# Jinja2 variables: {{ name }}, {{ configured }}, {{ workdirs }}, {{ workdirs_open }}, {{ models }}
 # Without the Claude Code executable or a usable workdir nothing here can work,
 # so nothing is offered.
 tools:
@@ -33,6 +33,16 @@ tools:
           json_schema:
             type: object
             description: "A JSON schema (an object, at most 20000 characters as JSON) for a structured answer: the run then also returns output, an object matching it. A resume without one keeps the prior run's"
+{% if models %}
+          model:
+            type: string
+            enum: {{ models | tojson }}
+            description: "Another model than the instance's for this run; a resume without one keeps the prior run's"
+          effort:
+            type: string
+            enum: ["low", "medium", "high", "xhigh", "max"]
+            description: "The reasoning effort for this run instead of the instance's; a resume without one keeps the prior run's"
+{% endif %}
 {% if pins %}
           pin:
             type: object

@@ -459,6 +459,87 @@ class TestSessionVars:
         assert self.runner_vars("sess-1") == {}
 
 
+class TestRunByItsCaller:
+    """A grant that names its runner: the agent that started the run answers its calls -- a CLI that is that
+    agent's model calls that agent's tools, held to its allowlist, in its session."""
+
+    @staticmethod
+    def caller(allowed):
+        """An agent of its own, not in the registry (a sub-agent is built anew for its run): the store and the
+        project tools, allowed as given."""
+        tools = ToolServerRegistry()
+        store = _Store()
+        tools.register("store", store)
+        tools.register("project", _Project())
+        llm = LLMSystemConfig(models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
+                              profiles={"normal": LLMProfile(model_ref="m")}, default_profile="normal")
+        agent = Agent("writer_agent", AgentSystemConfig(llm_system=llm), ToolServerConfig(
+            type="agent", enabled=True, agent_config=AgentConfig(max_steps=1, llm_profile="normal",
+                                                                tools=ToolConfig(allowed=allowed))), tools)
+        return agent, store
+
+    async def test_its_calls_run_through_the_caller_not_the_gateways_runner(self, gateway):
+        app, runner_store = gateway
+        agent, own_store = self.caller(["store/store_echo", "store/store_secret"])
+        token = issue(runner=agent, tools=["store_echo", "store_secret", "store_global"], session_id="sess-1")
+        async with session_of(app, token) as session:
+            listed = sorted(tool.name for tool in (await session.list_tools()).tools)
+        # store_secret: the gateway's runner blocks it, the caller may call it; store_global: the caller may not
+        assert listed == ["store_echo", "store_secret"]
+        assert (await call(app, token, "store_secret", {"project_id": 3}))[0] is False
+        failed, text = await call(app, token, "store_global", {"text": "x"})
+        assert failed and "Unknown tool" in text
+        assert [name for name, _ in own_store.received] == ["store_secret"] and runner_store.received == []
+        name, received = own_store.received[0]
+        assert received["_agent"] is agent and received["_session_id"] == "sess-1" and received["_user_id"] == "ada"
+
+    async def test_the_callers_session_vars_are_its_own_and_stay(self, gateway):
+        app, _ = gateway
+        agent, _ = self.caller(["project/*"])
+        agent._session_tracker.set_session_template_vars("sess-1", {"project_id": 7})
+        token = issue(runner=agent, tools=["project_*"], session_id="sess-1")
+        assert (await call(app, token, "project_read", {"project_id": 7}))[0] is False
+        assert grants.revoke(token)
+        assert agent._session_tracker.get_session_template_vars("sess-1") == {"project_id": 7}, (
+            "the end of the grant took the caller's own session vars away")
+
+    async def test_its_calls_are_the_models_own_to_the_callers_hooks(self, gateway):
+        """The CLI answers as the caller's model: a hook that asks a person before a model's call must see these
+        as such. As a script's calls (the gateway's own source) they would pass it unasked."""
+        app, _ = gateway
+        agent, _ = self.caller(["store/*"])
+        seen: list[str] = []
+
+        class Hook(PluginHook):
+            async def on_pre_tool_call(self, context):
+                seen.append(context.tool_call["source"])
+                return HookResult(success=True, context=context)
+
+        hooks = get_hook_registry()
+        await hooks.register_hook(HookType.PRE_TOOL_CALL, "gw.source", Hook("gw.source"))
+        try:
+            assert (await call(app, issue(runner=agent), "store_global", {"text": "x"}))[0] is False
+            assert (await call(app, issue(), "store_global", {"text": "x"}))[0] is False
+        finally:
+            await hooks.unregister_hook(HookType.PRE_TOOL_CALL, "gw.source")
+        assert seen == ["model", "mcp_gateway"]
+
+    async def test_the_names_a_grant_will_list_are_the_callers(self, gateway):
+        agent, _ = self.caller(["store/store_echo"])
+        assert await grants.tool_names("mcp_gateway", ["store_*"], None, runner=agent) == ["store_echo"]
+        assert "store_global" in await grants.tool_names("mcp_gateway", ["store_*"]), "fixture: the runner's own"
+
+    @pytest.mark.parametrize("kwargs,said", [
+        ({"runner": object()}, "runner"),
+        ({"runner": "caller", "session_id": "s", "session_vars": {"project_id": 7}}, "session_vars"),
+    ])
+    def test_a_grant_that_cannot_be_run_by_its_caller_is_refused(self, gateway, kwargs, said):
+        if kwargs["runner"] == "caller":
+            kwargs = {**kwargs, "runner": self.caller(["store/*"])[0]}
+        with pytest.raises(ValueError, match=said):
+            issue(**kwargs)
+
+
 class TestHooks:
     async def test_the_runners_hooks_see_the_call_without_the_pinned_values_and_can_block_it(self, gateway):
         app, store = gateway

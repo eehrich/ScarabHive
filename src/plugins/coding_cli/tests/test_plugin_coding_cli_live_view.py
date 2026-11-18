@@ -387,6 +387,40 @@ async def test_the_box_is_kept_where_the_chat_finds_it_once_the_turn_has_ended(r
     assert store.background([parent], who) == {}
 
 
+async def test_a_run_that_is_its_callers_model_call_keeps_no_background_run(repo, kept, monkeypatch,  # noqa: F811
+                                                                            tmp_path):
+    """llm_coding_cli's runs end with the model call they are: kept, each call left a sub-session of the chat
+    holding the whole conversation. Its box is live only, and shows the caller's label, not the task."""
+    manager, store, parent = kept
+    server = make_server(repo, wait_s=0.3)
+    seen = []
+    opened = LiveRun.open
+
+    async def recording(request_id, task, root, **kwargs):
+        seen.append((task, kwargs.get("parent")))
+        return await opened(request_id, task, root, **kwargs)
+    monkeypatch.setattr(LiveRun, "open", recording)
+    answer, _ = await call(server, "run_task", session=parent, task="SLEEP 30", _request_id="run1_007",
+                           wake=False, _background=False, _label="model call of coder")
+    try:
+        assert answer["state"] == "running", answer
+        run_id = answer["run_id"]
+        assert seen == [("model call of coder", "")]
+        assert server._live[run_id].background is None and not server._file(run_id, "view").exists()
+        who = background_runs_who(server)
+        assert store.background([parent], who) == {}
+        sessions = [path.stem for path in (tmp_path / "sessions").rglob("*.json") if "index" not in path.name]
+        assert sessions == [parent], "a sub-session was made for it"
+    finally:
+        await call(server, "cancel_run", run_id=answer["run_id"])
+
+
+def background_runs_who(server):
+    from agent_system.core import background_runs
+
+    return background_runs.run_who(server.system_config, "admin")
+
+
 async def test_a_run_taken_over_keeps_its_box(repo, kept):  # noqa: F811
     """Another process takes the run over (a restart): its box goes on in the same sub-session, and a Stop reaches
     the watch that has it now."""

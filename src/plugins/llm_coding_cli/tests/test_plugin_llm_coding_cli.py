@@ -121,9 +121,11 @@ class TestCalls:
         finally:
             current_tool_bindings.reset(token)
         await client().chat_tools(MESSAGES, [])
-        assert [(p.get("resume"), p.get("pin")) for _, p in server.calls] == [
+        assert [(p.get("resume"), p.get("_pin")) for _, p in server.calls] == [
             (None, bindings), ("r1", bindings), (None, None)]
-        assert "pin" not in server.calls[2][1], "a run without bindings sent a pin (a workdir without pins refuses one)"
+        # as _pin, the caller's own (a workdir without a gateway passes them over), never as pin, which such a
+        # workdir refuses -- and none at all from a run without bindings
+        assert not any("pin" in p for _, p in server.calls) and "_pin" not in server.calls[2][1]
 
     async def test_a_running_run_is_waited_for_and_stops_with_its_caller(self, instance):
         server = instance({"status": "success", "run_id": "r1", "state": "running"},
@@ -200,15 +202,14 @@ class TestCalls:
         assert [(p.get("resume"), p["task"]) for _, p in server.calls[1:]] == [
             ("r1", render(two[3:])), ("r2", render(three[5:]))]
 
-    @pytest.mark.parametrize("refusal", ["resume: another run works in that worktree",
-                                         "pin: a resume keeps run r1's -- {}",
-                                         "not started: the worktree carries .agents/mcp_config.json -- agy would",
-                                         "not started: run r1 holds no usable session id"])
-    async def test_a_run_that_cannot_be_resumed_is_started_fresh_not_given_up(self, instance, refusal):
+    async def test_a_run_that_cannot_be_resumed_is_started_fresh_not_given_up(self, instance):
+        """By coding_cli's code, whatever its words say (the real instance's refusals:
+        test_plugin_llm_coding_cli_instance.py)."""
         from agent_system.core.request_context import current_tool_bindings
 
         bindings = {"files/*_write": {"path": "out.md"}}
-        server = instance(done(), {"status": "error", "error": refusal}, done("fresh", run_id="r2"))
+        server = instance(done(), {"status": "error", "error": "any words", "code": "resume_refused"},
+                          done("fresh", run_id="r2"))
         token = current_tool_bindings.set(bindings)
         try:
             await client().chat_tools(MESSAGES, [])
@@ -217,7 +218,52 @@ class TestCalls:
         finally:
             current_tool_bindings.reset(token)
         assert [p.get("resume") for _, p in server.calls] == [None, "r1", None]
-        assert (server.calls[2][1]["task"], server.calls[2][1]["pin"]) == (render(more), bindings)
+        assert (server.calls[2][1]["task"], server.calls[2][1]["_pin"]) == (render(more), bindings)
+
+    async def test_a_refusal_that_is_not_the_resumes_is_not_tried_fresh(self, instance):
+        """A full instance refuses the fresh run as well: only the code of a refused resume starts one."""
+        server = instance(done(), {"status": "error", "error": "resume: 1 run(s) still going", "code": "busy"})
+        await client().chat_tools(MESSAGES, [])
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        with pytest.raises(LLMServerError):
+            await client().chat_tools(more, [])
+        assert [p.get("resume") for _, p in server.calls] == [None, "r1"]
+
+    async def test_a_call_brings_its_tools_names_its_model_and_its_effort(self, instance):
+        """The tools the agent sends, by name: a workdir that hands its caller's tools on gives the run these.
+        ``<instance>/<model>`` names a model the instance lists, thinking_level the run's effort."""
+        server = instance(done(), done())
+        tools = [{"type": "function", "function": {"name": "files_read"}},
+                 {"type": "function", "function": {"name": "files_write"}}]
+        await CodingCliClient("claude_code", "cc/sonnet", context_window=200000,
+                              thinking_level="minimal").chat_tools(MESSAGES, tools)
+        await client().chat_tools([*MESSAGES, {"role": "user", "content": "another conversation"}], [])
+        named, plain = server.calls[0][1], server.calls[1][1]
+        assert (named["_tools"], named["model"], named["effort"]) == (["files_read", "files_write"], "sonnet", "low")
+        assert plain["_tools"] == [] and "model" not in plain and "effort" not in plain
+        # the run is the call: no background run of its own, and its view names it instead of the conversation
+        assert (named["_background"], named["_label"]) == (False, "model call")
+
+    async def test_a_conversation_is_one_models_and_one_efforts(self, instance):
+        """coding_cli resumes a run on the model and effort that run asked for. A chat switched back from
+        thinking_level max -- its entry now asks for none, the instance's own -- went on at max: a call that asks
+        for another starts a run of its own."""
+        server = instance(done(), done("at max", run_id="r2"), done("back", run_id="r3"), done("on", run_id="r4"))
+        more = MESSAGES + [{"role": "assistant", "content": "the answer"}, {"role": "user", "content": "Shorter."}]
+        await client().chat_tools(MESSAGES, [])
+        await CodingCliClient("claude_code", "cc", context_window=200000, thinking_level="max").chat_tools(more, [])
+        await client().chat_tools(more, [])
+        last = more + [{"role": "assistant", "content": "back"}, {"role": "user", "content": "Again."}]
+        await CodingCliClient("claude_code", "cc/sonnet", context_window=200000).chat_tools(last, [])
+        assert [(p.get("resume"), p.get("effort"), p.get("model")) for _, p in server.calls] == [
+            (None, None, None), (None, "max", None), ("r1", None, None), (None, None, "sonnet")]
+
+    async def test_a_wait_that_fails_stops_the_run_it_waited_for(self, instance):
+        """get_run raised: the chain moves on -- and the run would work on with the agent's tools, for nobody."""
+        server = instance({"status": "success", "run_id": "r1", "state": "running"}, RuntimeError("store gone"))
+        with pytest.raises(LLMServerError, match="coding_cli call failed"):
+            await client().chat_tools(MESSAGES, [])
+        assert [name for name, _ in server.calls] == ["run_task", "get_run", "cancel_run"] and server.stopped
 
     async def test_a_run_another_has_gone_on_from_is_not_resumed_again(self, instance):
         """r2 went on from r1: the CLI's conversation holds r2's turns. A history that matches r1's but not r2's --
@@ -338,7 +384,7 @@ class TestARefusedStep:
         three = two + [{"role": "assistant", "content": "again"}, {"role": "user", "content": "More."}]
         await llm.chat_tools(three, [])
         assert [p.get("resume") for _, p in server.calls] == [None, "r1", "r2", "r3"]
-        assert [r[0] for r in client_module._conversations[("cc", "ada", "sess-1")]] == ["r4"]
+        assert [r[0] for r in client_module._conversations[("cc", "", "", "ada", "sess-1")]] == ["r4"]
 
     async def test_the_silent_run_and_its_resume_are_two_requests(self, instance):
         instance(silent(), done("fixed", run_id="r2"), cli="antigravity")
@@ -590,7 +636,7 @@ class TestDebuggerNotices:
         assert "not started: busy" in failed["error"]
 
     async def test_a_refused_resume_and_the_fresh_run_are_two_requests(self, instance):
-        instance(done(), {"status": "error", "error": "resume: another run works in that worktree"},
+        instance(done(), {"status": "error", "error": "resume: another run works in that worktree", "code": "resume_refused"},
                  done("fresh", run_id="r2"))
         seen = []
 
@@ -611,7 +657,7 @@ class TestDebuggerNotices:
         assert seen[3][1]["error"] is None
 
     async def test_a_cancel_in_the_refused_resumes_notice_answers_it_once(self, instance):
-        instance(done(), {"status": "error", "error": "resume: another run works in that worktree"})
+        instance(done(), {"status": "error", "error": "resume: another run works in that worktree", "code": "resume_refused"})
         seen = []
 
         async def pre(info):
@@ -630,7 +676,7 @@ class TestDebuggerNotices:
         assert [kind for kind, _ in seen] == ["pre", "post"]
 
     async def test_a_fresh_run_that_fails_after_a_refused_resume_is_answered_once(self, instance):
-        instance(done(), {"status": "error", "error": "resume: another run works in that worktree"},
+        instance(done(), {"status": "error", "error": "resume: another run works in that worktree", "code": "resume_refused"},
                  {"status": "error", "error": "not started: busy"})
         seen = []
 
@@ -701,5 +747,19 @@ def test_the_registry_builds_both_providers_from_a_model_entry():
     for provider in ("claude_code", "antigravity"):
         built = registry.get_provider(provider)(LLMModelConfig(provider=provider, model="cc"))  # conftest fakes build_client
         assert isinstance(built, CodingCliClient) and (built.provider, built.instance) == (provider, "cc")
-    with pytest.raises(ValueError, match="names the coding_cli instance"):
-        registry.get_provider("claude_code")(LLMModelConfig(provider="claude_code"))
+    for missing in (None, "/opus"):
+        with pytest.raises(ValueError, match="names the coding_cli instance"):
+            registry.get_provider("claude_code")(LLMModelConfig(provider="claude_code", model=missing))
+
+
+def test_a_model_entry_names_the_instances_model_and_the_runs_effort():
+    """<instance>/<model>: a model the instance lists; thinking_level: the run's effort, "none" asks for none."""
+    from agent_system.llm import registry
+
+    def built(**entry):
+        llm = registry.get_provider("claude_code")(LLMModelConfig(provider="claude_code", **entry))
+        return llm.instance, llm.cli_model, llm.effort, llm.model
+
+    assert built(model="cc/sonnet", thinking_level="high") == ("cc", "sonnet", "high", "cc/sonnet")
+    assert built(model="cc", thinking_level="minimal") == ("cc", "", "low", "cc")
+    assert built(model="cc", thinking_level="none")[2] is None and built(model="cc")[2] is None

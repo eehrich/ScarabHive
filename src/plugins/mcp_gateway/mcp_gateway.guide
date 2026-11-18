@@ -134,6 +134,7 @@ session_id | the session the calls run in (@{tt}_session_id@{utt}); without it t
 session_vars | that session's template vars as the issuing run has them (a book's or a project's id): set for the session in the runner before the grant's first call -- a tool reads its session's vars from the agent that runs it, and the runner knows nothing of the session. The first grant of a session replaces what is there; when the last one ends, all is taken away, what a run set itself (a tool setting its context, in the runner as well) included. The runner holds one context per session: while a grant is live there, a grant of the session whose vars differ from what the runner holds now -- a run may have changed it -- is refused ("another run of this session works with a different context") until the live ones have ended. Needs @{tt}session_id@{utt}
 ttl_s | seconds the token holds (default 3600)
 gateway | the instance (default @{tt}mcp_gateway@{utt})
+runner | an agent that runs the grant's calls instead of the gateway's runner: the caller itself, for a CLI that answers as that agent's model. Its own allowlist is the ceiling then, the calls reach its hooks as its model's own (@{tt}source: model@{utt} -- a hook that asks a person before a model's call asks before these), and the session is its own: no @{tt}session_vars@{utt} (refused), nothing set or taken away. The agent object, held in memory as the grant is; it need not be in the registry (a sub-agent built for its run)
 @{body}
 
 @{h2}Pinned parameters
@@ -198,8 +199,10 @@ for the client.
 @{bullet}A call: pinned values checked, allowed values checked,
 the arguments checked against the tool's parameter schema (unknown
 parameters, missing required ones, types).
-@{bullet}Then @{tt}dispatch_tool_call@{utt} of the runner with
-@{tt}hook_source="mcp_gateway"@{utt}: its @{tt}pre_tool_call@{utt} hooks may
+@{bullet}Then @{tt}dispatch_tool_call@{utt} of the runner -- the gateway's,
+or the agent the grant names (@{tt}runner@{utt}) -- with
+@{tt}hook_source="mcp_gateway"@{utt} (@{tt}"model"@{utt} for a grant its
+caller runs): its @{tt}pre_tool_call@{utt} hooks may
 change or block the call, the tool runs with the grant's account, session
 and request id (also as the run's context: what the tool reports without
 an agent at hand is the run's) and reports its status lines as for any

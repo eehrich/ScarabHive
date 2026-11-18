@@ -28,7 +28,7 @@ _serving: set[str] = set()
 _addresses: dict[str, str] = {}
 #: Enabled instances that no app serves: the awaitable each starts its own listener with, on the first ask.
 _listeners: dict[str, Callable[[], Awaitable[None]]] = {}
-_namers: dict[str, Callable[[tuple, dict], Awaitable[list[str]]]] = {}
+_namers: dict[str, Callable[..., Awaitable[list[str]]]] = {}
 _grants: dict[str, "Grant"] = {}
 _lock = threading.Lock()
 _MISSING = object()
@@ -53,6 +53,10 @@ class Grant:
     calls: int = 0
     ended: bool = False
     seeded: bool = False            # its session_vars set in the gateway's runner (gateway.py)
+    #: The agent whose dispatch_tool_call runs the grant's calls instead of the gateway's runner: the agent that
+    #: started the run, for a CLI that answers as its model (llm_coding_cli). Its own allowlist is the ceiling then,
+    #: its hooks see the calls, and the session is its own -- nothing is seeded. In memory, as the grant is.
+    runner: Any = field(default=None, repr=False)
     _on_end: list[Callable[[], None]] = field(default_factory=list, repr=False)
     #: The loop its calls wait in (set by the first call): a revoke from another thread wakes it there.
     loop: Optional[asyncio.AbstractEventLoop] = field(default=None, repr=False)
@@ -74,9 +78,13 @@ def _check_path(path: Any) -> None:
 
 def issue(user_id: str, tools: list[str], *, request_id: str, pinned: Optional[dict[str, Any]] = None,
           allowed: Optional[dict[str, dict[str, list[Any]]]] = None, session_id: Optional[str] = None,
-          session_vars: Optional[dict[str, Any]] = None, ttl_s: float = 3600.0, gateway: str = "mcp_gateway") -> str:
+          session_vars: Optional[dict[str, Any]] = None, ttl_s: float = 3600.0, gateway: str = "mcp_gateway",
+          runner: Any = None) -> str:
     """A token for one run. ValueError for an argument that cannot hold, LookupError when ``gateway`` does not serve
-    (not enabled, or not started in this process)."""
+    (not enabled, or not started in this process).
+
+    ``runner``: the agent that runs the grant's calls -- the caller itself, whose tools the run then has
+    (Grant.runner); None: the gateway's runner agent."""
     if not isinstance(user_id, str) or not user_id.strip():
         raise ValueError("user_id: the account the run's calls are made for")
     if not isinstance(tools, (list, tuple)) or not tools or not all(isinstance(t, str) and t for t in tools):
@@ -103,12 +111,16 @@ def issue(user_id: str, tools: list[str], *, request_id: str, pinned: Optional[d
         raise ValueError("session_vars: the session's template vars, or None")
     if session_vars and session_id is None:
         raise ValueError("session_vars: they are a session's -- give its session_id")
+    if runner is not None and not callable(getattr(runner, "dispatch_tool_call", None)):
+        raise ValueError("runner: an agent (its dispatch_tool_call runs the calls), or None")
+    if runner is not None and session_vars:
+        raise ValueError("session_vars: a grant its caller runs works in the caller's own session -- leave them out")
     token = secrets.token_urlsafe(32)
     digest = _digest(token)
     grant = Grant(gateway=gateway, user_id=user_id, tools=tuple(tools), request_id=request_id, pinned=pinned,
                   allowed={p: {path: list(v) for path, v in rules.items()} for p, rules in allowed.items()},
                   session_id=session_id, expires_at=time.monotonic() + ttl_s, key=digest[:12],
-                  cancel=CancellationToken(request_id), session_vars=dict(session_vars or {}))
+                  cancel=CancellationToken(request_id), session_vars=dict(session_vars or {}), runner=runner)
     with _lock:  # under the lock that a stop takes: a grant cannot slip in beside a stopping gateway
         if gateway not in _serving:
             raise LookupError(f"mcp gateway {gateway!r} does not serve in this process (plugin not enabled?)")
@@ -210,8 +222,8 @@ def offer(gateway: str, listen: Optional[Callable[[], Awaitable[None]]],
             _listeners.pop(gateway, None)
 
 
-def names_by(gateway: str, lister: Optional[Callable[[tuple, dict], Awaitable[list[str]]]],
-             withdrawn: Optional[Callable[[tuple, dict], Awaitable[list[str]]]] = None) -> None:
+def names_by(gateway: str, lister: Optional[Callable[..., Awaitable[list[str]]]],
+             withdrawn: Optional[Callable[..., Awaitable[list[str]]]] = None) -> None:
     """``lister`` tells the tool names a grant of ``gateway`` will list (Gateway.tool_names); None withdraws
     ``withdrawn``, and only that one -- as ``offer``."""
     with _lock:
@@ -221,14 +233,17 @@ def names_by(gateway: str, lister: Optional[Callable[[tuple, dict], Awaitable[li
             _namers.pop(gateway, None)
 
 
-async def tool_names(gateway: str, tools: list[str], pinned: Optional[dict[str, Any]] = None) -> list[str]:
-    """The tool names a grant of ``tools`` (patterns) under ``pinned`` will list on ``gateway``; LookupError when no
-    gateway of that name is built in this process."""
+async def tool_names(gateway: str, tools: list[str], pinned: Optional[dict[str, Any]] = None,
+                     runner: Any = None) -> list[str]:
+    """The tool names a grant of ``tools`` (patterns) under ``pinned`` will list on ``gateway`` -- run by ``runner``
+    (issue), else by the gateway's own; LookupError when no gateway of that name is built in this process."""
     with _lock:
         lister = _namers.get(gateway)
     if lister is None:
         raise LookupError(f"mcp gateway {gateway!r} is not built in this process (plugin not enabled?)")
-    return await lister(tuple(tools), dict(pinned or {}))
+    # A lister registered before grants named their runner takes two arguments: it is asked as before.
+    args = (tuple(tools), dict(pinned or {}))
+    return await (lister(*args, runner) if runner is not None else lister(*args))
 
 
 async def address(gateway: str = "mcp_gateway") -> str:

@@ -1,6 +1,6 @@
 @database "llm_coding_cli"
 @author "Enrico Ehrich"
-@$VER: llm_coding_cli.guide 1.0 (27.10.2026)
+@$VER: llm_coding_cli.guide 1.1 (18.11.2026)
 @smartwrap
 
 @node main "Coding CLI as an LLM"
@@ -11,10 +11,16 @@ The agent runs as always: its prompt, its history, the hooks that add to it,
 its session and its cancel. Only the call to the model goes elsewhere: to a
 @{tt}coding_cli@{utt} instance, which runs the CLI on the operator's
 subscription. The CLI reads the conversation as one task, runs its own tool
-loop with the tools its workdir hands it through the MCP gateway, and its
-final answer becomes the agent's assistant message.
+loop -- with the agent's own tools, handed to it through the MCP gateway --
+and its final answer becomes the agent's assistant message.
+
+Ready-made profiles ship with the plugin: pick @{tt}claude-code-sonnet@{utt}
+or @{tt}agy-gemini-flash@{utt} in the chat's profile selector and the agent
+you chat with runs on it.
 
 @{code}
+For everyone
+  @{"  Running an agent on a CLI  " link use}
 For developers
   @{"  Setting it up  " link setup}
   @{"  What one call does  " link call}
@@ -24,50 +30,125 @@ For developers
 @{body}
 @endnode
 
+@node use "Running an agent on a CLI"
+@{h1}Running an agent on a CLI
+
+@{h2}The profiles
+
+@{table}
+Profile | Runs on | Tools
+claude-code-opus, claude-code-sonnet, claude-code-haiku | Claude Code, the operator's subscription | the agent's own
+agy-gemini-flash, agy-gemini-hydrogen, agy-gemini-argon, agy-gemini-carbon | Antigravity (agy), the operator's Google login | none of the agent's: answers and agy's web search
+@{body}
+
+Pick one where any profile is picked: the chat's profile selector, @{tt}/model
+<profile>@{utt}, @{tt}agent-cli run --llm <profile>@{utt}, or an agent's
+@{tt}llm_profile@{utt} chain (first, with an API profile after it: the chain
+moves on when the CLI cannot answer).
+
+@{h2}What it needs
+
+@{bullet}The CLI installed and logged in for the account ScarabHive runs
+under (@{tt}claude@{utt}, @{tt}agy@{utt}); without it the profile fails at
+once, and says so.
+@{bullet}Your account in the instance's @{tt}allowed_users@{utt}
+(@{tt}admin@{utt} and @{tt}cli_user@{utt} as shipped): the subscription
+belongs to one person.
+@{bullet}The agent running in the API process, or in one-shot
+@{tt}agent-cli@{utt}: the instance runs where the agent runs.
+
+@{h2}What is different from an API model
+
+@{bullet}One model call is one CLI run: the CLI calls tools and goes on by
+itself until it has the answer. The chat shows the run as a box with its
+steps; the agent's tool calls appear as usual.
+@{bullet}The tools Claude Code calls are the agent's own, with the agent's
+rights: its allowlist, its approval questions, its files. They are not kept
+in the agent's history -- the answer is.
+@{bullet}agy takes about 55,000 tokens of a conversation; the profiles'
+context window is set to that, so an agent with context management compacts
+before a call would be refused. A longer conversation is refused with a
+message that says so.
+@{bullet}No streaming: the answer arrives when the run ends.
+@{bullet}Costs: none per call -- the subscription pays. Its windows bound
+Claude Code: at 80 % of a window no run starts until it resets.
+@endnode
+
 @node setup "Setting it up"
 @{h1}Setting it up
 
+@{h2}What ships
+
+@{tt}agents/llm_coding_cli.yaml@{utt} holds two coding_cli instances that only
+answer model calls, the gateway their tools come through, and a model entry
+and profile per model:
+
+@{table}
+Entry | What it is
+claude_code_llm | coding_cli, @{tt}cli: claude@{utt}; one workdir without files (a room: no worktree, no file tools of Claude Code's own) whose gateway says @{tt}caller@{utt}; @{tt}models: [opus, sonnet, haiku]@{utt}
+agy_llm | coding_cli, @{tt}cli: antigravity@{utt}; one web workdir (agy searches the web in every run) without a gateway; its @{tt}models@{utt} are ids of @{tt}agy models@{utt}
+mcp_gateway_llm | mcp_gateway without a runner of its own: every grant is run by the agent that made the call
+@{body}
+
+Change them in your own configuration (the same keys under
+@{tt}plugins.servers@{utt}), not in the plugin's file.
+
 @{h2}The model entry
 
-The provider is @{tt}claude_code@{utt} or @{tt}antigravity@{utt}; @{tt}model@{utt}
-names the coding_cli instance. Nothing else of the entry is used -- model,
-effort and the subscription threshold are the instance's, and a dialect key
-set here is named in the log as ignored.
+The provider is @{tt}claude_code@{utt} or @{tt}antigravity@{utt};
+@{tt}model@{utt} names the coding_cli instance, alone or as
+@{tt}<instance>/<model>@{utt} for a model of the CLI's the instance lists
+(its @{tt}models@{utt}). @{tt}thinking_level@{utt} -- the entry's, or the
+level picked for a chat -- is the run's effort (minimal counts as low, none
+asks for none); for an agy model whose id names its level it is dropped.
+@{tt}context_window@{utt} is what the agent's context management keeps the
+conversation under, not something the CLI is sent: for agy set it to what the
+instance takes whole (55000). A dialect key set here is named in the log as
+ignored.
 
 @{code yaml}
 llm_system:
   models:
-    cli_model:
+    my-claude:
       provider: claude_code
-      model: my_claude_instance      # a coding_cli instance
+      model: claude_code_llm/opus     # <coding_cli instance>/<its model>
+      context_window: 200000
   profiles:
     on_subscription:
-      model_ref: cli_model
+      model_ref: my-claude
 @{body}
-
-Put the profile first in an agent's chain and an API profile after it: the
-chain moves on when the CLI cannot answer.
 
 @{h2}The instance
 
 @{bullet}Its @{tt}cli@{utt} matches the provider (@{tt}claude@{utt} for
 claude_code, @{tt}antigravity@{utt} for antigravity), or every call falls
 back with an error in the log.
-@{bullet}It has exactly one workdir: the call names none. A workdir with a
-@{tt}gateway@{utt} gives the CLI that gateway's tools. The agent run's tool
-bindings (@{tt}Agent.run_events(tool_bindings=...)@{utt}, a sub-agent's
-spawn) go to the run as its @{tt}pin@{utt}, so the CLI's tool calls are held
-to the same values as the agent's own; a run without bindings sends none. A
-workdir whose gateway requires values (@{tt}pin@{utt}) refuses a run that
-does not bring them, and the chain falls back.
+@{bullet}It has exactly one workdir: the call names none.
+@{bullet}The workdir's @{tt}gateway@{utt} decides the tools. @{tt}caller:
+true@{utt} hands the CLI the tools of the agent it answers for: the call
+names the tools the agent would have sent an API model, and the run reaches
+exactly those, run by that agent -- its allowlist, its hooks, its session
+(coding_cli guide, "Tools of this installation"). A gateway with a fixed
+@{tt}tools@{utt} list and a runner of its own gives every agent the same
+tools instead; without a gateway the CLI only answers.
+@{bullet}A web workdir (agy: every one) gets a @{tt}caller@{utt} gateway only
+with @{tt}with_web: true@{utt}: a page the run reads could steer the agent's
+tools, and the operator says whether that is acceptable.
+@{bullet}The agent run's tool bindings (@{tt}Agent.run_events(tool_bindings=...)@{utt},
+a sub-agent's spawn) go to the run with its call, so the CLI's tool calls are
+held to the same values as the agent's own; a run without bindings sends
+none, and a workdir without a gateway -- no tool of the agent's to hold --
+passes them over. A workdir whose gateway requires values (@{tt}pin@{utt})
+refuses a run that does not bring them, and the chain falls back.
 @{bullet}The calling account is in its @{tt}allowed_users@{utt}.
 @{bullet}@{tt}max_task_chars@{utt} holds the whole conversation: the task is the
 system prompt and the history as text, and coding_cli refuses a longer one
-(20 000 characters unless set) -- every call then falls back.
+(20 000 characters unless set; the shipped instances take 1 000 000) -- every
+call then falls back.
 @{bullet}@{tt}max_result_chars@{utt} holds the longest final answer the agent
 needs: a cut answer falls back.
 
-The instance runs in the API process; an agent running elsewhere finds none
+The instance runs where the agent runs; an agent running elsewhere finds none
 and falls back.
 @endnode
 
@@ -81,21 +162,33 @@ own, as with its own calls. Without them the call falls back.
 @{bullet}The first call of an agent run starts a run:
 @{tt}<instance>_run_task@{utt} with the conversation as the task, @{tt}wake:
 false@{utt}, the account, the session and the request id (the run's grant
-and status are filed under it). While the run goes on,
+and status are filed under it), the names of the call's tools
+(@{tt}_tools@{utt}: what a @{tt}caller@{utt} workdir hands the run), and the
+entry's model and effort where it names them. While the run goes on,
 @{tt}<instance>_get_run@{utt} waits for it, 600 seconds at a time, with
 @{tt}stop_if_cancelled@{utt}.
+@{bullet}The run is the call: it ends with it. Its view in the chat is live
+only and shows "model call of <agent>" as its task -- coding_cli keeps no
+background run for it (@{tt}_background: false@{utt}), which would leave a
+sub-session per model call, the whole conversation in each.
 @{bullet}A later call of the same session -- a nudge or a format correction
 in the same agent run, the next turn of a continued sub-agent (a new agent run,
 built anew) -- resumes the run it goes on from with only the messages added
 since: when the conversation it gets is one it gave before, grown (the longest
 such one). The CLI's own answer, as the agent kept it, is not sent again. A
 history compacted in between, another conversation (a hook's own model call),
-another user or session, or nothing new starts a run of its own; so does a run
-coding_cli will not resume (its worktree busy, other bindings) -- with the whole
-conversation, not a move down the chain. The runs a session may go on with are
-kept in this process: after a restart its next call starts afresh.
+another user or session, another model or effort than the run was asked for
+(a chat switched to another profile or thinking level), or nothing new starts
+a run of its own; so does a run
+coding_cli will not resume (its answer's @{tt}code: resume_refused@{utt}: its
+worktree busy or gone, other bindings) -- with the whole conversation, not a
+move down the chain. The runs a session may go on with are kept in this
+process: after a restart, and in every one-shot @{tt}agent-cli@{utt} turn, the
+next call starts afresh.
 @{bullet}Cancelling the agent cancels the wait, and coding_cli stops a run
-whose waiting caller is cancelled.
+whose waiting caller is cancelled; a wait that fails for another reason
+stops the run too. A run whose agent's process has ended (a restart) is
+stopped by whoever takes it over or watches it: nobody reads its answer.
 @{bullet}The answer: the run's final text as the assistant message, no tool
 calls, @{tt}served_by@{utt} @{tt}<provider>:<instance>@{utt}. Usage reports
 cost 0 -- the subscription pays -- and the run's tokens: prompt tokens with
@@ -139,7 +232,13 @@ The CLI gets one task text, built from the messages in their order:
 <a tool result>
 @{body}
 
-The agent's tool list is not passed: the CLI has the tools of its workdir.
+The agent's tool schemas are not part of the text. With a @{tt}caller@{utt}
+gateway the CLI finds the call's tools as MCP tools of the server
+@{tt}gateway@{utt}, under the names the agent's prompt uses, prefixed by the
+CLI: @{tt}mcp__gateway__<tool>@{utt} in Claude Code,
+@{tt}mcp_gateway_<tool>@{utt} in agy, each with its description and
+parameters. Without one it has the tools of its workdir's fixed gateway, or
+none.
 A part of a message that is not text (an image) is named, not passed:
 @{tt}[image_url not passed on]@{utt}. A resumed run gets only the blocks of
 the messages added since its last call.
@@ -147,7 +246,9 @@ the messages added since its last call.
 @{h2}Token and cache effect
 
 None on the agent's own requests: nothing is added to its prompt or history.
-The CLI's own context is the CLI's.
+The CLI's own context is the CLI's. The runs of an instance without files
+share one room, so the part every conversation of an agent starts with (the
+system prompt) is read from the subscription's cache.
 @endnode
 
 @node fallback "When the next link answers"
@@ -157,6 +258,8 @@ The CLI's own context is the CLI's.
 Case | Raised | The chain
 the subscription's limit (coding_cli's limit field) | LLMQuotaExhaustedError | blocks this link until the limit resets (when coding_cli knows it), then moves on
 not started for another reason (runs still going, git, the gateway) | LLMServerError | moves on, no block
+the conversation is longer than the instance takes (max_task_chars; agy: max_task_tokens) | LLMServerError | moves on, no block -- its message says the size and the bound
+a model the instance does not list | LLMServerError | moves on, no block
 an agy run that failed on its login before its first turn | LLMServerError, if it fails again | starts once more after 15 s first; failed again, moves on, and for ten minutes no run of that user on that instance starts twice (a run that answers ends that)
 an agy run that ended without an answer on a refused step (a command, say: agy then ends its whole conversation) | LLMServerError, if it ends so again | resumed once, told that such steps are refused and to go on with its other tools (measured for a command: it answers then); a second such end moves on. The call's usage holds both runs
 a Claude Code run that did not reach its API (api_error connection_failed; measured: DNS gone, ENOTFOUND after about 3 min) | LLMConnectionError, caused by the error its code names | moves on; when no link of the step's chain reached a provider and one found no route, the step waits for the network (network_outage_seconds) -- a refused connection (ECONNREFUSED) is no outage
@@ -165,6 +268,9 @@ an answer cut by max_result_chars, or none | LLMServerError | moves on, no block
 the instance missing, or another cli than the provider's | LLMServerError | moves on, no block
 no agent run around the call | LLMServerError | moves on, no block
 @{body}
+
+A profile picked for a chat is a chain of one: what would move a chain on is
+the chat's error, in these words.
 
 A failed run without tokens says nothing of the network (agy with the network gone fails at once on an
 unknown model): it does not count as a provider that got the request, so a link before or after it decides
@@ -176,22 +282,40 @@ Each of them logs one line naming the provider, the instance and why; a
 mismatched cli logs it as an error. Antigravity reports no subscription
 windows: a run it stops at its limit is expected to arrive as a failed run
 (not measured yet), which moves the chain on without a block.
+
+What the client reads of a refusal is coding_cli's @{tt}code@{utt}
+(@{tt}resume_refused@{utt}) and its @{tt}limit@{utt} field, never its words.
 @endnode
 
 @node gaps "Known gaps"
 @{h1}Known gaps
 
+@{bullet}The CLI's tool calls are the agent's, but not in the agent's loop:
+they are not in its history, its step budget and loop detection do not count
+them, and a long tool result is the CLI's to carry, not the agent's context
+management's. The run's time limit and the subscription bound them.
+@{bullet}A tool the gateway cannot run is missing for the CLI: tools of
+external MCP servers, and whatever the agent's allowlist leaves out. A tool
+result over the gateway's @{tt}max_result_chars@{utt} (60 000) is refused
+with a note to ask for less; agy shows its model only the beginning and end
+of a result over about 10 000 characters (the whole is in a file agy names).
+@{bullet}agy's runs get none of the agent's tools as shipped: agy searches the
+web in every run, and a page could steer them (@{tt}with_web@{utt} accepts
+that).
+@{bullet}A full instance (@{tt}max_parallel@{utt}) does not make a call wait:
+it moves the chain on. An agent's run holds its place while its tools run,
+so an agent with sub-agents on the same profile needs a place for itself and
+one for each of them at a time.
 @{bullet}A workdir whose gateway fixes values is not supported.
-@{bullet}The tools are the workdir's, not the agent's: a tool the agent has
-but the gateway does not hand on (a sub-agent manager) is missing for the
-CLI. Say so in the prompt the agent renders for this profile.
 @{bullet}One process: the instance must run where the agent runs.
 @{bullet}One more resume after an agy run that ended on a refused step: a call
 that needs it takes as long as two runs, and the second sees the note, not
 the step's refusal itself.
-@{bullet}Every CLI run is a coding_cli run with a worktree and a branch of its
-own, which coding_cli does not remove. As an LLM link that is one per agent
-run: give the instance a small repository of its own as its workdir, and
-clear its worktrees now and then (coding_cli guide).
+@{bullet}An agy run is a coding_cli run with a worktree and a branch of its
+own, which coding_cli does not remove -- one per conversation, not per call:
+its workdir is a small repository of its own; clear its worktrees now and
+then (coding_cli guide). Claude Code's runs work in the instance's room and
+leave none.
+@{bullet}Images and other parts that are not text are named, not passed.
 @{bullet}No streaming: the answer arrives when the run ends.
 @endnode

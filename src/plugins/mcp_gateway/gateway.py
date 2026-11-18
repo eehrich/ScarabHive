@@ -1,9 +1,14 @@
 """The gateway's two MCP methods: tools/list and tools/call, for the grant the request's token names.
 
 Every call goes through the runner agent's ``dispatch_tool_call``: its allowlist is the ceiling, its
-pre_tool_call/post_tool_call hooks run (``hook_source="mcp_gateway"``), the tool gets the grant's user, session and
+pre_tool_call/post_tool_call hooks run (``hook_source="mcp_gateway"``; ``"model"`` for a grant its caller runs --
+MODEL_SOURCE), the tool gets the grant's user, session and
 request id like any call of an agent, and the session's template vars as the issuing run had them (``_seed``).
 What a grant may see is what it may call -- one function decides both.
+
+The runner is the gateway's own agent -- or, for a grant that names one (``Grant.runner``), the agent that started
+the run: a CLI answering as that agent's model then calls that agent's tools, held to its allowlist, through its
+hooks, in its session.
 """
 from __future__ import annotations
 
@@ -24,6 +29,10 @@ from .grants import Grant
 logger = logging.getLogger(__name__)
 
 SOURCE = "mcp_gateway"
+#: What the hooks read as the source of a call of a grant its caller runs: the CLI answers as that agent's model,
+#: so its calls are the model's own -- a hook that asks a person before a model's call (tool_approval) asks before
+#: these too. Under SOURCE they would pass as a script's calls do, unasked.
+MODEL_SOURCE = "model"
 
 
 class Gateway:
@@ -35,9 +44,12 @@ class Gateway:
         self._holders: dict[tuple[int, str], set[str]] = {}
         self._seeding = threading.Lock()
 
-    def runner(self) -> Any:
+    def runner(self, grant: Optional[Grant] = None) -> Any:
+        """The agent that runs a call: the grant's own (its caller), else this gateway's runner agent."""
         from agent_system import app_state
 
+        if grant is not None and grant.runner is not None:
+            return grant.runner
         registry = app_state.registry
         try:
             return registry.get(self.runner_agent) if registry is not None else None
@@ -51,10 +63,12 @@ class Gateway:
         to two values -- is left out (components/tool_bindings.py)."""
         return await self._visible(grant.tools, grant.pinned, runner)
 
-    async def tool_names(self, tools: tuple[str, ...], pinned: dict[str, dict[str, Any]]) -> list[str]:
+    async def tool_names(self, tools: tuple[str, ...], pinned: dict[str, dict[str, Any]],
+                         runner: Any = None) -> list[str]:
         """The names a grant of these patterns and bindings will list, before it is issued: a CLI that registers
-        them up front by name (agy's eager tools) is told the same ones tools/list gives it. None without a runner."""
-        runner = self.runner()
+        them up front by name (agy's eager tools) is told the same ones tools/list gives it. None without a runner.
+        ``runner``: the agent the grant will be run by (grants.issue), else this gateway's."""
+        runner = runner if runner is not None else self.runner()
         return sorted(await self._visible(tuple(tools), pinned or {}, runner)) if runner is not None else []
 
     async def _visible(self, tools: tuple[str, ...], pinned: dict[str, dict[str, Any]],
@@ -78,7 +92,7 @@ class Gateway:
         return found
 
     async def list_tools(self, grant: Grant) -> types.ListToolsResult:
-        runner = self.runner()
+        runner = self.runner(grant)
         tools = []
         from agent_system.servers.agent.components.tool_bindings import without_bound
 
@@ -101,7 +115,7 @@ class Gateway:
         """(the answer's text, whether it is an error)."""
         from agent_system.servers.agent.components.tool_execution import ToolDispatchError
 
-        runner = self.runner()
+        runner = self.runner(grant)
         if runner is None:
             return f"The gateway's runner agent {self.runner_agent!r} is not available.", True
         visible = await self.visible(grant, runner)
@@ -133,7 +147,7 @@ class Gateway:
         try:
             call = asyncio.ensure_future(runner.dispatch_tool_call(
                 name, arguments, session_id=grant.session_id, user_id=grant.user_id, request_id=request_id,
-                hook_source=SOURCE, cancellation_token=grant.cancel))
+                hook_source=MODEL_SOURCE if grant.runner is not None else SOURCE, cancellation_token=grant.cancel))
         finally:
             current_request_id.reset(reset[0])
             current_run_user.reset(reset[1])
@@ -172,7 +186,9 @@ class Gateway:
         session. The first grant of the session replaces what is there; the last one to end takes all away, what
         a run set itself (a tool setting its context) included. Why the call cannot run, or None."""
         tracker = getattr(runner, "_session_tracker", None)
-        if grant.seeded or not grant.session_id or tracker is None:
+        # A grant its caller runs works in the caller's own session: its vars are there, and are not this
+        # gateway's to replace or to take away at the grant's end.
+        if grant.runner is not None or grant.seeded or not grant.session_id or tracker is None:
             return None
         holder = (id(tracker), grant.session_id)
         ended = "the run's token was revoked or expired; the call was stopped."

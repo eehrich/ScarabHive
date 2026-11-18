@@ -11,7 +11,9 @@ that run may call, and revokes the token when the run ends.
   optional session, parameters fixed to one value (`pinned`), allowed values reaching into lists (`allowed`), a
   lifetime.
 - **Runner** `mcp_gateway_runner` -- every call goes through this agent's `dispatch_tool_call`: its allowlist is the
-  ceiling of every token, its `pre_tool_call`/`post_tool_call` hooks see every call.
+  ceiling of every token, its `pre_tool_call`/`post_tool_call` hooks see every call. A grant may name another
+  agent to run its calls (`runner`): the caller itself, for a CLI that answers as that agent's model -- its own
+  allowlist and hooks then hold the calls, as calls of its model.
 
 Both entries ship switched off (`agents/mcp_gateway.yaml`). Enable `mcp_gateway` and `mcp_gateway_runner`, and give
 the runner tools with `+` entries in its `agent_config.tools.allowed`. Several plugins handing tools to outside CLIs

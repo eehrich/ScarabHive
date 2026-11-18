@@ -191,6 +191,17 @@ _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 # ScarabHive session ids name read marks.
 _SESSION_KEY = re.compile(r"[A-Za-z0-9_-]{1,80}")
 FINAL_STATES = ("done", "failed", "cancelled")
+#: What a refusal of run_task is, for a caller that decides by it (the answer's ``code``, beside its words):
+#: the run it was to resume cannot go on (start a fresh one), the instance is full or short of memory (later it
+#: may start), the task is longer than the instance or its CLI takes (a shorter one may), the budget (``limit``
+#: says which window and when it resets). The words beside a code stay as they are while callers written before
+#: the codes still read them ("N run(s) still going").
+CODE_RESUME, CODE_BUSY, CODE_TASK, CODE_LIMIT = "resume_refused", "busy", "task_too_long", "limit"
+
+
+class _NotResumable(OSError):
+    """What keeps a run from starting in the worktree or conversation it has (_start): a resume of it is refused,
+    a fresh run may start."""
 
 
 class _NoStatus:
@@ -233,12 +244,24 @@ def _gateway(entry: Any) -> tuple[Optional[dict], str]:
         return None, ""
     if not isinstance(entry, dict):
         return None, "gateway: {tools: [...], ...}"
-    unknown = set(entry) - {"tools", "pin", "allowed", "read_only", "confined", "instance"}
+    unknown = set(entry) - {"tools", "pin", "allowed", "read_only", "confined", "instance", "caller", "with_web"}
     if unknown:
         # A misspelt `allowed` or `pin` would leave the grant wider than meant.
         return None, (f"gateway: unknown key(s) {sorted(unknown)} -- tools, pin, allowed, read_only, confined, "
-                      "instance")
-    tools, pin, allowed = entry.get("tools"), entry.get("pin") or {}, entry.get("allowed") or {}
+                      "instance, caller, with_web")
+    caller, with_web = entry.get("caller"), entry.get("with_web")
+    if not all(value is None or isinstance(value, bool) for value in (caller, with_web)):
+        # `caller: 1` equals True and is none: read as no caller, it left a fixed gateway of every tool.
+        return None, "gateway.caller, gateway.with_web: true or false"
+    if with_web and not caller:
+        return None, "gateway.with_web: only with caller: true -- another gateway says read_only or confined"
+    if caller and (entry.get("read_only") is True or entry.get("confined") is True):
+        # They vouch for the tools the workdir names; a caller's are whatever agent calls. Beside web: with_web.
+        return None, ("gateway.read_only, gateway.confined: not with caller: true -- the tools are the caller's "
+                      "own, whichever agent that is; beside web say with_web")
+    # caller: the run reaches its caller's own tools; `tools` then only narrows them, every one without it.
+    tools = entry.get("tools") if entry.get("tools") is not None or not caller else ["*"]
+    pin, allowed = entry.get("pin") or {}, entry.get("allowed") or {}
     instance = entry.get("instance") or "mcp_gateway"
     if not isinstance(tools, list) or not tools or not all(isinstance(t, str) and t for t in tools):
         return None, "gateway.tools: a list of tool name patterns"
@@ -267,7 +290,8 @@ def _gateway(entry: Any) -> tuple[Optional[dict], str]:
     if not isinstance(instance, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", instance):
         return None, "gateway.instance: a plugin instance name"
     return {"instance": instance, "tools": tools, "pin": {p: sorted(set(k)) for p, k in pin.items()},
-            "allowed": allowed, "read_only": entry.get("read_only") is True, "confined": confined}, ""
+            "allowed": allowed, "read_only": entry.get("read_only") is True, "confined": confined,
+            "caller": caller is True, "with_web": with_web is True}, ""
 
 
 def _pin_problem(pin: Any, required: dict[str, list[str]]) -> str:
@@ -615,6 +639,10 @@ class CodingCliServer(SchemaBasedToolServer):
             logger.warning("coding_cli: %s: effort %r dropped -- model %r names its level already; an effort goes "
                            "with a model id without one", name, self.effort, self.model)
             self.effort = ""
+        # Models a call may name instead of the instance's (run_task model): the subscription pays for each
+        # differently, so the operator lists them. None listed: every run is on the instance's own.
+        models = getattr(server_config, "models", None) or ()
+        self.models = frozenset(str(m) for m in ([models] if isinstance(models, str) else models) if str(m).strip())
         self.max_utilization = _bounded(getattr(server_config, "max_window_utilization", None), 0.8, 0.05, 1.0) or 0.8
         self.wait_s = _bounded(getattr(server_config, "wait_s", None), 300, 0, 3600)
         self.wait_s = 300.0 if self.wait_s is None else self.wait_s
@@ -715,12 +743,15 @@ class CodingCliServer(SchemaBasedToolServer):
             logger.warning("coding_cli: workdir %r skipped -- %s", wname,
                            problem or f"mcp_servers names {cli.GATEWAY_SERVER!r}, the gateway's server")
             return None
-        if gateway and entry.get("web") is True and not (gateway["read_only"] or gateway["confined"]):
+        if gateway and entry.get("web") is True and not (gateway["read_only"] or gateway["confined"]
+                                                         or gateway["with_web"]):
             # As with mcp_servers below: a page could steer what the tools write. The operator vouches that
             # the tools and allowed values only read -- or that the run's bindings hold every write to what
-            # the run writes anyway (its own file), where a page could steer no more than the answer.
+            # the run writes anyway (its own file), where a page could steer no more than the answer -- or,
+            # for a caller's own tools, accepts it (with_web), as for an agent that has a web tool beside them.
             logger.warning("coding_cli: workdir %r skipped -- web and a gateway neither read_only nor "
-                           "confined: a page the run reads could steer its tools", wname)
+                           "confined%s: a page the run reads could steer its tools", wname,
+                           " nor with_web" if gateway["caller"] else "")
             return None
         if self.agy and (names or entry.get("web") is not True):
             # run.py, build_agy_command: it searches the web in every run, and loads no server of ours.
@@ -763,6 +794,8 @@ class CodingCliServer(SchemaBasedToolServer):
             + (f" (now: {', '.join(sorted(self._live_workdirs()))})" if self._live_workdirs() else ""))
         # pins: a workdir's gateway fixes values -- only then run_task offers pin.
         template_vars["pins"] = any(w["gateway"] and w["gateway"]["pin"] for w in self._all_specs())
+        # models: the instance lists some a call may name -- only then run_task offers model.
+        template_vars["models"] = sorted(self.models | ({self.model} if self.model else set())) if self.models else []
         return template_vars
 
     async def start_plugin(self) -> None:
@@ -871,12 +904,25 @@ class CodingCliServer(SchemaBasedToolServer):
         may go on. One whose starting call never answered goes like one whose
         turn was stopped: its caller got no run id and went on without it -- a
         stategraph hands the job to an agent on the same Scarab server. A
-        record from before the answer was marked keeps the old rule."""
+        record from before the answer was marked keeps the old rule.
+
+        A run that is its caller's model call goes with the process that made the call (_caller_gone), whoever
+        owns the run by now: a plugin stopped and started again, or another process that took the run over,
+        leaves it to the call that still waits there."""
+        if self._caller_gone(record):
+            return "stopped: the model call it answered ended with its process"
         if "instance_name" in record and not self._file(record["run_id"], "answered").exists():
             return "stopped: the call that started it never answered, its process ended"
         if time.time() - float(record.get("started_at") or 0) > self._limit_s(record):
             return f"stopped after the time limit of {self._limit_s(record) / 60:.0f} min"
         return ""
+
+    @staticmethod
+    def _caller_gone(record: dict) -> bool:
+        """Whether a run is its caller's model call (with_caller: the process that made the call) and that process
+        has ended: the call that waited for its answer died there, its grant with it -- left going, the run
+        worked on without its tools up to its time limit, on the subscription, for an answer nobody reads."""
+        return isinstance(record.get("with_caller"), dict) and not _instance_alive(record["with_caller"])
 
     def _limit_s(self, record: dict) -> float:
         """The run's time limit: its starting instance's, whoever takes it over."""
@@ -1105,7 +1151,8 @@ class CodingCliServer(SchemaBasedToolServer):
         if not isinstance(task, str) or not task.strip():
             return await self._fail(status, "task: the complete task as text")
         if len(task) > self.max_task_chars:
-            return await self._fail(status, f"task: at most {self.max_task_chars} characters")
+            return await self._fail(status, f"task: {len(task)} characters, at most {self.max_task_chars} "
+                                            "(coding_cli max_task_chars)", code=CODE_TASK)
         try:
             # Before anything is made: a lone surrogate (a broken escape) fails the task file only after the worktree.
             task.encode("utf-8")
@@ -1125,22 +1172,31 @@ class CodingCliServer(SchemaBasedToolServer):
         if utilization is not None and not _utilization_ok(utilization):
             return await self._fail(status, f"max_window_utilization: a share above 0 and at most 1 -- a lower "
                                             f"threshold for this run; the instance's {self.max_utilization:g} at most")
+        model, effort = params.get("model"), params.get("effort")
+        if model is not None and (not isinstance(model, str) or model not in self.models | {self.model} - {""}):
+            return await self._fail(status, "model: " + (
+                f"one of {', '.join(sorted(self.models | {self.model} - {''}))}" if self.models else
+                f"this instance runs {self.model or 'the default of ' + self.label} only (coding_cli models)"))
+        if effort is not None and effort not in EFFORTS:
+            return await self._fail(status, f"effort: one of {', '.join(EFFORTS)}")
         schema = params.get("json_schema")
         prior = None
         if params.get("resume"):
             prior = self._own(params["resume"], user_id)
             if prior is None:
-                return await self._fail(status, f"resume: no run {str(params['resume'])[:20]} of yours")
+                return await self._fail(status, f"resume: no run {str(params['resume'])[:20]} of yours",
+                                        code=CODE_RESUME)
             # Its process may be gone without anybody having looked.
             prior = await self._settle(prior["run_id"], session_id)
             if prior.get("state") not in FINAL_STATES:
-                return await self._fail(status, f"resume: run {prior['run_id']} has not ended yet")
+                return await self._fail(status, f"resume: run {prior['run_id']} has not ended yet",
+                                        code=CODE_RESUME)
             if prior.get("cli", "claude") != self.cli:
                 return await self._fail(status, f"resume: run {prior['run_id']} ran on {prior.get('cli', 'claude')}, "
-                                                f"this instance runs {self.cli} -- start a new run")
+                                                f"this instance runs {self.cli} -- start a new run", code=CODE_RESUME)
             if not prior.get("claude_session") or not Path(prior["worktree"]).is_dir():
                 return await self._fail(status, f"resume: run {prior['run_id']} left no conversation or "
-                                                f"worktree to continue -- start a new run")
+                                                f"worktree to continue -- start a new run", code=CODE_RESUME)
             workdir = prior["workdir"]
             if schema is None:
                 schema = prior.get("json_schema")
@@ -1150,6 +1206,10 @@ class CodingCliServer(SchemaBasedToolServer):
                 limit = float(prior["asked_run_s"]) / 60
             if utilization is None and prior.get("asked_utilization"):
                 utilization = float(prior["asked_utilization"])     # and under the lower threshold, as asked
+            if model is None and prior.get("asked_model") in self.models | {self.model}:
+                model = prior["asked_model"]            # and on the model it was asked for, while that is allowed
+            if effort is None and prior.get("asked_effort") in EFFORTS:
+                effort = prior["asked_effort"]
         else:
             workdir = params.get("workdir") or (next(iter(workdirs)) if len(workdirs) == 1 else None)
             # the folder's own spelling (MyGame for mygame), when it names exactly one workdir
@@ -1158,7 +1218,7 @@ class CodingCliServer(SchemaBasedToolServer):
         if workdir not in workdirs:
             if prior:
                 return await self._fail(status, f"resume: run {prior['run_id']}'s workdir {workdir!r} is no "
-                                                "workdir any more -- start a new run")
+                                                "workdir any more -- start a new run", code=CODE_RESUME)
             patterns = ", ".join(self._pattern_names)
             left = f" ({workdir!r} matches more than one repository or is no plain name)" \
                 if isinstance(workdir, str) and workdir.lower() in self._ambiguous else ""
@@ -1169,27 +1229,50 @@ class CodingCliServer(SchemaBasedToolServer):
         if prior and prior.get("repo") and os.path.normcase(prior["repo"]) != os.path.normcase(str(spec["path"])):
             # the name now opens another repository (another folder under a pattern took it)
             return await self._fail(status, f"resume: run {prior['run_id']}'s workdir {workdir!r} is another "
-                                            "repository now -- start a new run")
+                                            "repository now -- start a new run", code=CODE_RESUME)
         gateway, pin = spec["gateway"], params.get("pin") or None
+        if pin is None and gateway and params.get("_pin"):
+            # The bindings of the agent run a model call belongs to (llm_coding_cli): they hold the tools a gateway
+            # hands the run. A workdir without one hands it none of the agent's: nothing to hold, nothing refused.
+            pin = params["_pin"]
+        if gateway and gateway["caller"]:
+            # The tools are the caller's own: the bindings its run is held to (set by code, never by a model) hold
+            # them in the run it starts as well, as for a sub-agent it spawns -- a call's pin only on top. Without
+            # this a bound agent that called run_task itself handed the CLI its tools unbound.
+            from agent_system.servers.agent.components.tool_bindings import inherited
+
+            pin, held = inherited(pin)
+            if held:
+                return await self._fail(status, f"pin: {held}")
         if prior:
             # The conversation goes on with the values it was given: other values make another run.
             if pin is not None and pin != prior.get("pin"):
                 return await self._fail(status, f"pin: a resume keeps run {prior['run_id']}'s -- "
-                                                f"{json.dumps(prior.get('pin'))}")
+                                                f"{json.dumps(prior.get('pin'))}", code=CODE_RESUME)
             pin = prior.get("pin")
         if not gateway and pin:
             return await self._fail(status, f"pin: workdir {workdir} has no gateway -- leave it out")
         problem = _pin_problem(pin or {}, gateway["pin"]) if gateway else ""
         if problem:
             return await self._fail(status, f"resume: {problem}, which run {prior['run_id']} did not -- start a new "
-                                            "run" if prior else problem)
+                                            "run" if prior else problem, **({"code": CODE_RESUME} if prior else {}))
+        if gateway and gateway["caller"] and mode != "plan":
+            # The caller's own tools, by name: what the agent that made this call may call itself, narrowed to
+            # what the call names (_tools: the tools of the model call this run answers) and the workdir's patterns.
+            found = await self._callers_tools(gateway, pin, params.get("_agent"), params.get("_tools"))
+            if isinstance(found, str):
+                return await self._fail(status, f"not started: {found}")
+            # None left (an agent without tools, a call that names none): a run without a gateway.
+            gateway = {**gateway, "tools": found[0], "runner": found[1]} if found[0] else None
+            spec = {**spec, "gateway": gateway}
         eager: list[str] = []
         if self.agy and gateway and mode != "plan":
             # The grant's tools by name, for agy to register up front (cli.agy_gateway): the names its tools/list
             # will give, under this run's bindings. None found leaves them lazy, as before.
             from plugins.mcp_gateway import grants
             try:
-                eager = await grants.tool_names(gateway["instance"], gateway["tools"], pin)
+                eager = await grants.tool_names(gateway["instance"], gateway["tools"], pin,
+                                                runner=gateway.get("runner"))
             except Exception:  # noqa: BLE001 - the run goes on with lazy tools; the gateway says itself what is wrong
                 logger.warning("coding_cli %s: the gateway's tool names were not found, its tools stay lazy",
                                self.name, exc_info=True)
@@ -1202,7 +1285,8 @@ class CodingCliServer(SchemaBasedToolServer):
             if tokens > self.max_task_tokens:
                 return await self._fail(status, f"task: about {tokens} tokens, agy takes at most "
                                                 f"{self.max_task_tokens} whole (it cuts the middle out of a longer "
-                                                "one) -- send a shorter task, or run it on another link")
+                                                "one) -- send a shorter task, or run it on another link",
+                                        code=CODE_TASK)
         # As asked; _start holds it to the instance's, what its operator allows a run. None: the instance's.
         asked_run_s = 60 * limit if limit is not None else None
         # The given one or the one a resume inherits, before anything is made.
@@ -1215,7 +1299,7 @@ class CodingCliServer(SchemaBasedToolServer):
         threshold = min(utilization or 1.0, self.max_utilization)
         blocked = cli.quota_limit(await self._quota_now(threshold, user_id), threshold, time.time())
         if blocked:
-            return await self._fail(status, f"not started: {cli.limit_text(blocked)}", limit=blocked)
+            return await self._fail(status, f"not started: {cli.limit_text(blocked)}", limit=blocked, code=CODE_LIMIT)
         gateway_url = ""
         if gateway and mode != "plan":
             from plugins.mcp_gateway import grants
@@ -1235,17 +1319,20 @@ class CodingCliServer(SchemaBasedToolServer):
             mine = [r for r in running if self._mine(r)]
             if len(mine) >= self.max_parallel:
                 return await self._fail(status, f"not started: {len(mine)} run(s) still going ("
-                                                f"{', '.join(r['run_id'] for r in mine)}) -- wait for them or cancel one")
+                                                f"{', '.join(r['run_id'] for r in mine)}) -- wait for them or cancel one",
+                                        code=CODE_BUSY)
             available = _available_memory_mb()
             if available is not None and available < MIN_AVAILABLE_MEMORY_MB:
                 return await self._fail(status, f"not started: only {available} MB of memory available, a run needs "
-                                                f"{MIN_AVAILABLE_MEMORY_MB} MB free -- wait for runs to end")
+                                                f"{MIN_AVAILABLE_MEMORY_MB} MB free -- wait for runs to end",
+                                        code=CODE_BUSY)
             # A room holds no files: its runs share it, resumes as well -- but one conversation goes on in one run
             # at a time, or two processes write the same session.
             if prior and prior.get("room") and any(r.get("resumes") == prior["claude_session"] for r in running):
-                return await self._fail(status, "resume: another run goes on with that conversation")
+                return await self._fail(status, "resume: another run goes on with that conversation",
+                                        code=CODE_RESUME)
             if prior and not prior.get("room") and any(r.get("worktree") == prior["worktree"] for r in running):
-                return await self._fail(status, "resume: another run works in that worktree")
+                return await self._fail(status, "resume: another run works in that worktree", code=CODE_RESUME)
             run_id = secrets.token_hex(6)
             # Held until the call has answered: while it is in flight this instance answers for the run, its
             # watch dead or not -- a sweep would stop it as one whose call never answered (_orphan_stop).
@@ -1256,7 +1343,10 @@ class CodingCliServer(SchemaBasedToolServer):
             prepare = asyncio.get_running_loop().run_in_executor(None, functools.partial(
                 self._prepare, run_id, task, mode, workdir, prior, user_id, session_id, schema, asked_run_s,
                 utilization, pin or None, str(params.get("_request_id") or run_id), gateway_url,
-                _session_vars(params.get("_agent"), session_id) if gateway_url else None, eager, spec))
+                # a grant its caller runs works in the caller's own session: nothing to bring along
+                _session_vars(params.get("_agent"), session_id)
+                if gateway_url and not (gateway or {}).get("runner") else None, eager, spec,
+                model=model, effort=effort, with_caller=params.get("_background", True) is False))
             try:
                 try:
                     record = await asyncio.shield(prepare)
@@ -1272,7 +1362,9 @@ class CodingCliServer(SchemaBasedToolServer):
                         await self._stop_run(record, "stopped with the turn that started it")
                     raise
                 except (cli.GitError, OSError) as exc:
-                    return await self._fail(status, f"not started: {exc}")
+                    # What keeps this run's own worktree or conversation from going on: a fresh run may start.
+                    refused = {"code": CODE_RESUME} if prior and isinstance(exc, _NotResumable) else {}
+                    return await self._fail(status, f"not started: {exc}", **refused)
                 monitor = self._watch(record, record.pop("_proc"))
                 started = True
             finally:
@@ -1280,7 +1372,8 @@ class CodingCliServer(SchemaBasedToolServer):
                     self._starting.discard(run_id)
         try:
             return await self._answer(status, record, monitor, task, mode, params.get("_request_id"),
-                                      session_id, user_id, wake)
+                                      session_id, user_id, wake, kept=params.get("_background", True) is not False,
+                                      label=params.get("_label"))
         finally:
             self._starting.discard(run_id)
             if self._stopped:
@@ -1289,21 +1382,28 @@ class CodingCliServer(SchemaBasedToolServer):
                     self._release(run_id)
 
     async def _answer(self, status, record: dict, monitor: asyncio.Task, task: str, mode: str,
-                      request_id: Any, session_id: str, user_id: str, wake: bool = True) -> dict[str, Any]:
+                      request_id: Any, session_id: str, user_id: str, wake: bool = True, *, kept: bool = True,
+                      label: Any = None) -> dict[str, Any]:
         """run_task once the run is going: waits for its end up to wait_s, then answers in full or with the
         run id and a wake -- none when the caller waits with get_run itself (wake false: a state machine, whose
-        session has nobody to wake)."""
+        session has nobody to wake).
+
+        ``kept`` False (the caller's ``_background``): the run's view is live only, no background run with a
+        sub-session of its own -- for a run that is its caller's model call (llm_coding_cli), which ends with that
+        call: kept, every model call left a sub-session holding the whole conversation. ``label``: what the view
+        shows as its task instead of the task itself."""
         run_id = record["run_id"]
-        live = await LiveRun.open(request_id, task, Path(record.get("worktree") or "."),
-                                  system_config=self.system_config, parent=session_id, user_id=user_id,
-                                  on_cancel=self._stopper(run_id, record))
+        shown = label if isinstance(label, str) and label.strip() else task
+        live = await LiveRun.open(request_id, shown, Path(record.get("worktree") or "."),
+                                  system_config=self.system_config, parent=session_id if kept else "",
+                                  user_id=user_id, on_cancel=self._stopper(run_id, record))
         if live is not None:
             live.label = self.label
             self._live[run_id] = live
             if live.background is not None:
                 # for a process that takes the run over: its view goes on in the same sub-session
                 with contextlib.suppress(OSError):
-                    self._file(run_id, "view").write_text(json.dumps({**live.view, "task": task}),
+                    self._file(run_id, "view").write_text(json.dumps({**live.view, "task": shown}),
                                                           encoding="utf-8")
         self._listeners[run_id] = status
         sub_agent = False
@@ -1377,6 +1477,35 @@ class CodingCliServer(SchemaBasedToolServer):
 
     def _ended(self, run_id: str) -> bool:
         return (self._load(run_id) or {}).get("state") in FINAL_STATES
+
+    async def _callers_tools(self, gateway: dict, pin: Optional[dict], agent: Any,
+                             named: Any) -> tuple[list[str], Any] | str:
+        """(the tool names a run in a `caller` workdir reaches, the agent that runs them) -- or why it cannot start.
+
+        The agent is the one that made the call: the tool call's own (_agent), or, for a run that is an agent's
+        model call (llm_coding_cli), the run's. Its tools are what it may call itself (its allowlist), under the
+        run's bindings and the workdir's patterns (the gateway narrows to both), and of those the ones ``named``
+        (the tools of the model call the run answers; None: all of them). This instance's own tools stay out: a
+        run does not start runs of itself."""
+        from plugins.mcp_gateway import grants
+
+        if agent is None:
+            from agent_system.core.request_context import current_run_agent
+            agent = current_run_agent.get()
+        if named is not None and not (isinstance(named, (list, tuple)) and all(isinstance(n, str) for n in named)):
+            return "_tools: the names of the caller's tools, a list"
+        if named is not None and not named:
+            return [], agent        # the call names none: nothing to hand on, whoever made it
+        if agent is None or not callable(getattr(agent, "dispatch_tool_call", None)):
+            return ("this workdir hands its caller's own tools to the run (gateway caller), and no agent made "
+                    "this call")
+        try:
+            visible = await grants.tool_names(gateway["instance"], gateway["tools"], pin, runner=agent)
+        except LookupError as exc:
+            said = str(exc)
+            return said if "mcp gateway" in said else f"mcp gateway: {said}"
+        own = f"{self.name}_"
+        return [n for n in visible if not n.startswith(own) and (named is None or n in named)], agent
 
     async def get_run(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("_status") or _NoStatus()
@@ -1535,9 +1664,12 @@ class CodingCliServer(SchemaBasedToolServer):
                  asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
                  pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
                  session_vars: Optional[dict] = None, eager: Sequence[str] = (),
-                 spec: Optional[dict] = None) -> dict:
+                 spec: Optional[dict] = None, *, model: Optional[str] = None,
+                 effort: Optional[str] = None, with_caller: bool = False) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop). `spec`: the workdir as
-        run_task found it."""
+        run_task found it -- its gateway as this run gets it (a caller's tools by name, the agent that runs
+        them). `model`, `effort`: this call's, else the instance's. `with_caller`: the run is its caller's model
+        call (_orphan_stop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
         spec = spec if spec is not None else self._live_workdirs()[workdir]
         # A caller may add a workdir of its own at run time, without the key: one with files.
@@ -1564,7 +1696,7 @@ class CodingCliServer(SchemaBasedToolServer):
                 cli.seed_worktree(spec["path"], worktree, spec.get("seed") or ())
             return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made, schema,
                                asked_run_s, asked_utilization, pin, request_id or run_id, gateway_url, session_vars,
-                               eager, spec)
+                               eager, spec, model=model, effort=effort, with_caller=with_caller)
         except BaseException:
             issued = run_id in _GRANTS
             _revoke(run_id)
@@ -1584,21 +1716,27 @@ class CodingCliServer(SchemaBasedToolServer):
                asked_run_s: Optional[float] = None, asked_utilization: Optional[float] = None,
                pin: Optional[dict] = None, request_id: str = "", gateway_url: str = "",
                session_vars: Optional[dict] = None, eager: Sequence[str] = (),
-               spec: Optional[dict] = None) -> dict:
+               spec: Optional[dict] = None, *, model: Optional[str] = None,
+               effort: Optional[str] = None, with_caller: bool = False) -> dict:
         spec = spec if spec is not None else self._live_workdirs()[workdir]
         resume = prior["claude_session"] if prior else ""
+        asked_model, asked_effort = model, effort
+        model = model or self.model
+        effort = self.effort if effort is None else effort
+        if self.agy and effort and model.endswith(tuple(f"-{level}" for level in EFFORTS)):
+            effort = ""     # agy refuses a model id that names its level with an effort beside it (__init__)
         # Where the run started, not what the workdir says now: a resume goes on in the room, file tools or not.
         room = _in_room(spec, prior)
         unsafe = cli.agy_unsafe(worktree) if self.agy else []
         if unsafe:
             # agy would run them, hooks without asking (run.py, AGY_SETTINGS).
-            raise OSError(f"the worktree carries {', '.join(unsafe)} -- agy would load and run it; take it out of "
-                          f"the repository (or the branch) first")
+            raise _NotResumable(f"the worktree carries {', '.join(unsafe)} -- agy would load and run it; take it "
+                                f"out of the repository (or the branch) first")
         # The call's own limit, shorter only; else the instance's. The asked one is kept as asked: a resume
         # inherits it, held to the instance's limit as it is then.
         max_run_s = min(asked_run_s, self.max_run_s) if asked_run_s else self.max_run_s
         if resume and not _SESSION.fullmatch(resume):
-            raise OSError(f"run {prior['run_id']} holds no usable session id")
+            raise _NotResumable(f"run {prior['run_id']} holds no usable session id")
         # Plan mode only reads: no server whose tools could write.
         servers = spec["mcp_servers"] if mode != "plan" else {}
         gateway = spec["gateway"] if mode != "plan" else None
@@ -1611,7 +1749,8 @@ class CodingCliServer(SchemaBasedToolServer):
                 token = grants.issue(user_id, gateway["tools"], request_id=f"{request_id or run_id}_{run_id}",
                                      pinned=pin, allowed=gateway["allowed"], session_id=session_id or None,
                                      session_vars=session_vars,
-                                     ttl_s=max_run_s + GRANT_SLACK_S, gateway=gateway["instance"])
+                                     ttl_s=max_run_s + GRANT_SLACK_S, gateway=gateway["instance"],
+                                     runner=gateway.get("runner"))
             except (LookupError, ValueError) as exc:
                 raise OSError(f"mcp gateway: {exc}") from None
             _GRANTS[run_id] = token
@@ -1648,20 +1787,24 @@ class CodingCliServer(SchemaBasedToolServer):
         if self.agy:
             if token:
                 cli.agy_gateway(worktree, url, token, eager)
-            cmd = cli.build_agy_command(self.command, mode=mode, model=self.model, effort=self.effort,
+            cmd = cli.build_agy_command(self.command, mode=mode, model=model, effort=effort,
                                         resume=resume, json_schema=schema)
         else:
             cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
                                     mcp_servers={**{n: (getattr(c, "tools", None) and c.tools.blocked) or []
                                                     for n, c in servers.items()},
                                                  **({cli.GATEWAY_SERVER: []} if token else {})},
-                                    model=self.model, effort=self.effort,
+                                    model=model, effort=effort,
                                     resume=resume, rules=rules if rules.is_file() else None, json_schema=schema,
                                     web=spec["web"], web_with_shell=self.web_with_shell,
                                     files=not room)
         record = {"run_id": run_id, "instance_name": self.name, "cli": self.cli,
                   "max_run_s": max_run_s, "asked_run_s": asked_run_s,
                   "asked_utilization": asked_utilization,
+                  "asked_model": asked_model, "asked_effort": asked_effort,
+                  # The run is its caller's model call: nobody reads its answer once the process that made the
+                  # call is gone (_caller_gone) -- this one, whoever owns the run later.
+                  "with_caller": dict(self._me) if with_caller else None,
                   "user_id": user_id,
                   "session_id": session_id, "workdir": workdir, "repo": str(spec["path"]),
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,
@@ -1672,17 +1815,19 @@ class CodingCliServer(SchemaBasedToolServer):
                   # Read at the end, by whichever instance finalizes: the starting one's bound.
                   "max_result_chars": self.max_result_chars,
                   "owner": self._me}
+        # As bytes: the file is the CLI's stdin, and text mode on Windows ends every line with CR LF -- the
+        # task the CLI read was not the one it was given (and a CR LF in it became CR CR LF).
         if self.agy:
             # Before the task, the same for every run in the workdir with the same tools: the cached prefix stays
             # one. A pin that leaves a tool out (eager names the grant's tools under the run's bindings) changes it,
             # as it changes the tool declarations ahead of it.
             note = cli.agy_note(gateway["tools"] if token else None, eager if token else ())
-            self._file(run_id, "task").write_text(cli.agy_input(note + task), encoding="utf-8")
+            stdin = cli.agy_input(note + task)
         elif room:
-            self._file(run_id, "task").write_text(cli.claude_input(self._task_blocks(workdir, task, prior is None)),
-                                                  encoding="utf-8")
+            stdin = cli.claude_input(self._task_blocks(workdir, task, prior is None))
         else:
-            self._file(run_id, "task").write_text(task, encoding="utf-8")
+            stdin = task
+        self._file(run_id, "task").write_bytes(stdin.encode("utf-8"))
         self._save(record)
         try:
             proc = cli.launch(cmd, worktree, env, self._file(run_id, "task"),
@@ -1731,6 +1876,10 @@ class CodingCliServer(SchemaBasedToolServer):
                 if not stopped and self._file(run_id, "cancel").exists():
                     # A stop sent while the run had no process yet (cancel_run).
                     await asyncio.to_thread(cli.kill_tree, record.get("pid"), record.get("pid_started"))
+                    stopped = True
+                elif not stopped and proc is None and self._caller_gone(record):
+                    # A run taken over from the process whose model call it was, which has ended since.
+                    await self._stop_run(record, "stopped: the model call it answered ended with its process")
                     stopped = True
                 elif not stopped and self._turn_stopped(run_id):
                     # Its wake first: the turn that would be woken is the one the viewer stopped.

@@ -1,8 +1,9 @@
 """A coding CLI (Claude Code, Antigravity) as one link of an agent's profile chain.
 
 The agent runs as always; its model call goes to a coding_cli instance instead of an API. The CLI gets the
-conversation as one task, runs its own tool loop -- the tools of the instance's workdir, through the MCP gateway --
-and its final answer comes back as the assistant message, without tool calls. A later call of the same session --
+conversation as one task, runs its own tool loop -- the tools of the instance's workdir, through the MCP gateway:
+the agent's own, where the workdir's gateway says ``caller`` -- and its final answer comes back as the assistant
+message, without tool calls. A later call of the same session --
 a nudge or format correction in the same agent run, the next turn of a continued sub-agent -- resumes that CLI run
 with the messages added since. Whatever keeps the CLI from answering raises an error the chain moves on at: the
 next link answers instead.
@@ -26,11 +27,14 @@ logger = logging.getLogger(__name__)
 
 #: provider name -> the coding_cli `cli` it must find on the instance.
 CLI_OF = {"claude_code": "claude", "antigravity": "antigravity"}
-#: The CLI runs a later call of their session may go on with: (instance, user, session) -> its last runs, newest
-#: last, each (run id, how many messages it was given, their fingerprint, the fingerprint of its answer). In this
-#: process, not one client's: a continued sub-agent is built anew, with clients of its own. Several per session: a
-#: hook's own call in between (another conversation) must not cost the agent's its run.
-_conversations: "OrderedDict[tuple[str, str, str], list[tuple[str, int, str, str]]]" = OrderedDict()
+#: The CLI runs a later call of their session may go on with: (instance, the entry's model and effort, user,
+#: session) -> its last runs, newest last, each (run id, how many messages it was given, their fingerprint, the
+#: fingerprint of its answer). In this process, not one client's: a continued sub-agent is built anew, with clients
+#: of its own. Several per session: a hook's own call in between (another conversation) must not cost the agent's
+#: its run. By model and effort: coding_cli resumes a run on what that run asked for, so a call that asks for
+#: another -- or for none, the instance's own -- starts a run of its own instead of inheriting the last one's
+#: (a chat switched back from thinking_level max went on at max).
+_conversations: "OrderedDict[tuple[str, ...], list[tuple[str, int, str, str]]]" = OrderedDict()
 MAX_REMEMBERED_SESSIONS = 256
 #: What a call that brought no run's counts reports: nothing, at no cost. Never the size of the agent's context:
 #: the CLI's run is a conversation of its own, its counts summed over its model calls -- the usage store keeps them as
@@ -134,14 +138,27 @@ def _summed(*usages: dict) -> dict:
     return total
 
 
+#: coding_cli's code for a resume it refuses (server.CODE_RESUME): its run cannot go on -- its worktree gone or
+#: busy, other bindings than the run's, a file agy would run left in it -- and a fresh run may start.
+RESUME_REFUSED = "resume_refused"
+#: LLMModelConfig.thinking_level as the CLIs' --effort; "none" asks for none (the instance's stays).
+EFFORT_OF = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
+
+
 def _refused_resume(answer: Any) -> bool:
-    """coding_cli refused to go on with the run it was asked to resume (run_task's "resume: ..." errors, and other
-    bindings than the run's)."""
-    error = str(answer.get("error") or "") if isinstance(answer, dict) and answer.get("status") == "error" else ""
-    return (error.startswith(("resume:", "pin: a resume keeps"))
-            # its worktree, as _start finds it: a file agy would run left in it, a record without its session
-            or error.startswith("not started:") and ("the worktree carries" in error
-                                                     or "holds no usable session id" in error))
+    """coding_cli refused to go on with the run it was asked to resume: said by its code, not its words."""
+    return isinstance(answer, dict) and answer.get("status") == "error" and answer.get("code") == RESUME_REFUSED
+
+
+def _tool_names(tools: Any) -> list[str]:
+    """The names of a model call's tools (the schemas the agent sends), in their order."""
+    names = []
+    for tool in tools or ():
+        function = _field(tool, "function")
+        name = _field(function, "name") if function is not None else _field(tool, "name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
 
 
 def _content(value: Any) -> Any:
@@ -174,11 +191,15 @@ def _transport_cause(answer: dict) -> OSError | None:
 
 
 class CodingCliClient(LLMClient):
-    def __init__(self, provider: str, instance: str, *, context_window: int, capabilities: Any = None):
+    def __init__(self, provider: str, model: str, *, context_window: int, capabilities: Any = None,
+                 thinking_level: str | None = None):
+        """``model``: the coding_cli instance, or ``<instance>/<model>`` -- a model of the CLI's the instance lists
+        (its ``models``) instead of its own. ``thinking_level``: the model entry's, sent as the run's effort."""
         self.provider = provider
-        self.instance = instance
-        self.model = instance           # the key model_health blocks this link by
-        self.base_url = f"coding_cli:{instance}"
+        self.instance, _, self.cli_model = model.partition("/")
+        self.model = model              # the key model_health blocks this link by
+        self.effort = EFFORT_OF.get(thinking_level or "")
+        self.base_url = f"coding_cli:{self.instance}"
         self.context_window = context_window
         self.capabilities = capabilities
 
@@ -189,7 +210,8 @@ class CodingCliClient(LLMClient):
         return (await self.chat_tools(messages, [], cancellation_token=cancellation_token))["assistant"]["content"]
 
     async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None) -> dict:
-        from agent_system.core.request_context import current_run_session, current_run_user, current_tool_bindings
+        from agent_system.core.request_context import (current_run_agent, current_run_session, current_run_user,
+                                                        current_tool_bindings)
         from agent_system.tools.status import current_request_id
 
         request_id, user, session = current_request_id.get(), current_run_user.get(), current_run_session.get()
@@ -198,13 +220,26 @@ class CodingCliClient(LLMClient):
             raise self._fail("no agent run around the call (request, user and session are needed)")
         server = self._server()
         fresh = {"task": render(messages)}
-        args = self._going_on(messages, (self.instance, user, session)) or fresh
+        key = (self.instance, self.cli_model, self.effort or "", user, session)
+        args = self._going_on(messages, key) or fresh
+        # The tools of this call, by name: a workdir that hands its caller's tools on (gateway caller) gives the
+        # run exactly these -- what the agent would have sent an API model. Another workdir passes them over.
+        args["_tools"] = _tool_names(tools)
+        # The run is this call: it ends with it, and its view shows that instead of the whole conversation --
+        # coding_cli keeps no background run for it (a sub-session per model call, the prompt in each).
+        agent = getattr(current_run_agent.get(), "name", None)
+        args["_background"], args["_label"] = False, f"model call of {agent}" if agent else "model call"
+        if self.cli_model:
+            args["model"] = self.cli_model
+        if self.effort:
+            args["effort"] = self.effort
         bindings = current_tool_bindings.get()
         if bindings:
             # The agent run's tool bindings hold the CLI's tool calls too (coding_cli hands them to its grant); a
-            # run without sends no pin at all, which a workdir without pins expects.
-            args["pin"] = bindings
-        key = (self.instance, user, session)
+            # run without sends none at all, which a workdir without pins expects. As _pin, the caller's own: a
+            # workdir without a gateway hands the run no tool of the agent's, so there is nothing for them to hold
+            # -- as pin, such a workdir refused every bound agent run (a spawned sub-agent on an agy profile).
+            args["_pin"] = bindings
         started = time.monotonic()
         await self._pre(args)
         answer, error, posted = None, None, False
@@ -291,21 +326,21 @@ class CodingCliClient(LLMClient):
                 "usage": _summed(*spent, _usage(answer)), "finish_reason": "stop"}
 
     async def _pre(self, args: dict) -> None:
-        await self._notify_pre_request({"provider": self.provider, "model": self.instance, "url": self.base_url,
+        await self._notify_pre_request({"provider": self.provider, "model": self.model, "url": self.base_url,
                                         "payload": args, "is_streaming": False,
                                         "timestamp_ms": int(time.time() * 1000)})
 
     async def _post(self, answer: Any, error: str | None, started: float) -> None:
         await self._notify_post_response({
             "provider": self.provider,
-            "model": (answer.get("model") if isinstance(answer, dict) else None) or self.instance,
+            "model": (answer.get("model") if isinstance(answer, dict) else None) or self.model,
             "url": self.base_url, "is_streaming": False, "duration_ms": int((time.monotonic() - started) * 1000),
             "timestamp_ms": int(time.time() * 1000), "response_data": answer, "usage": _usage(answer),
             "finish_reason": None if error else "stop", "error": error,
             "routing": {"selected": f"{self.provider}:{self.instance}"}})
 
     @staticmethod
-    def _going_on(messages: list[Any], key: tuple[str, str, str]) -> dict | None:
+    def _going_on(messages: list[Any], key: tuple[str, ...]) -> dict | None:
         """The task that resumes a run of this session which these messages go on from -- the longest such
         conversation --, or None: a history compacted since, another conversation (a hook's own call), nothing new
         start a run of their own, or the CLI would answer another conversation."""
@@ -352,9 +387,11 @@ class CodingCliClient(LLMClient):
                 while isinstance(answer, dict) and answer.get("state") == "running":
                     answer = await server.call_with_status(f"{self.instance}_get_run", {
                         "run_id": answer["run_id"], "wait_s": WAIT_S, "stop_if_cancelled": True, **context})
-            except asyncio.CancelledError:
+            except (Exception, asyncio.CancelledError):
                 # get_run stops the run only when the cancel lands in its handler; one that lands around it (its
                 # status scope publishing) would leave the run going on the subscription, its answer thrown away.
+                # So would a get_run that raised: the chain moves on, and the run would work on with the agent's
+                # tools for an answer nobody reads.
                 with contextlib.suppress(Exception):
                     await asyncio.shield(server.call_with_status(f"{self.instance}_cancel_run",
                                                                  {"run_id": answer["run_id"], **context}))
