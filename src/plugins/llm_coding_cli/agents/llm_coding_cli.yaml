@@ -15,7 +15,7 @@ plugins:
     # is run by the agent that made the call (gateway caller), held to that agent's allowlist, hooks and tool
     # bindings -- the gateway hands out nothing an agent could not call itself. config/security.yaml opens
     # /plugins/mcp_gateway*/mcp to requests without a login; the route lets nothing in without the token of a run
-    # going now. enabled: false closes the route -- the claude-code profiles then fail for an agent with tools.
+    # going now. enabled: false closes the route -- the profiles here then fail for an agent with tools.
     mcp_gateway_llm:
       type: mcp_gateway
       enabled: true
@@ -63,13 +63,14 @@ plugins:
       command: agy
       allowed_users: [admin, cli_user]
       workdirs:
-        # agy searches the web in every run (it cannot be switched off), and a page it reads could steer tools:
-        # so its runs get none of the agent's. To accept that -- as for an agent that has a web tool beside its
-        # others -- add:  gateway: {instance: mcp_gateway_llm, caller: true, with_web: true}
+        # agy searches the web in every run (it cannot be switched off), and a page it reads could steer the
+        # agent's tools. with_web accepts that, as for an agent that has a web tool beside its others; without the
+        # gateway agy only answers and searches.
         # Each run leaves a worktree and a branch in this repository of its own (coding_cli guide, Known gaps).
         chat:
           path: data/coding_cli_llm/agy
           web: true
+          gateway: {instance: mcp_gateway_llm, caller: true, with_web: true}
       # One of `agy models`; the level is in the name.
       model: gemini-3.8-flash-medium
       models: [gemini-3.8-flash-medium, gemini-3.8-flash-high, gemini-4-hydrogen-medium, gemini-4-hydrogen-high,
@@ -130,13 +131,13 @@ llm_system:
       description: "Claude Code (Haiku) on the subscription, with the agent's tools"
     agy-gemini-flash:
       model_ref: agy-gemini-flash
-      description: "Antigravity (Gemini Flash) on the Google login: answers and web search, no agent tools"
+      description: "Antigravity (Gemini Flash) on the Google login, with the agent's tools and web search"
     agy-gemini-hydrogen:
       model_ref: agy-gemini-hydrogen
-      description: "Antigravity (Gemini Hydrogen) on the Google login: answers and web search, no agent tools"
+      description: "Antigravity (Gemini Hydrogen) on the Google login, with the agent's tools and web search"
     agy-gemini-argon:
       model_ref: agy-gemini-argon
-      description: "Antigravity (Gemini Argon) on the Google login: answers and web search, no agent tools"
+      description: "Antigravity (Gemini Argon) on the Google login, with the agent's tools and web search"
     agy-gemini-carbon:
       model_ref: agy-gemini-carbon
-      description: "Antigravity (Gemini Carbon) on the Google login: answers and web search, no agent tools"
+      description: "Antigravity (Gemini Carbon) on the Google login, with the agent's tools and web search"

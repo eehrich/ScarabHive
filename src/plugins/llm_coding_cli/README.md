@@ -8,8 +8,8 @@ assistant message.
 
 - **Ready-made profiles** (`agents/llm_coding_cli.yaml`): `claude-code-opus`, `claude-code-sonnet`,
   `claude-code-haiku` (Claude Code, with the agent's tools) and `agy-gemini-flash`, `-hydrogen`, `-argon`, `-carbon`
-  (Antigravity: answers and its web search). Pick one in the chat's profile selector, with `/model` or `--llm`, or
-  put it first in an agent's profile chain.
+  (Antigravity, with the agent's tools beside its web search). Pick one in the chat's profile selector, with
+  `/model` or `--llm`, or put it first in an agent's profile chain.
 
 - **Providers** `claude_code` and `antigravity`. A model entry names the coding_cli instance as `model`, alone or
   as `<instance>/<model>` for a model the instance lists; its `thinking_level` is the run's effort. The instance
@@ -32,5 +32,5 @@ the gaps -- is the plugin's guide, `llm_coding_cli.guide`, in the Help panel.
 - **Token and cache effect**: none on the agent's requests. The runs of an instance without files share one room,
   so a conversation's common start is read from the subscription's cache.
 - **Known gaps**: the CLI's tool calls are not in the agent's history, step budget or loop detection; agy takes
-  about 55,000 tokens of a conversation and gets none of the agent's tools as shipped (its web search); images are
+  about 55,000 tokens of a conversation, and its web search runs beside the agent's tools (`with_web`); images are
   named, not passed; no streaming.

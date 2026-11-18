@@ -38,7 +38,7 @@ For developers
 @{table}
 Profile | Runs on | Tools
 claude-code-opus, claude-code-sonnet, claude-code-haiku | Claude Code, the operator's subscription | the agent's own
-agy-gemini-flash, agy-gemini-hydrogen, agy-gemini-argon, agy-gemini-carbon | Antigravity (agy), the operator's Google login | none of the agent's: answers and agy's web search
+agy-gemini-flash, agy-gemini-hydrogen, agy-gemini-argon, agy-gemini-carbon | Antigravity (agy), the operator's Google login | the agent's own, beside agy's web search
 @{body}
 
 Pick one where any profile is picked: the chat's profile selector, @{tt}/model
@@ -133,7 +133,9 @@ exactly those, run by that agent -- its allowlist, its hooks, its session
 tools instead; without a gateway the CLI only answers.
 @{bullet}A web workdir (agy: every one) gets a @{tt}caller@{utt} gateway only
 with @{tt}with_web: true@{utt}: a page the run reads could steer the agent's
-tools, and the operator says whether that is acceptable.
+tools, and the operator says whether that is acceptable. The shipped agy
+instance says yes, as for an agent with a web tool beside its others;
+without its gateway agy only answers and searches.
 @{bullet}The agent run's tool bindings (@{tt}Agent.run_events(tool_bindings=...)@{utt},
 a sub-agent's spawn) go to the run with its call, so the CLI's tool calls are
 held to the same values as the agent's own; a run without bindings sends
@@ -299,9 +301,9 @@ external MCP servers, and whatever the agent's allowlist leaves out. A tool
 result over the gateway's @{tt}max_result_chars@{utt} (60 000) is refused
 with a note to ask for less; agy shows its model only the beginning and end
 of a result over about 10 000 characters (the whole is in a file agy names).
-@{bullet}agy's runs get none of the agent's tools as shipped: agy searches the
-web in every run, and a page could steer them (@{tt}with_web@{utt} accepts
-that).
+@{bullet}agy searches the web in every run, and a page it reads could steer
+the agent's tools: the shipped instance accepts that (@{tt}with_web@{utt});
+an operator who does not removes its gateway.
 @{bullet}A full instance (@{tt}max_parallel@{utt}) does not make a call wait:
 it moves the chain on. An agent's run holds its place while its tools run,
 so an agent with sub-agents on the same profile needs a place for itself and
