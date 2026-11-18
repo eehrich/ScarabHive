@@ -33,8 +33,8 @@ from . import run as cli
 
 logger = logging.getLogger(__name__)
 
-#: The name on the box and on the status lines.
-AGENT = "claude_code"
+#: The CLI a view is of when nobody says: the name of its box and status lines follows from it (agent_name).
+LABEL = "Claude Code"
 #: A tool's arguments or result as relayed. The chat shows a few hundred
 #: characters of it; a Write of a whole file would otherwise travel whole.
 CAP_PAYLOAD = 2000
@@ -64,6 +64,11 @@ def _result_text(content: Any) -> str:
     return ""
 
 
+def agent_name(label: str) -> str:
+    """The name on a run's box and status lines, from the CLI it is of: claude_code, antigravity."""
+    return label.lower().replace(" ", "_")
+
+
 def _first_line(text: str) -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), "")
 
@@ -72,7 +77,7 @@ class LiveRun:
     """One run's view: opened when the call starts it, fed by the monitor, closed at the end."""
 
     def __init__(self, forwarder: StatusEventForwarder, root: Path,
-                 background: Optional[BackgroundRun] = None) -> None:
+                 background: Optional[BackgroundRun] = None, label: str = LABEL) -> None:
         self._forwarder = forwarder
         self._root = root
         self.background = background
@@ -83,7 +88,8 @@ class LiveRun:
         self._open: dict[str, tuple[str, str, str]] = {}   # tool_use id -> (request id, tool, line)
         self._closed = False
         self._relay_broken = False
-        self.label = "Claude Code"   # the CLI that runs, as the end says it
+        self.label = label   # the CLI that runs, as the end says it
+        self.agent = agent_name(label)
 
     @property
     def request_id(self) -> str:
@@ -98,17 +104,18 @@ class LiveRun:
 
     @classmethod
     async def open(cls, call_request_id: Any, task: str, root: Path, *, system_config: Any = None,
-                   parent: str = "", user_id: str = "", on_cancel: Optional[Cancel] = None) -> Optional["LiveRun"]:
+                   parent: str = "", user_id: str = "", on_cancel: Optional[Cancel] = None,
+                   label: str = LABEL) -> Optional["LiveRun"]:
         """The view of a run started by the call ``call_request_id`` in a turn of session ``parent``; None
         without a call."""
         if not isinstance(call_request_id, str) or not call_request_id:
             return None
         return await cls._open(f"{call_request_id}_sub_{short_id(6)}", task, root, system_config=system_config,
-                               parent=parent, user_id=user_id, on_cancel=on_cancel)
+                               parent=parent, user_id=user_id, on_cancel=on_cancel, label=label)
 
     @classmethod
     async def reopen(cls, view: dict, task: str, root: Path, *, system_config: Any = None,
-                     on_cancel: Optional[Cancel] = None) -> Optional["LiveRun"]:
+                     on_cancel: Optional[Cancel] = None, label: str = LABEL) -> Optional["LiveRun"]:
         """The view of a run this process takes over (``view`` as the starting one kept it): no turn listens any
         more, its background run goes on in the same sub-session -- written anew, as the watch reads the run's
         stream again from its start."""
@@ -116,11 +123,11 @@ class LiveRun:
             return None
         return await cls._open(str(view["run"]), task, root, system_config=system_config,
                                parent=str(view.get("parent") or ""), user_id=str(view.get("user") or ""),
-                               on_cancel=on_cancel, session_id=str(view.get("session") or ""))
+                               on_cancel=on_cancel, session_id=str(view.get("session") or ""), label=label)
 
     @classmethod
     async def _open(cls, run_id: str, task: str, root: Path, *, system_config: Any, parent: str, user_id: str,
-                    on_cancel: Optional[Cancel], session_id: str = "") -> Optional["LiveRun"]:
+                    on_cancel: Optional[Cancel], session_id: str = "", label: str = LABEL) -> Optional["LiveRun"]:
         try:
             forwarder = StatusEventForwarder()
             await forwarder.start_forwarding(run_id)
@@ -129,13 +136,13 @@ class LiveRun:
             # status lines into a list nobody reads, for as long as it runs.
             await forwarder.stop_forwarding()
             background = await BackgroundRun.open(
-                system_config=system_config, parent=parent, user_id=user_id, run_id=run_id, agent=AGENT, task=task,
+                system_config=system_config, parent=parent, user_id=user_id, run_id=run_id, agent=agent_name(label), task=task,
                 on_cancel=on_cancel, session_id=session_id) if parent and user_id else None
             if background is None:
                 # kept nowhere (one run per model call of a CLI that answers as the model): its tool lines
                 # are the calling run's to keep with its step, or a session read back shows none of them
                 lines_stay_with_the_caller(run_id)
-            live = cls(forwarder, root, background)
+            live = cls(forwarder, root, background, label)
             # the box learns that it outlives the turn: once that turn has ended, its state comes from the run
             live._relay({"type": "start", "task": task,
                          **({"background": background.session_id, "background_parent": background.parent}
@@ -153,7 +160,7 @@ class LiveRun:
 
     def _relay(self, event: dict) -> None:
         try:
-            relay_run_event(self._forwarder, event, AGENT)
+            relay_run_event(self._forwarder, event, self.agent)
         except Exception:  # noqa: BLE001 - see the module docstring
             if not self._relay_broken:
                 logger.exception("coding_cli: relaying a run's events failed")
@@ -197,7 +204,7 @@ class LiveRun:
         name = str(block.get("name") or "tool")
         line = cli.tool_line(name, block.get("input"), self._root)[:CAP_LINE]
         self._open[str(block.get("id"))] = (request_id, name, line)
-        await publish_status(AGENT, line, request_id=request_id, phase=StatusPhase.START)
+        await publish_status(self.agent, line, request_id=request_id, phase=StatusPhase.START)
         args = block.get("input")
         # _capped recurses: arguments nested past what it takes would cost the rest of the batch.
         params = (_capped(args) if cli.nesting(args) <= cli.MAX_NESTING
@@ -223,7 +230,7 @@ class LiveRun:
                              "result": {"is_error": True, "content": _capped(text)} if failed
                              else {"content": _capped(text)}})
             outcome = _first_line(text) or ("failed" if failed else "no output")
-            await publish_status(AGENT, f"{line}: {outcome}"[:CAP_LINE], request_id=request_id,
+            await publish_status(self.agent, f"{line}: {outcome}"[:CAP_LINE], request_id=request_id,
                                  phase=StatusPhase.ERROR if failed else StatusPhase.END)
 
     def detach(self) -> None:
@@ -242,7 +249,7 @@ class LiveRun:
             # A call the run never got an answer to (killed mid-call): its row
             # would spin for good.
             for request_id, _name, line in self._open.values():
-                await publish_status(AGENT, f"{line}: no result, the run ended"[:CAP_LINE],
+                await publish_status(self.agent, f"{line}: no result, the run ended"[:CAP_LINE],
                                      request_id=request_id, phase=StatusPhase.ERROR)
             self._open.clear()
             if self.background is None:

@@ -54,7 +54,7 @@ from plugins.mcp_client.auth import build_auth_headers
 from plugins.mcp_client.connection import _SSE_ALIASES, _STREAMABLE_HTTP_ALIASES
 
 from . import run as cli
-from .live import AGENT, LiveRun
+from .live import LiveRun, agent_name
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -1396,9 +1396,8 @@ class CodingCliServer(SchemaBasedToolServer):
         shown = label if isinstance(label, str) and label.strip() else task
         live = await LiveRun.open(request_id, shown, Path(record.get("worktree") or "."),
                                   system_config=self.system_config, parent=session_id if kept else "",
-                                  user_id=user_id, on_cancel=self._stopper(run_id, record))
+                                  user_id=user_id, on_cancel=self._stopper(run_id, record), label=self.label)
         if live is not None:
-            live.label = self.label
             self._live[run_id] = live
             if live.background is not None:
                 # for a process that takes the run over: its view goes on in the same sub-session
@@ -1623,9 +1622,9 @@ class CodingCliServer(SchemaBasedToolServer):
         except (OSError, ValueError):
             return
         live = await LiveRun.reopen(view, str(view.get("task") or ""), Path(record.get("worktree") or "."),
-                                    system_config=self.system_config, on_cancel=self._stopper(run_id, record))
+                                    system_config=self.system_config, on_cancel=self._stopper(run_id, record),
+                                    label=_label(record))
         if live is not None:
-            live.label = _label(record)
             self._live[run_id] = live
 
     def _stop(self, run_id: str, reason: str) -> None:
@@ -2049,7 +2048,8 @@ class CodingCliServer(SchemaBasedToolServer):
                 state = record.get("state")
                 said = await BackgroundRun.ended(
                     system_config=self.system_config, parent=str(kept.get("parent") or ""),
-                    user_id=str(kept.get("user") or ""), run_id=str(kept.get("run") or ""), agent=AGENT,
+                    user_id=str(kept.get("user") or ""), run_id=str(kept.get("run") or ""),
+                    agent=agent_name(_label(record)),
                     task=str(kept.get("task") or ""), session_id=str(kept.get("session") or ""),
                     state=state if state in ("done", "cancelled") else "failed", answer=answer,
                     reason=f"{_label(record)}: {record.get('note') or answer.strip()[:300] or 'the run failed'}")

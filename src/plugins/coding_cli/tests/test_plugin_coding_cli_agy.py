@@ -56,6 +56,21 @@ async def test_an_agy_run_is_read_like_a_claude_code_run(repo, log):
     assert status.closing[0][0] == "end"
 
 
+async def test_an_agy_runs_box_is_named_after_agy(repo, log):
+    """The box and status lines of an agy run said claude_code: a viewer took agy's run for Claude Code's."""
+    from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
+
+    parent = StatusEventForwarder()
+    await parent.start_forwarding("run1")
+    try:
+        result, _ = await call(make_agy(repo), "run_task", task="WRITE b.txt hello", _request_id="run1_001")
+        assert result["state"] == "done", result
+        agents = {e["agent"] for e in parent.status_events_to_forward if e["type"] == "sub_run"}
+        assert agents == {"antigravity"}, agents
+    finally:
+        await parent.stop_forwarding()
+
+
 async def test_an_agy_run_has_a_home_of_its_own_and_no_claude_login(repo, log, data_root, monkeypatch):  # noqa: F811
     """The user's agy settings (an auto-approval, MCP servers) and Claude Code's token stay out of the run."""
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "claude-subscription-token")
