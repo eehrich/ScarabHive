@@ -36,6 +36,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarStri
 from ruamel.yaml.tokens import CommentToken
 
 from agent_system.config.environment import ENV_PLACEHOLDER
+from agent_system.config.merging import overlay_section
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.config.settings import _known_plugin_types, config_files, get_tool_server_config, load_settings
 from agent_system.plugins.catalog import PluginCatalog
@@ -403,14 +404,24 @@ class Store:
         the parsed file and are not affected."""
         snap = snap or self.snapshot()
         files = snap.defined.get(name)
-        plain = unplain(servers_of(snap.data.get(files[-1])).get(name), name) if files else None
+        plain = unplain(self.own(name, snap), name) if files else None  # all of what the form would carry
         return f"{plain}: the form cannot carry this value, edit the file itself" if plain else None
 
     def own(self, name: str, snap: Optional[Snapshot] = None) -> Optional[dict]:
-        """The entry as written in its (last) file: no `${VAR}` expansion, prefixes and `./` paths kept."""
+        """The entry as written: no `${VAR}` expansion, prefixes and `./` paths kept. Of an entry several files
+        define, the files stacked as the loader stacks them -- the last file alone showed an agent that a second
+        file only adds a hook to as an empty one of its type. A `./` template of an earlier file is written as
+        the last file would name it: that file's folder is what the preview and a copy resolve such a path
+        against."""
         snap = snap or self.snapshot()
-        files = snap.defined.get(name)
-        return copy.deepcopy(servers_of(snap.data[files[-1]])[name]) if files else None
+        files = snap.defined.get(name, [])
+        entry: Any = None
+        for path in files:
+            layer = copy.deepcopy(servers_of(snap.data[path])[name])
+            if path.parent != files[-1].parent:
+                _rebase_templates(layer, path.parent, files[-1].parent)
+            entry = overlay_section(entry, layer)
+        return entry
 
     def version(self, name: str, snap: Optional[Snapshot] = None) -> Optional[str]:
         """The version of the bytes `own` was read from, so a save based on them fails if the file moved on."""
@@ -1062,11 +1073,17 @@ def unified_diff(old: str, new: str, rel: str) -> str:
 
 
 def _rebase_templates(entry: Any, source_dir: Path, target_dir: Path) -> None:
-    """`./`/`../` system_template paths, written relative to the source file, made relative to the new one."""
+    """`./`/`../` system_template paths, written relative to the source file, made relative to the new one.
+    Where no relative path leads there (another drive), the absolute one -- what the loader makes of it anyway."""
     if isinstance(entry, dict):
         for key, value in entry.items():
             if key == "system_template" and isinstance(value, str) and value.startswith(("./", "../")):
-                moved = Path(os.path.relpath((source_dir / value).resolve(), target_dir)).as_posix()
+                template = (source_dir / value).resolve()
+                try:
+                    moved = Path(os.path.relpath(template, target_dir)).as_posix()
+                except ValueError:
+                    entry[key] = template.as_posix()
+                    continue
                 entry[key] = moved if moved.startswith("../") else f"./{moved}"
             else:
                 _rebase_templates(value, source_dir, target_dir)

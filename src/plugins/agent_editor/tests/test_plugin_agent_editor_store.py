@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from agent_system.config.settings import config_files, get_tool_server_config, load_settings
+from plugins.agent_editor import store as store_module
 from plugins.agent_editor.store import CREATED_HEADER, Store, StoreError, atomic_write, splice, version_of
 
 REPO = Path(__file__).resolve().parents[4]
@@ -905,6 +906,68 @@ def test_a_file_included_twice_counts_once(tmp_path):
     store = Store(config, tmp_path)
     assert len(config_files(str(config))) > len(store.snapshot().files)
     assert store.readonly_reason("writer") is None
+
+
+def test_an_entry_in_two_files_reads_as_the_loader_stacks_them(tmp_path):
+    """A second file that only adds to an agent: the last file alone read as an agent with nothing but that."""
+    config = build_tree(tmp_path)
+    (tmp_path / "config/agents/twin_b.yaml").write_text(
+        "plugins:\n  servers:\n    twin:\n      type: basic_agent\n      agent_config:\n        max_steps: 7\n",
+        encoding="utf-8")
+    store = Store(config, tmp_path)
+
+    assert store.own("twin") == {"type": "basic_agent", "description": "a", "agent_config": {"max_steps": 7}}
+    loaded = load_settings(str(config)).plugins.servers["twin"]
+    assert (loaded.description, loaded.agent_config.max_steps) == ("a", 7), "the fixture: the loader merges both"
+
+
+def test_a_template_of_an_earlier_file_reads_as_the_last_file_would_name_it(tmp_path):
+    """The preview and a copy resolve a ./ template against the last file's folder: one written in an earlier file,
+    in another folder, pointed into the wrong one."""
+    config = build_tree(tmp_path)
+    agents = tmp_path / "config/agents"
+    (agents / "prompts").mkdir(exist_ok=True)
+    (agents / "prompts/twin.md").write_text("You are a twin.", encoding="utf-8")
+    (agents / "twin_b.yaml").unlink()
+    (agents / "twin_a.yaml").write_text(
+        "plugins:\n  servers:\n    twin:\n      type: basic_agent\n      agent_config:\n"
+        "        system_template: ./prompts/twin.md\n", encoding="utf-8")
+    # the plugin's file is loaded after config/agents, and only adds to the agent
+    (tmp_path / "src/plugins/demo/agents/twin.yaml").write_text(TWIN.format(side="plugin"), encoding="utf-8")
+    store = Store(config, tmp_path)
+    first, last = store.files_of("twin")
+    assert (first.name, last.name) == ("twin_a.yaml", "twin.yaml"), "the fixture: the template's file comes first"
+
+    own = store.own("twin")
+
+    template = own["agent_config"]["system_template"]
+    assert template.startswith("../"), template
+    assert (last.parent / template).resolve() == (agents / "prompts/twin.md").resolve(), template
+    assert own["description"] == "plugin"
+
+
+def test_a_template_no_relative_path_leads_to_is_named_in_full(tmp_path, monkeypatch):
+    """Two files of an entry on two drives: os.path.relpath raises there, and the agent could not be opened."""
+    def other_drive(path, start=None):
+        raise ValueError("path is on mount 'D:', start on mount 'E:'")
+
+    monkeypatch.setattr("plugins.agent_editor.store.os.path.relpath", other_drive)
+    entry = {"agent_config": {"system_template": "./prompts/twin.md"}}
+
+    store_module._rebase_templates(entry, tmp_path / "one", tmp_path / "two")
+
+    assert entry["agent_config"]["system_template"] == (tmp_path / "one/prompts/twin.md").resolve().as_posix()
+
+
+def test_a_value_the_form_cannot_carry_counts_in_every_file_of_an_entry(tmp_path):
+    """A date in the first of two files: the form (a copy of the agent starts from it) would write it back changed."""
+    config = build_tree(tmp_path)
+    (tmp_path / "config/agents/twin_a.yaml").write_text(
+        "plugins:\n  servers:\n    twin:\n      type: basic_agent\n      released: 2026-01-01\n", encoding="utf-8")
+    store = Store(config, tmp_path)
+
+    assert "released" in store.own("twin")
+    assert "the form cannot carry this value" in (store.form_reason("twin") or "")
 
 
 def test_a_file_included_again_keeps_its_last_place(tmp_path):

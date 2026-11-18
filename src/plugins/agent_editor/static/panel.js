@@ -1,7 +1,7 @@
 // Agent Editor: agent definitions edited in a form and written back into the YAML files they came from.
 import {
   api, html, render, icon, confirm, dialog, toast, notice, initTabs, selectTab, setDirty, yamlCode, emptyState, skeleton, placeMenu,
-  keepInSight, scrollerOf, diffLines,
+  keepInSight, scrollerOf, diffLines, navigate,
 } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
@@ -81,7 +81,27 @@ let draft = null;
 let selected = null;
 /** A write on its way: the form is locked. */
 let busy = false;
-const collapsed = new Set();
+/** The list's folded groups, kept per browser: a convenience, the list works without it. */
+const COLLAPSED_KEY = 'agent_editor.collapsed';
+/** From this many groups on a list nobody folded yet starts folded: hundreds of agents open at once are no overview. */
+const MANY_GROUPS = 8;
+function storedCollapsed() {
+  try {
+    const kept = JSON.parse(localStorage.getItem(COLLAPSED_KEY));
+    return Array.isArray(kept) ? kept : null;
+  } catch { return null; }  // a private window, blocked site data
+}
+function keepCollapsed() {
+  try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed])); } catch { /* as above */ }
+}
+const keptCollapsed = storedCollapsed();
+const collapsed = new Set(keptCollapsed ?? []);
+/** Nothing kept yet: the first list decides (MANY_GROUPS). */
+let foldUnset = keptCollapsed === null;
+/** Groups folded by hand while a search or a filter shows every group: they hold until it changes. */
+const narrowFolds = new Set();
+/** The address's agent was opened (or there was none): asked once, with the first list. */
+let addressRead = false;
 const expanded = new Set();
 /** Per tools list: "extend" chosen while it has no entry yet. */
 let listModes = {};
@@ -94,6 +114,8 @@ let treeFilter = 'all';
  * /tools/effective (before it, inherited grants are unknown). Null: work it out at the next draw.
  */
 let treeKept = null;
+/** A box of the tree was ticked since `treeKept` was worked out: what comes first is then left as it is. */
+let treeTicked = false;
 const patternDrafts = {};
 let skillQuery = '';
 let skillFilter = 'all';
@@ -284,8 +306,31 @@ async function loadList() {
     rows = value.agents ?? [];
     listErrors = value.errors ?? [];
     listError = '';
+    if (foldUnset) {
+      foldUnset = false;
+      const groups = new Set(rows.map((row) => row.group));
+      if (groups.size >= MANY_GROUPS) for (const group of groups) if (group !== 'config') collapsed.add(group);
+    }
+    // the agent the address names: a restored panel, a link from elsewhere
+    const wanted = !addressRead && !selected && !draft ? new URLSearchParams(location.search).get('agent') : null;
+    addressRead = true;
+    if (wanted && rows.some((row) => row.name === wanted)) {
+      choose(wanted);
+      return;
+    }
   }
   drawList();
+}
+
+/** The agent shown goes into the address, and the shell hears it: a restored panel opens there again. Null: none
+ *  is shown (a draft, a deleted agent) -- the name before it must not come back. */
+function rememberAgent(name) {
+  const url = new URL(location.href);
+  if (url.searchParams.get('agent') === name) return;
+  if (name) url.searchParams.set('agent', name);
+  else url.searchParams.delete('agent');
+  history.replaceState(null, '', url);
+  navigate();
 }
 
 async function loadMeta() {
@@ -310,6 +355,7 @@ async function loadCatalog() {
   if (canonical(servers) !== canonical(catalog)) {
     catalog = servers;
     treeKept = null;
+    treeTicked = false;
     // the tools answer (and one on its way) went by the old catalogue
     effective = null;
     effectivePending = null;
@@ -393,6 +439,7 @@ function resetForm() {
   effectivePending = null;  // a timer that found no form left its lists marked: the new form asks again
   effectiveError = '';
   treeKept = null;
+  treeTicked = false;
   skillKept = null;
 }
 
@@ -456,10 +503,11 @@ function drawList() {
   }
   const order = [...groups.keys()].sort((a, b) => (a === 'config' ? -1 : b === 'config' ? 1 : a.localeCompare(b)));
   const focused = document.activeElement?.closest('#list [data-name]')?.dataset.name;
+  const narrowed = listNarrowed();  // a match inside a folded group would not be seen
   render($('list'), html`
     ${listErrors.length ? html`<div class="pk-callout pk-callout--warn" role="status">${listErrors.map((text) => html`<div>${text}</div>`)}</div>` : ''}
     ${order.length ? order.map((group) => html`
-      <details class="ae-group" data-group="${group}" ${collapsed.has(group) ? '' : 'open'}>
+      <details class="ae-group" data-group="${group}" ${(narrowed ? !narrowFolds.has(group) : !collapsed.has(group)) ? 'open' : ''}>
         <summary class="ae-group-head">${icon('chevron-right', { size: 'sm' })}<span class="pk-grow">${group}</span>
           <span class="pk-tab-count" data-count="${groups.get(group).length}">${groups.get(group).length}</span></summary>
         <ul class="ae-items">${groups.get(group).map(listItem)}</ul>
@@ -468,9 +516,13 @@ function drawList() {
   if (focused) $('list').querySelector(`[data-name="${CSS.escape(focused)}"]`)?.focus();
 }
 
+/** Whether the search or the filter narrows the list: its groups then all show, and folding is not remembered. */
+const listNarrowed = () => Boolean($('search').value.trim()) || $('filter').value !== 'all';
+
 function listItem(row) {
   const current = !draft && row.name === selected;
-  return html`<li><button type="button" class="pk-list-item" data-name="${row.name}" aria-current="${String(current)}">
+  return html`<li><button type="button" class="pk-list-item" data-name="${row.name}" aria-current="${String(current)}"
+    title="${row.name}${row.description ? ` — ${row.description}` : ''}">
     <span class="ae-item-top">
       <span class="ae-item-name pk-list-item-name pk-truncate">${row.name}</span>
       ${row.enabled ? '' : badge('', 'off')}
@@ -509,6 +561,8 @@ async function choose(name) {
   $('editor').setAttribute('aria-busy', 'true');
   updateHead();
   drawList();
+  $('list').querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' });
+  rememberAgent(name);
   const slow = setTimeout(() => {
     if (selected !== name || detail || draft) return;
     showEditor(false);
@@ -636,7 +690,9 @@ function banner(kind, title, lines, action = '') {
 function drawBanners() {
   const parts = [];
   if (readOnly()) {
-    parts.push(banner('warn', 'Read-only', [detail.readonly_reason || detail.form_reason || 'This agent cannot be edited here.']));
+    parts.push(banner('warn', 'Read-only', [detail.readonly_reason || detail.form_reason || 'This agent cannot be edited here.'],
+      own !== null && !detail.form_reason ? html`<button type="button" class="pk-btn pk-btn--sm" data-menu="duplicate" data-key="banner-duplicate"
+        title="A copy of this agent in a file of your own">${icon('copy', { size: 'sm' })} Duplicate</button>` : ''));
   }
   // "off" and "new" need no words beyond the state in the head
   if (!draft && ['changed', 'removed'].includes(detail.state)) parts.push(stateBanner());
@@ -1677,6 +1733,7 @@ async function setMode(list, mode) {
  * removes every own entry of the server. What inherited or foreign patterns grant stays (and locked).
  */
 function toggleServer(list, server, on) {
+  treeTicked = true;
   const model = listModel(list);
   const items = treeItems(catalog.find((one) => one.server === server));
   const rest = model.adds.filter((item) => !items.has(item));
@@ -1685,6 +1742,7 @@ function toggleServer(list, server, on) {
 }
 
 function toggleTool(list, server, tool) {
+  treeTicked = true;
   const model = listModel(list);
   const item = `${server}/${tool}`;
   let adds;
@@ -1754,6 +1812,7 @@ function drawTools() {
     </div>`);
   initTabs($('tab-tools'));
   treeKept = null;
+  treeTicked = false;
   drawToolLists();
 }
 
@@ -1827,7 +1886,13 @@ function toolTree(model, fixed) {
   treeKept.lists[model.list] ??= new Set(catalog
     .filter((entry) => (views.get(entry.server).state !== 'off') === (treeFilter === 'in')).map((entry) => entry.server));
   const kept = treeKept.lists[model.list];
-  const entries = catalog.map((entry) => ({
+  // What the list held when the tab was drawn comes first -- a dozen granted servers among hundreds were not to be
+  // found. Like `kept`, not worked out on a click: a box checked must not jump away from under the pointer.
+  treeKept.top ??= {};
+  treeKept.top[model.list] ??= new Set(catalog
+    .filter((entry) => views.get(entry.server).state !== 'off').map((entry) => entry.server));
+  const top = treeKept.top[model.list];
+  const entries = [...catalog].sort((a, b) => Number(top.has(b.server)) - Number(top.has(a.server))).map((entry) => ({
     entry,
     view: views.get(entry.server),
     tools: !query || serverHit(entry) ? entry.tools : entry.tools.filter(hit),
@@ -1930,7 +1995,10 @@ async function loadEffective() {
     return null;
   }
   effectivePending = null;
-  if (treeKept && !treeKept.settled) treeKept = null;  // worked out without knowing the inherited grants
+  // worked out without knowing the inherited grants: again -- but what comes first stays once a box was ticked,
+  // or every answer after a tick (each one, while the lists do not resolve) moved the row ticked. The rows are
+  // worked out against this answer at the next draw: with a good one they are settled, as after any first answer
+  if (treeKept && !treeKept.settled) treeKept = treeTicked ? { settled: !error, lists: {}, top: treeKept.top } : null;
   if (error) {
     effective = null;
     effectiveError = `The effective tools are unknown: ${error.message}`;
@@ -2172,7 +2240,8 @@ function hookRow(hook) {
   const key = `hook:${hook.name}`;
   return html`<tr>
     <td><div class="pk-mono">${hook.name}</div>
-      <div class="pk-row">${hook.types.map((type) => badge('', type))}<span class="pk-muted">${hook.description || ''}</span></div></td>
+      <div class="pk-row">${hook.types.map((type) => badge('', type))}</div>
+      ${hook.description ? html`<div class="pk-muted ae-hook-text">${hook.description}</div>` : ''}</td>
     <td>${hook.enabled ? badge('ok', 'on') : badge('', 'off')}</td>
     <td><select class="pk-select pk-select--sm" data-hook-enabled="${hook.name}" data-key="${key}:enabled" aria-label="${hook.name} for this agent">
       ${option('', state, fallback)}${option('true', state, 'On')}${option('false', state, 'Off')}</select></td>
@@ -2363,6 +2432,7 @@ async function save() {
     toast(creating ? `${name} created in ${answer.file ?? preview.file}` : `${name} saved to ${detail.file}`, { kind: 'ok' });
     draft = null;
     selected = name;
+    rememberAgent(name);
     loaded = canonical(own);  // until the reload lands, the form counts as saved
     // a manager in the same file has a new version now
     await Promise.all([loadList(), loadDetail({ force: true }), loadManagers()]);
@@ -2399,6 +2469,7 @@ async function removeAgent() {
       { kind: extra.length ? 'warn' : 'ok' });
     if (selected === name) {
       selected = null;
+      rememberAgent(null);
       detail = null;
       own = null;
       managerEdit = null;
@@ -2478,6 +2549,7 @@ function startDraft(name, source, entry, values) {
   shownView += 1;
   managerEdit = null;
   selected = null;
+  rememberAgent(null);
   detail = {
     name, file: null, files: [], version: null, editable: true, readonly_reason: null, form_reason: null, own: null, parent: null,
     inherited: values, effective: {}, state: 'new', changed: [], reload_fields: [], restart: true,
@@ -2623,6 +2695,7 @@ editor.addEventListener('input', (event) => {
   else if (data.treeSearch !== undefined) {
     treeQuery = target.value;
     treeKept = null;
+    treeTicked = false;
     drawToolLists();
   } else if (data.skillSearch !== undefined) {
     skillQuery = target.value;
@@ -2674,6 +2747,7 @@ editor.addEventListener('change', (event) => {
   } else if (data.treeFilter !== undefined) {
     treeFilter = target.value;
     treeKept = null;
+    treeTicked = false;
     keepFocus(drawToolLists);
   }
   else if (data.spawn !== undefined) toggleSpawn(target);
@@ -2703,6 +2777,7 @@ editor.addEventListener('click', (event) => {
   else if (data.goto) choose(data.goto);
   else if (data.copy) copyPath(target);
   else if (data.menu) {
+    if (busy) return;  // the banner's Duplicate is outside the form a write locks
     if ($('moreMenu').matches(':popover-open')) $('moreMenu').hidePopover();
     if (data.menu === 'delete') removeAgent();
     else if (data.menu === 'reload') reloadConfig();
@@ -2814,12 +2889,21 @@ $('list').addEventListener('click', (event) => {
 $('list').addEventListener('toggle', (event) => {
   const group = event.target.dataset?.group;
   if (!group) return;
-  if (event.target.open) collapsed.delete(group);
-  else collapsed.add(group);
+  if (listNarrowed()) {  // it opens every group itself: a fold here is for this search only, and not remembered
+    if (event.target.open) narrowFolds.delete(group);
+    else narrowFolds.add(group);
+    return;
+  }
+  const changed = event.target.open ? collapsed.delete(group) : !collapsed.has(group) && Boolean(collapsed.add(group));
+  if (changed) keepCollapsed();
 }, true);
 
-$('search').addEventListener('input', drawList);
-$('filter').addEventListener('change', drawList);
+for (const [id, type] of [['search', 'input'], ['filter', 'change']]) {
+  $(id).addEventListener(type, () => {
+    narrowFolds.clear();
+    drawList();
+  });
+}
 $('create').addEventListener('click', () => {
   if (!busy) openCreate();
 });

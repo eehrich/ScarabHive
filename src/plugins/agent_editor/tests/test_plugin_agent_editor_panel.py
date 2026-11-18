@@ -21,7 +21,8 @@ tool servers ``files`` (``files_read``, ``files_write``) and ``web`` (``web_sear
 instance, ``ae_off``, runs with authentication off.
 
 Behind the panel's back: GET /__stub/token?user= signs a token; GET /__stub/file?path= reads a file of the tree
-(``{exists, text}``); POST /__stub/replace?path=&old=&new= changes one.
+(``{exists, text}``); POST /__stub/replace?path=&old=&new= changes one; POST /__stub/fail_list fails the next
+request for the agent list.
 """
 from __future__ import annotations
 
@@ -29,7 +30,8 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_system.auth import database
@@ -303,6 +305,20 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         target.write_text(text.replace(old, new, 1), encoding="utf-8", newline="")
         return {}
 
+    list_failures = {"left": 0}
+
+    @app.post("/__stub/fail_list")
+    async def fail_list():
+        list_failures["left"] = 1
+        return {}
+
+    @app.middleware("http")
+    async def failing_list(request: Request, call_next):
+        if list_failures["left"] and request.url.path == "/plugins/agent_editor/agents":
+            list_failures["left"] -= 1
+            return JSONResponse({"detail": "the list is down"}, status_code=503)
+        return await call_next(request)
+
     plugin_config = {"type": "agent_editor", "enabled": True, "config_path": str(config_path), "root": str(root)}
     web = PluginWebRegistry()  # the plugin's router and static files, mounted and secured as the app does it
     web.register_web_plugin("agent_editor", PLUGIN_FACTORY(
@@ -325,6 +341,11 @@ EXPECTED = [
     'the list groups the agents by where they are defined, and search and filter narrow it',
     'the list marks the agents with problems and names them, and the filter shows only those',
     'the agent list keeps the width it was dragged to across a reload, and a narrow panel stacks it full width',
+    'a folded group stays folded across a reload, a search shows what is in it, and the address opens its agent',
+    'a list of many groups starts folded, all but the config group',
+    'a narrow panel keeps the head in two lines and a long hook name inside the table',
+    'the tool tree lists what the list holds first, and a click moves no row',
+    'a box ticked while the tools are unknown keeps its row, and the answer settles the tree',
     'descriptions from the files are drawn as text, never as markup',
     'a selected agent shows its own values apart from the inherited ones',
     'an edited field marks the form dirty, and Save writes the diff it showed into the file',

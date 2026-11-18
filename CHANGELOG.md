@@ -249,6 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- agent_editor: an agent that two files define showed as the last file alone -- an agent a second file only adds a
+  hook override to read as an empty one of its type (off, no tools, another model). It is shown as the loader stacks
+  the files. The panel folds the list's groups and keeps that (a long list starts folded), a search shows its matches
+  in folded groups, the agent shown is in the address (`?agent=`) so a restored panel opens it again, a name in the
+  list is no longer cut short for its badges, the servers a tool list holds come first in the tree, the head and the
+  hook table fit a docked panel, and a read-only agent's banner offers Duplicate.
+
 - Run events: an end the run store refused (another writer held it) is tried again, three times a second apart.
   Not kept, it left the run "at work" for as long as its process lived -- nothing says an end twice.
 

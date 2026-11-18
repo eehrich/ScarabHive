@@ -51,7 +51,13 @@ defined: @{tt}config@{utt} for everything outside the plugin folders, the
 plugin's name for a file under @{tt}src/plugins*/<plugin>/@{utt}. The
 search looks at names, descriptions and tags; the filter shows all agents,
 the enabled or disabled ones, those with problems, those that need a
-restart, or the read-only ones. The corner of the list sets its width,
+restart, or the read-only ones. A group folds at its head, and the panel
+keeps what is folded for the next visit; a list of eight groups or more
+that nobody folded yet starts folded, all but @{tt}config@{utt}. A search
+or a filter shows its matches in every group, folded or not. The agent
+shown is part of the panel's address (@{tt}?agent=<name>@{utt}): a
+restored panel opens it again, and a link can name it. The corner of the
+list sets its width,
 which the panel keeps for the next visit. By default nothing reloads by
 itself: the reload button loads anew, and the menu next to it turns on an
 automatic reload (every 30 seconds unless you pick another interval),
@@ -118,7 +124,9 @@ Still active, gone from disk | running, but disabled or removed in the files
 
 A banner under the head says what a restart or a config reload would apply
 -- with a @{b}Reload config@{ub} button when a reload applies something --
-and why a read-only agent cannot be edited.
+and why a read-only agent cannot be edited -- with a @{b}Duplicate@{ub}
+button, the way to an agent of your own from one a plugin ships. An agent
+that several files define is shown as the loader stacks them.
 
 @{b}Revert@{ub} goes back to the entry as loaded; "unsaved changes" marks
 an edited form. @{b}Save@{ub} shows the diff and writes on confirmation.
@@ -277,7 +285,8 @@ the inherited list into @{tt}+@{utt} entries and what it dropped into
 
 Every tool server of the running app with its tools, searchable (server
 names, plugin types, tool names and descriptions) and filtered to the
-servers in the list or not in it. Ticking a server writes
+servers in the list or not in it. The servers the list holds come first;
+ticking one does not move its row. Ticking a server writes
 @{tt}server/*@{utt}; ticking a tool writes @{tt}server/tool@{utt}.
 A tool that another pattern grants or blocks is locked, and the tooltip of
 its label and of the lock icon beside it names the pattern; a blocked tool

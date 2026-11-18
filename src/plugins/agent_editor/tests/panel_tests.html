@@ -106,6 +106,7 @@
     if (fields.name !== undefined) inputs.name.value = fields.name;
     form().requestSubmit();
   };
+  const addressed = () => new URLSearchParams(frame.contentWindow.location.search).get('agent');
   let nativeCalls = 0;
   const watchNative = () => {
     const panel = frame.contentWindow;
@@ -191,10 +192,11 @@
     const side = () => $('.ae-side');
     const width = () => Math.round(side().getBoundingClientRect().width);
     const before = width();
-    // at its narrowest a name keeps its room, and the badges beside it wrap below
+    // at its narrowest a name still shows whole, and the badges that do not fit beside it wrap below
     side().style.width = '11rem';
     await sleep(50);
-    const named = row('demo').querySelector('.ae-item-name').getBoundingClientRect().width >= 90;
+    const name = row('worker').querySelector('.ae-item-name');
+    const named = name.scrollWidth <= name.clientWidth && name.getBoundingClientRect().width > 0;
     side().style.width = '360px';  // what the browser writes when the corner is dragged
     await sleep(50);
     const resized = width() === 360 && before !== 360 && getComputedStyle(side()).resize === 'horizontal';
@@ -210,6 +212,217 @@
       frame.style.width = '';
       frame.contentWindow.localStorage.removeItem('pk.sidebar:/plugins/agent_editor/');  // later checks see the default
     }
+  });
+
+  await check('a folded group stays folded across a reload, a search shows what is in it, and the address opens its agent', async () => {
+    const demo = () => $('#list details[data-group="demo"]');
+    const reload = async (path, shown) => {
+      await go(path);
+      watchNative();
+      await until('the list again', shown);
+    };
+    demo().querySelector('summary').click();
+    await until('demo folded', () => !demo().open);
+    await sleep(50);  // the toggle event comes a task later
+    await reload('/plugins/agent_editor/', () => row('worker') && row('demo'));
+    const kept = !demo().open;
+    type($('#search'), 'plugin group');  // demo's description
+    await until('the match in sight', () => demo().open && listed() === 'demo');
+    await sleep(50);
+    type($('#search'), '');
+    const refolded = !demo().open;  // the search opened it, not the reader: it is folded again
+    // a group folded by hand under a search holds while the search stands -- a click on an agent draws the list
+    // again -- and is not what the list remembers
+    const config = () => $('#list details[data-group="config"]');
+    type($('#search'), 'writes');  // worker's description
+    await until('the match', () => listed() === 'worker');
+    config().querySelector('summary').click();
+    await until('config folded', () => !config().open);
+    await sleep(50);
+    await choose('worker');
+    const held = !config().open;
+    type($('#search'), '');
+    await sleep(50);
+    const forgotten = config().open;
+    // the address opens its agent, and leaves folded what the reader folded
+    await reload('/plugins/agent_editor/?agent=demo', () => heading() === 'demo' && !$('#editor').hidden);
+    const linked = !demo().open && row('demo').getAttribute('aria-current') === 'true';
+    await choose('worker');
+    const address = addressed() === 'worker' && held && forgotten;
+    frame.contentWindow.localStorage.removeItem('agent_editor.collapsed');  // later checks see the default
+    await reload('/plugins/agent_editor/', () => row('worker') && row('demo'));
+    return kept && refolded && linked && address && $('#editor').hidden;
+  });
+
+  await check('a list of many groups starts folded, all but the config group', async () => {
+    // the first list of a browser that folded nothing yet: the first request fails, the next brings nine groups
+    await post('/__stub/fail_list');
+    await go('/plugins/agent_editor/');
+    watchNative();
+    await until('the list error', () => text('#list').includes('Agents could not be loaded'));
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let folded = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        const answer = await realFetch(url, options);
+        if (!String(url).endsWith('/plugins/agent_editor/agents')) return answer;
+        const list = await answer.json();
+        const demo = list.agents.find((one) => one.name === 'demo');
+        for (let n = 1; n <= 7; n += 1) list.agents.push({ ...demo, name: `extra${n}`, group: `plugin${n}` });
+        return new Response(JSON.stringify(list), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+      await until('the long list', () => row('worker') && all('#list details').length === 9);
+      folded = all('#list details').filter((one) => one.open).map((one) => one.dataset.group).join() === 'config';
+    } finally {
+      panelWindow.fetch = realFetch;
+    }
+    frame.contentWindow.localStorage.removeItem('agent_editor.collapsed');  // later checks see the default
+    await go('/plugins/agent_editor/');
+    watchNative();
+    await until('the list again', () => row('worker') && row('demo'));
+    return folded && $('#list details[data-group="demo"]').open;
+  });
+
+  await check('a narrow panel keeps the head in two lines and a long hook name inside the table', async () => {
+    await choose('worker');
+    frame.style.width = '420px';
+    let hook = null;
+    let hookName = '';
+    try {
+      await sleep(50);
+      // the name and the actions share a line; what the agent is based on and its file have the next, at full width
+      const head = $('#head');
+      const style = getComputedStyle(head);
+      const inner = head.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const name = $('#head .ae-name').getBoundingClientRect();
+      const meta = $('#head .ae-meta').getBoundingClientRect();
+      const lines = meta.top >= name.bottom - 1 && meta.width >= inner - 2;
+      openTab('hooks');
+      hook = $('#tab-hooks .ae-hooks td .pk-mono');
+      hookName = hook.textContent;
+      hook.textContent = 'x'.repeat(80);
+      // wide enough for the list beside the editor and for a table of columns (narrower, the kit draws cards):
+      // the table neither grows out of the tab nor scrolls sideways
+      frame.style.width = '700px';
+      await sleep(50);
+      const wrap = $('#tab-hooks .pk-table-wrap');
+      const table = getComputedStyle($('#tab-hooks .ae-hooks tbody')).display === 'table-row-group';
+      return lines && table && wrap.scrollWidth <= wrap.clientWidth + 1
+        && wrap.getBoundingClientRect().width <= wrap.parentElement.clientWidth + 1;
+    } finally {
+      if (hook) hook.textContent = hookName;
+      frame.style.width = '';
+      openTab('general');
+    }
+  });
+
+  await check('the tool tree lists what the list holds first, and a click moves no row', async () => {
+    await choose('scout');
+    openTab('tools');
+    $('#toolTab-allowed').click();
+    const servers = () => all('#tools-allowed [data-tree-server]').map((box) => box.dataset.treeServer).join();
+    const search = async (value) => { type($('#tab-tools [data-tree-search]'), value); await sleep(50); };
+    $('#tools-allowed [data-list-mode][value="own"]').click();
+    await until('an own list', () => $('#tools-allowed [data-list-mode][value="own"]').checked);
+    const plain = servers() === 'files,web';
+    const web = () => $('#tools-allowed [data-tree-server="web"]');
+    web().click();
+    await until('web in the list', () => web()?.checked);
+    const stays = servers() === 'files,web';  // not on the click: the row keeps its place under the pointer
+    await search('e');  // both servers match; the rows are worked out again
+    await search('');
+    const first = servers() === 'web,files';
+    $('#revert').click();
+    await until('reverted', () => !dirtyShown());
+    openTab('general');
+    return plain && stays && first;
+  });
+
+  await check('a box ticked while the tools are unknown keeps its row, and the answer settles the tree', async () => {
+    await choose('scout');
+    openTab('tools');
+    $('#toolTab-allowed').click();
+    const servers = () => all('#tools-allowed [data-tree-server]').map((box) => box.dataset.treeServer).join();
+    const box = (name) => $(`#tools-allowed [data-tree-server="${name}"]`);
+    const tick = async (name, on) => {
+      box(name).click();
+      await until(`${name} ${on ? 'in' : 'out of'} the list`, () => box(name)?.checked === on);
+    };
+    const search = async (value) => { type($('#tab-tools [data-tree-search]'), value); await sleep(50); };
+    const filter = async (value) => {
+      const select = $('#tab-tools [data-tree-filter]');
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(50);
+    };
+    $('#tools-allowed [data-list-mode][value="own"]').click();
+    await until('an own list', () => $('#tools-allowed [data-list-mode][value="own"]').checked);
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let asked = 0;
+    let answered = 0;
+    let gate = Promise.resolve();
+    let release = () => {};
+    const hold = () => { gate = new Promise((resolve) => { release = resolve; }); };
+    const answers = async () => {
+      release();
+      await sleep(400);  // the last change asks after its pause
+      await until('the tools answered', () => answered === asked);
+      await sleep(100);
+    };
+    let first = false;
+    let unmoved = false;
+    let held = false;
+    let resettled = false;
+    let settled = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        const tools = String(url).endsWith('/plugins/agent_editor/tools/effective');
+        if (tools) {
+          asked += 1;
+          await gate;
+        }
+        try {
+          return await realFetch(url, options);
+        } finally {
+          if (tools) answered += 1;
+        }
+      };
+      await answers();  // the empty own list is resolved
+      // rows worked out while the answer for the lists is out: what comes first stays through the ticks after it
+      // and through the answer -- worked out again there, the row just ticked jumped to the top
+      hold();
+      await tick('web', true);
+      await search('e');
+      await search('');
+      first = servers() === 'web,files';
+      await tick('files', true);
+      await tick('web', false);
+      await answers();
+      unmoved = servers() === 'web,files';
+      // "in this list", again worked out with the answer out: the answer takes the row unticked meanwhile, and
+      // settles the rows -- one unticked after it stays, whatever answers follow
+      hold();
+      await tick('web', true);
+      await filter('in');
+      await tick('files', false);
+      held = servers() === 'files,web';
+      await answers();
+      resettled = servers() === 'web';
+      await tick('web', false);
+      await answers();
+      settled = servers() === 'web';
+    } finally {
+      release();
+      panelWindow.fetch = realFetch;
+    }
+    await filter('all');
+    $('#revert').click();
+    await until('reverted', () => !dirtyShown());
+    openTab('general');
+    return first && unmoved && held && resettled && settled;
   });
 
   await check('descriptions from the files are drawn as text, never as markup', async () => {
@@ -1258,7 +1471,8 @@
     await scrolled('the draft scrolled');
     const draft = !$('#createDialog').open && Boolean($('#head [data-draft]')) && !$('#save').disabled && $('#revert').disabled
       && control(TYPE).value === 'basic_agent' && control(ENABLED).checked && !$('#list [aria-current="true"]')
-      && control(MAX_STEPS).placeholder === '20' && chainOf(CHAIN) === 'fast';
+      && control(MAX_STEPS).placeholder === '20' && chainOf(CHAIN) === 'fast'
+      && addressed() === null;  // a restored panel does not open the agent the draft replaced
     type(control(DESCRIPTION), 'Fresh one');
     $('#save').click();
     await diffShown();
@@ -1268,7 +1482,8 @@
     await toasted('ok', 'fresh created');
     await until('fresh listed and shown', () => row('fresh') && heading() === 'fresh' && !$('#head [data-draft]'));
     const blank = await file('config/agents/fresh.yaml');
-    const blankFile = blank.exists && blank.text.startsWith('# Created with the Agent Editor.')
+    // a restored panel opens the agent just created, not the one shown before the draft
+    const blankFile = addressed() === 'fresh' && blank.exists && blank.text.startsWith('# Created with the Agent Editor.')
       && blank.text.includes('type: basic_agent') && blank.text.includes('description: Fresh one');
     const placeKept = promptTab().scrollTop > 0;
     frame.style.height = '';
@@ -1362,7 +1577,7 @@
     await writeDiff();
     await toasted('ok', 'fresh deleted');
     await until('fresh gone', () => !row('fresh'));
-    const gone = !(await file('config/agents/fresh.yaml')).exists && $('#editor').hidden
+    const gone = addressed() === null && !(await file('config/agents/fresh.yaml')).exists && $('#editor').hidden
       && text('#placeholder').includes('No agent selected')
       && toasts('ok').some((one) => one.includes('config/agents/fresh.yaml removed')) && !keepsPage();
     // with no agent open, Reload config is still offered: in the empty editor, and where the list failed to load
@@ -1395,7 +1610,38 @@
   await check('a read-only agent says why and cannot be edited', async () => {
     await choose('twin');
     const says = text('#banners').includes('Read-only') && text('#banners').toLowerCase().includes('defined in 2 files');
-    const locked = $('#tab-general fieldset').disabled && control(DESCRIPTION).matches(':disabled')
+    // Duplicate, which the banner of a plugin's agent points to, is at hand in the banner
+    $('#banners [data-menu="duplicate"]').click();
+    await until('the create dialog', () => $('#createDialog').open);
+    const offered = form().elements.start.value === 'copy' && form().elements.source.value === 'twin';
+    $('#createCancel').click();
+    await until('the dialog closed', () => !$('#createDialog').open);
+    // the banner is outside the form a write locks: while one runs, its Duplicate opens nothing
+    const panelWindow = frame.contentWindow;
+    const realFetch = panelWindow.fetch;
+    let release;
+    const write = new Promise((resolve) => { release = resolve; });
+    let waits = false;
+    try {
+      panelWindow.fetch = async (url, options) => {
+        if (String(url).endsWith('/plugins/agent_editor/agents/twin/spawnable')) await write;
+        return realFetch(url, options);
+      };
+      openTab('subagents');
+      $('#tab-subagents [data-spawn="manager"]').click();
+      await until('the write running', () => $('#formLock').disabled);
+      $('#banners [data-menu="duplicate"]').click();
+      await sleep(50);
+      waits = !$('#createDialog').open;
+    } finally {
+      release();
+      panelWindow.fetch = realFetch;
+    }
+    await diffShown();
+    await cancelDiff();
+    await until('the write over', () => !$('#formLock').disabled);
+    openTab('general');
+    const locked = waits && $('#tab-general fieldset').disabled && control(DESCRIPTION).matches(':disabled')
       && $('#tab-model fieldset').disabled && $('#save').disabled && $('#save').hidden && $('#revert').hidden
       && $('#moreMenu [data-menu="delete"]').disabled
       && $('#tab-general [data-reset]').matches(':disabled');
@@ -1416,7 +1662,7 @@
     await until('the copy refused', () => !$('#createError').hidden && text('#createError').includes('cannot be copied'));
     $('#createCancel').click();
     await replace('config/agents/worker_child.yaml', '      since: 2026-09-17\n', '');
-    return says && locked && carried;
+    return says && offered && locked && carried;
   });
 
   await check('Reload config refreshes what the running app has, and keeps unsaved edits', async () => {

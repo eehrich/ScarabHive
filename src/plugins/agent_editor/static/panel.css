@@ -37,13 +37,18 @@
 .ae-group > summary > .pk-icon { transition: transform var(--duration-fast); }
 .ae-group[open] > summary > .pk-icon { transform: rotate(90deg); }
 .ae-items { list-style: none; margin: 0; padding: 0; }
-/* the name keeps room for a few letters; badges that do not fit beside it wrap below */
+/* the name comes first, at its full length: badges that do not fit beside it wrap below, and only a name longer than
+   the line is cut -- with room for a few letters only, three badges left ten letters of twenty names that begin alike */
 .ae-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
-.ae-item-name { flex: 1 1 6rem; }
+.ae-item-name { flex: 1 1 auto; }
 
 /* the head */
 .ae-head { display: flex; align-items: flex-start; gap: var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-4) 0; }
-.ae-title { gap: var(--space-1); }
+/* the name and the actions share the first line; what the agent is based on and its file get a line of their own
+   below, at the full width -- beside the actions a narrow panel broke them into a word per line */
+.ae-title { display: contents; }
+.ae-title > :first-child { flex: 1 1 auto; min-width: 8rem; }
+.ae-title > .ae-meta { order: 1; flex: 1 0 100%; }
 .ae-name { overflow-wrap: anywhere; }
 /* the parts apart by room alone: a separator would be left alone at a line's start or end */
 .ae-meta { font-size: var(--text-sm); gap: var(--space-1) var(--space-4); }
@@ -112,6 +117,9 @@ fieldset.ae-skills { display: grid; grid-template-columns: repeat(auto-fit, minm
 }
 .ae-check-row { min-width: 0; }
 .ae-hooks .pk-select { min-width: 9rem; }
+.ae-hook-text { margin-top: var(--space-1); max-width: 60rem; }
+/* a hook's name may break: unbroken, it pushed the column that sets the hook out of a docked panel */
+.ae-hooks td:first-child { overflow-wrap: anywhere; }
 .ae-notes { margin: 0; padding-left: var(--space-5); }
 .ae-yaml-box { gap: var(--space-1); }
 .ae-yaml-full { min-height: 24rem; }
