@@ -245,7 +245,7 @@ class AnthropicAsyncClient(LLMClient):
         self.model_name = model  # For token tracking compatibility
         self.capabilities = capabilities
         self.api_key = api_key
-        self.base_url = base_url
+        self.base_url = base_url or _DEFAULT_URL   # where it goes: the SDK's default without one
         self.context_window = context_window
         self.request_timeout = request_timeout
         self.max_retries = max_retries

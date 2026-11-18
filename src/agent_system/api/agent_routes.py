@@ -156,6 +156,16 @@ def _hostname(base_url: Optional[str]) -> Optional[str]:
         return None
 
 
+def _route_host(model: Any) -> Optional[str]:
+    """The host a model's requests go to, also without a base_url: the provider's default as its plugin declares it
+    (default_base_url), for a batch model that of the provider it batches for. Grouped by the provider's name
+    instead, the picker showed "openai" beside "api.openai.com" and Google's and Anthropic's batch models as
+    "batch"."""
+    from agent_system.llm import registry
+    provider = model.batch_provider or model.provider
+    return _hostname(model.base_url or (registry.default_base_url(provider) if provider else None))
+
+
 def _agent_details(ctx: AppContext, names: list[str]) -> list[dict[str, Any]]:
     """What the agent picker filters and groups by: description, category and tags from the merged config."""
     from agent_system.config.settings import get_tool_server_config
@@ -199,7 +209,7 @@ def list_llm_profiles(response: Response, ctx: AppContext = Depends(app_context)
                     # the picker groups by route (host, else provider) or model and finds a profile by either
                     "provider": model.provider if model else None,
                     "model": model.model if model else None,
-                    "host": _hostname(model.base_url) if model else None,
+                    "host": _route_host(model) if model else None,
                     "description": profile_config.description or profile_name,
                     "max_steps": profile_config.max_steps
                 })

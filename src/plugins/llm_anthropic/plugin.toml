@@ -10,6 +10,8 @@ author = "AgentSystem"
 type = ["llm-provider"]
 provides = ["anthropic"]
 provides_batch = ["anthropic"]
+# Where a model entry without base_url goes (the SDK's default, anthropic_client._DEFAULT_URL).
+default_base_url = { anthropic = "https://api.anthropic.com" }
 requires = { agent_system = ">=0.6.0" }
 plugins = ["llm_common"]
 # 0.77.0: the first SDK whose messages.create/stream take output_config (structured output, F11).

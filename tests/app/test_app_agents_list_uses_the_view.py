@@ -15,6 +15,7 @@ one the endpoint asked.
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 from unittest.mock import patch
 
 import pytest
@@ -96,9 +97,11 @@ def test_the_listings_carry_what_the_pickers_search_and_group_by(registry_of_age
             models={"routed": LLMModelConfig(provider="openai", model="vendor/m", api_key="fake",
                                              base_url="https://openrouter.ai/api/v1"),
                     "direct": LLMModelConfig(provider="openai", model="m", api_key="fake"),
-                    "broken": LLMModelConfig(provider="openai", model="b", api_key="fake", base_url="http://[fe80::1/v1")},
+                    "broken": LLMModelConfig(provider="openai", model="b", api_key="fake", base_url="http://[fe80::1/v1"),
+                    "batched": LLMModelConfig(provider="batch", batch_provider="anthropic", model="c", api_key="fake")},
             # "a_broken" sorts first: a malformed URL must not end the list before the others
             profiles={"a_broken": LLMProfile(model_ref="broken"), "normal": LLMProfile(model_ref="direct"),
+                      "batched": LLMProfile(model_ref="batched"),
                       "routed": LLMProfile(model_ref="routed", description="Via a router")},
             default_profile="normal",
     )
@@ -121,7 +124,12 @@ def test_the_listings_carry_what_the_pickers_search_and_group_by(registry_of_age
                                      "category": None, "tags": []}
     assert profiles["routed"] == {"name": "routed", "model_ref": "routed", "provider": "openai", "model": "vendor/m",
                                       "host": "openrouter.ai", "description": "Via a router", "max_steps": None}
-    assert (profiles["normal"]["model"], profiles["normal"]["host"]) == ("m", None)
+    # without a base_url the route is the provider's default as its plugin declares it (default_base_url), a batch
+    # model's that of the provider it batches for: grouped by provider name, "openai" stood beside "api.openai.com"
+    from agent_system.llm import registry
+    assert profiles["normal"]["host"] and profiles["batched"]["host"], profiles
+    assert profiles["normal"]["host"] == urlparse(registry.default_base_url("openai")).hostname
+    assert profiles["batched"]["host"] == urlparse(registry.default_base_url("anthropic")).hostname
     assert (profiles["a_broken"]["model"], profiles["a_broken"]["host"]) == ("b", None)
 
 

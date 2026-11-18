@@ -139,8 +139,8 @@ class TestEffectiveBaseUrlDecides:
         declared = dict(registry._default_base_urls)
         assert declared, "no plugin declares default_base_url -- test is blind"
 
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-t",
-                                     "OPENROUTER_API_KEY": "sk-t"}):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-t", "OPENROUTER_API_KEY": "sk-t",
+                                     "ANTHROPIC_API_KEY": "sk-t", "GEMINI_API_KEY": "t"}):
             for provider, manifest_url in sorted(declared.items()):
                 client = _real_build_client()(LLMModelConfig(
                     provider=provider, model="m"))
