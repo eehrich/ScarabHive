@@ -124,6 +124,28 @@
   background: var(--surface-1); color: var(--danger); font: inherit; cursor: pointer;
 }
 .sub-run-stop:hover:not(:disabled) { background: var(--surface-3); }
+/* its session by itself, at the chat's full width: shown with the pointer on the header and with the keyboard in it */
+.sub-run-open {
+  flex: none; display: inline-flex; padding: 0 2px; border: 0; border-radius: var(--radius-sm);
+  background: none; color: var(--text-muted); cursor: pointer; opacity: 0;
+}
+.sub-run-header:hover .sub-run-open, .sub-run-open:focus-visible { opacity: 1; }
+.sub-run-open:hover { color: var(--text-primary); }
+/* what the run did while the viewer read further up (chat_module.js offerNewSteps) */
+.new-steps {
+  display: inline-flex; align-items: center; gap: var(--space-1); align-self: center; margin-top: var(--space-2);
+  padding: 2px var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-full, 999px);
+  background: var(--surface-1); color: var(--accent-text, var(--accent)); font: 500 var(--text-xs)/1.6 var(--font-ui);
+  cursor: pointer;
+}
+.new-steps:hover { background: var(--surface-3); }
+/* a session a turn of another one started: where it was called from */
+.caller-link {
+  display: inline-flex; align-items: center; gap: var(--space-1); align-self: flex-start;
+  margin: 0 0 var(--space-2); padding: 2px var(--space-2); border: 0; border-radius: var(--radius-sm);
+  background: none; color: var(--text-secondary); font: 400 var(--text-xs)/1.4 var(--font-ui); cursor: pointer;
+}
+.caller-link:hover { background: var(--surface-3); color: var(--text-primary); }
 .sub-run-stop:disabled { cursor: default; opacity: 0.6; }
 .sub-run-body { padding-top: var(--space-1); }
 
@@ -196,6 +218,9 @@
    checkmark would claim work finished that may still be running, and the red
    cross would call it a failure. It is simply nobody's business any more. */
 .open-mark { color: var(--text-muted); font-weight: 600; }
+/* how a call read back without a status line ended, in front of its name */
+.tool-detail-mark { display: inline-block; width: 14px; margin-right: var(--space-1); text-align: center; }
+.tool-detail-mark > div { display: inline; }
 .operation-progress.unfinished .progress-message { color: var(--text-muted); }
 .progress-open-note { color: var(--text-muted); font-style: italic; flex: none; }
 

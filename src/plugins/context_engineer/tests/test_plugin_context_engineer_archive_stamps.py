@@ -41,6 +41,9 @@ async def test_an_archived_run_opener_and_call_keep_their_stamps(tmp_path):
         {"role": "user", "content": "The earlier question", "request_id": "run0000001"},
         {"role": "assistant", "content": None, "tool_request_ids": {"call_1": "run0000001_001"}, "step": 1,
          "reasoning_model": "gemini-x",
+         "status_lines": [{"request_id": "run0000001_001", "server": "file_ops.read()", "phase": "end",
+                           "message": "Read README.md", "timestamp": "2026-11-18T10:00:00+00:00",
+                           "tree": {"parent_id": "run0000001", "depth_level": 1}}],
          "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"},
                          "extra_content": {"google": {"thought_signature": "U0lH"}}}]},
         {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "result"},
@@ -58,5 +61,7 @@ async def test_an_archived_run_opener_and_call_keep_their_stamps(tmp_path):
     assert opener.get("request_id") == "run0000001"
     assert call.get("tool_request_ids") == {"call_1": "run0000001_001"}
     assert call.get("step") == 1
+    # what the call did and how it ended: the row the session read back shows for it
+    assert [line["message"] for line in call.get("status_lines") or []] == ["Read README.md"]
     assert call["tool_calls"][0].get("extra_content"), "fixture: the archive keeps the signed call"
     assert call.get("reasoning_model") == "gemini-x", "its signatures now count as every model's own"

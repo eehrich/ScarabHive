@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent_system.core.background_runs import BackgroundRun, Cancel
-from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder, relay_run_event
+from agent_system.servers.agent.components.status_forwarding import (StatusEventForwarder,
+                                                                     lines_stay_with_the_caller, relay_run_event)
 from agent_system.tools.status import StatusPhase, publish_status
 from agent_system.utils.id import short_id
 
@@ -130,6 +131,10 @@ class LiveRun:
             background = await BackgroundRun.open(
                 system_config=system_config, parent=parent, user_id=user_id, run_id=run_id, agent=AGENT, task=task,
                 on_cancel=on_cancel, session_id=session_id) if parent and user_id else None
+            if background is None:
+                # kept nowhere (one run per model call of a CLI that answers as the model): its tool lines
+                # are the calling run's to keep with its step, or a session read back shows none of them
+                lines_stay_with_the_caller(run_id)
             live = cls(forwarder, root, background)
             # the box learns that it outlives the turn: once that turn has ended, its state comes from the run
             live._relay({"type": "start", "task": task,
@@ -240,6 +245,8 @@ class LiveRun:
                 await publish_status(AGENT, f"{line}: no result, the run ended"[:CAP_LINE],
                                      request_id=request_id, phase=StatusPhase.ERROR)
             self._open.clear()
+            if self.background is None:
+                lines_stay_with_the_caller(self.request_id, False)   # its last lines are said
             state = record.get("state")
             answer = str(record.get("result") or "")
             why = record.get("note") or _first_line(answer)[:300] or "the run failed"

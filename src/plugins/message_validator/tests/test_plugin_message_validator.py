@@ -489,6 +489,27 @@ class TestMessageSequence:
         # The later turn's backend holds the cache; the provider pin follows it.
         assert merged.served_by == "Google AI Studio"
 
+    def test_merge_keeps_what_both_steps_operations_said(self):
+        """The status lines of a step are kept with its message (ChatMessage.status_lines): two messages merged
+        into one are both steps, and the second's calls came back without what they did."""
+        def line(request_id, message):
+            return {"request_id": request_id, "server": "file_ops.read()", "phase": "end", "message": message,
+                    "timestamp": "2026-11-18T10:00:00+00:00", "tree": {"parent_id": "r1", "depth_level": 1}}
+
+        messages = [
+            ChatMessage(role="user", content="Read both"),
+            ChatMessage(role="assistant", content="A", status_lines=[line("r1_003", "Read a.py")]),
+            ChatMessage(role="assistant", content="B", status_lines=[line("r1_004", "Read b.py")]),
+            ChatMessage(role="user", content="And"),
+            ChatMessage(role="assistant", content="C"),
+            ChatMessage(role="assistant", content="D"),
+        ]
+
+        merged = InternalMessageValidator().validate_and_repair(messages, "test").repaired_messages
+
+        assert [line["message"] for line in merged[1].status_lines] == ["Read a.py", "Read b.py"]
+        assert merged[3].status_lines is None, "two steps that said nothing hold a list all the same"
+
     def test_merge_keeps_the_earlier_backend_when_the_later_turn_names_none(self):
         messages = [
             ChatMessage(role="user", content="Think"),

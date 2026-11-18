@@ -7,7 +7,8 @@ The run events of runs started under this one are appended to the same list, as 
 envelopes, by relay_run_event (called from Agent.run_events).
 """
 import logging
-from typing import List, Dict, Any, Optional, Set
+import re
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from ....core.request_context import in_request_tree
 from ....tools.status import status_bus, StatusHandler, StatusEvent
@@ -18,6 +19,27 @@ logger = logging.getLogger(__name__)
 # Every forwarder that is streaming a run right now, for the run events of the runs
 # started under it (see relay_run_event).
 _live_forwarders: Set["StatusEventForwarder"] = set()
+
+#: The status lines a step keeps for the session read back, at most; a line's text at most this long.
+MAX_STEP_LINES = 200
+MAX_LINE_CHARS = 300
+#: The phases that end an operation: its line does not change after one.
+_FINAL_PHASES = frozenset({"end", "error"})
+#: The level of a request id that says "a run started under the one before it" (utils/tree_hierarchy.py: the
+#: forms sub_agent_manager and a coding CLI's view give their runs).
+_RUN_BELOW = re.compile(r"_(?:sub_cont|sub|async|minlen)_[0-9a-zA-Z]+(?=_|$)")
+#: The runs under another whose status lines nothing else keeps, by run id: the run above keeps them with its step.
+_HOMELESS: Set[str] = set()
+
+
+def lines_stay_with_the_caller(run_id: str, stay: bool = True) -> None:
+    """Say that no session of its own keeps the status lines of the run ``run_id`` (a coding CLI answering as
+    the model: one run per model call, kept nowhere), so the run it works under keeps them with its step
+    (StatusEventForwarder.keep_line). ``stay=False`` once it has ended."""
+    if stay:
+        _HOMELESS.add(run_id)
+    else:
+        _HOMELESS.discard(run_id)
 
 # Not relayed: status lines reach every ancestor over the status bus already, a
 # sub_run envelope was relayed by the run that produced it, and a heartbeat only
@@ -111,9 +133,11 @@ def _is_above(forwarder: "StatusEventForwarder", request_id: str) -> bool:
 class DirectStatusHandler(StatusHandler):
     """Handler that directly appends events to a list (no queue, no task)."""
     
-    def __init__(self, request_id: str, events_list: List[Dict[str, Any]]):
+    def __init__(self, request_id: str, events_list: List[Dict[str, Any]],
+                 keep: Optional[Callable[[Dict[str, Any]], None]] = None):
         self.request_id = request_id
         self.events_list = events_list
+        self.keep = keep
     
     async def process(self, event: StatusEvent) -> None:
         """Directly append matching events to the list."""
@@ -149,6 +173,8 @@ class DirectStatusHandler(StatusHandler):
             },
         }
         self.events_list.append(status_sse_event)
+        if self.keep is not None:
+            self.keep(status_sse_event)
 
 class StatusEventForwarder:
     """Manages forwarding of status events to SSE streams.
@@ -166,10 +192,101 @@ class StatusEventForwarder:
         # run id -> that run's token-delta envelope still in the queue, the one the
         # next delta of the same call is folded into (see add_sub_run_event).
         self._open_deltas: Dict[str, Dict[str, Any]] = {}
+        # The status lines of the run's steps as the session keeps them (keep_line): each
+        # step's list by its number, the step under way (None before the first), and each
+        # operation's line by its id while it may still change.
+        self._lines: Dict[int, List[Dict[str, Any]]] = {}
+        self._step: Optional[int] = None
+        self._open_lines: Dict[str, Dict[str, Any]] = {}
+        # the run's messages as last stamped: where a step's first line finds its message
+        self._messages: Optional[List[Any]] = None
+
+    def keep_line(self, event: Dict[str, Any]) -> None:
+        """Keep a status line of this run's own work for the session read back.
+
+        What a tool did and how it ended went out on the run's stream and nowhere else:
+        a session opened again showed its calls without their outcome, and a model call
+        that ran tools by itself (a coding CLI as the model) as if nothing had been
+        called. Kept is the last line of each operation, with the step it began in
+        (``stamp`` puts a step's lines on its message, ChatMessage.status_lines); an
+        operation still going changes its line there. One that began before the run's
+        first step is the run's own frame (its coordinator and worker lines) and no
+        step's: read back, a row "step 3/30" still going.
+
+        Not the lines of a run started under this one: that run keeps its own, in its
+        own session -- one that streams now (an agent called as a tool, whose id is its
+        call's), and one whose id says so (``_sub_``, ``_async_`` ...), streaming or
+        not: a coding CLI's view lets go of its stream at once. Unless nothing else
+        keeps them (``lines_stay_with_the_caller``).
+        """
+        request_id = event["request_id"]
+        if any(f.request_id and _is_above(self, f.request_id) and in_request_tree(request_id, f.request_id)
+               for f in _live_forwarders):
+            return
+        below = _RUN_BELOW.search(request_id, len(self.request_id or ""))
+        if below is not None and request_id[:below.end()] not in _HOMELESS:
+            return
+        said = {"message": str(event.get("message") or "")[:MAX_LINE_CHARS], "phase": event.get("phase"),
+                "timestamp": event.get("timestamp")}
+        line = self._open_lines.get(request_id)
+        if line is None:
+            lines = self._lines.setdefault(self._step, []) if self._step is not None else None
+            if lines is not None and len(lines) >= MAX_STEP_LINES:
+                return
+            tree = event.get("tree") or {}
+            # Whole before it is in the list, and only its values change afterwards: the session is saved from
+            # another thread, which may be reading this very line.
+            line = {"request_id": request_id, "server": event.get("server"),
+                    "tree": {"parent_id": tree.get("parent_id"), "depth_level": tree.get("depth_level")}, **said}
+            self._open_lines[request_id] = line
+            if lines is not None:
+                lines.append(line)
+                if len(lines) == 1:
+                    self.stamp(self._messages)      # the step's first line: its message holds none yet
+        else:
+            line.update(said)
+        if event.get("phase") in _FINAL_PHASES:
+            del self._open_lines[request_id]
+
+    def begin_step(self, step: int, messages: List[Any]) -> None:
+        """The run goes on to step ``step`` (numbered as ChatMessage.step): the lines said from here on are that
+        step's. ``messages``: the run's list as it stands, stamped first -- what the step before left there."""
+        self.stamp(messages)
+        self._step = step
+
+    def stamp(self, messages: Optional[List[Any]]) -> None:
+        """Put each step's lines on the message of that step as the run holds it NOW.
+
+        Not given to a message once and for all: hooks hand the run copies of its messages -- a compaction
+        rebuilds every one, a pre-LLM hook that changes the list gets a deep copy of it -- and a copy held the
+        lines as they were at that moment: an operation still going never ended on it, and what the step's tools
+        said after it was missing. So the lines stay here, by step, and are put on whatever message carries
+        that step's number: when the step's message is made, when the next step begins, and before the run's
+        last save. From the end back to where this run began: the message that opened it (it carries the run's
+        id, ChatMessage.request_id; in a session older than that, the one a person typed) or a step numbered no
+        lower than the one after it -- what stands before is the run before this one, whose steps are numbered
+        from one as well. A message that holds more lines than its step's (two messages merged into one) keeps
+        them.
+        """
+        self._messages = messages
+        after: Optional[int] = None
+        for message in reversed(messages or []):
+            role, step = getattr(message, "role", None), getattr(message, "step", None)
+            if getattr(message, "request_id", None) or (role == "user" and not getattr(message, "injected_by", None)):
+                break
+            if role != "assistant" or not isinstance(step, int):
+                continue
+            if after is not None and step >= after:
+                break
+            after = step
+            lines = self._lines.get(step)
+            if lines and len(getattr(message, "status_lines", None) or ()) <= len(lines):
+                message.status_lines = lines
 
     async def start_forwarding(self, request_id: str) -> None:
         """Start forwarding status events for a specific request."""
         self.request_id = request_id
+        self._lines, self._step, self._open_lines, self._messages = {}, None, {}, None
         # Above this run: the nearest run streaming now whose id it extends, and the
         # runs above that one. Settled now, not per event, because "above" is a
         # question of when as much as of ids: a stream begun later under an id this
@@ -183,7 +300,7 @@ class StatusEventForwarder:
         self._open_deltas.clear()
         
         # Create and register direct handler
-        self._handler = DirectStatusHandler(request_id, self.status_events_to_forward)
+        self._handler = DirectStatusHandler(request_id, self.status_events_to_forward, keep=self.keep_line)
         status_bus.add_handler(self._handler)
         _live_forwarders.add(self)
         logger.debug("Request %s registered direct status handler", request_id)

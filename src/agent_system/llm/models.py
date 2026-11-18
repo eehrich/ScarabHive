@@ -153,7 +153,7 @@ ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextF
 #: Fields of a ChatMessage that are ours, not the conversation's: never sent to a provider.
 #: A client that serialises the whole message pops these (a list per client drifted).
 PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "prefixed_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
-                                    "tool_request_ids", "step", "tools_key"})
+                                    "tool_request_ids", "step", "tools_key", "status_lines"})
 #: The private fields a provider's converter reads before it builds its wire
 #: format: whose reasoning a message carries, whether its chain is broken, and
 #: who wrote a note (a wake opens a conversation, a hook's block does not).
@@ -276,6 +276,11 @@ class ChatMessage(BaseModel):
     # it -- counting the messages instead falls behind after a step that stored nothing
     # (an empty answer is dropped). Never sent.
     step: Optional[int] = None
+    # On an assistant message: the status lines of its step, the last line each operation
+    # said -- what a tool did, how it ended -- as the run's stream carried them
+    # (StatusEventForwarder.keep_line). A session read back shows its calls with their
+    # outcome by them, and what a model call ran by itself. Never sent.
+    status_lines: Optional[List[Dict[str, Any]]] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""

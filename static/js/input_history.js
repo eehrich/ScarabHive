@@ -205,7 +205,9 @@
     // the chat module restores the messages from.
     window.addEventListener('session:loaded', function (event) {
       var session = event && event.detail && event.detail.session;
-      if (session) rebuild(session.messages, input);
+      // read again for a run the chat reads along (detail.again): the same conversation, and an entry the
+      // person recalled and is editing stays theirs
+      if (session && !event.detail.again) rebuild(session.messages, input);
     });
     // "New conversation" and deleting the current one dispatch this instead,
     // and never a 'session:loaded' -- a session that starts by simply sending

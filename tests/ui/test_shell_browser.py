@@ -1596,14 +1596,31 @@ def stub_app() -> FastAPI:
     async def agent_runs_text(width: int = 100):
         return {"text": f"At work ({len(agent_runs)})\n  as a terminal {width} wide reads them"}
 
+    run_events: list[dict] = []    # what the runs said since the app started, as a test says it
+
+    @app.post("/__stub/agent-run-events")
+    async def say_agent_run_events(payload: dict):
+        """A test says what a run says now: events as the stream of run events carries them."""
+        run_events.extend(payload.get("events") or [])
+        return {"ok": True}
+
     @app.get("/api/agent-runs/stream")
-    async def agent_runs_stream():
+    async def agent_runs_stream(request: Request):
+        last = request.headers.get("last-event-id")
+
         async def stream():
-            # what there is, then quiet for a while; the browser comes again by itself
-            yield f"data: {json.dumps({'type': 'runs.snapshot', 'runs': agent_runs})}\n\n"
-            for _ in range(20):
-                await asyncio.sleep(0.5)
-                yield ": keepalive\n\n"
+            # what there is, then what the runs say from here on; the browser comes again by itself -- and reads
+            # on after the event it had last, as the server lets it
+            told = next((at + 1 for at, said in enumerate(run_events) if said["event_id"] == last), len(run_events))
+            if not last:
+                yield f"data: {json.dumps({'type': 'runs.snapshot', 'runs': agent_runs})}\n\n"
+            for tick in range(100):
+                await asyncio.sleep(0.1)
+                for said in run_events[told:]:
+                    yield f"id: {said['event_id']}\ndata: {json.dumps(said)}\n\n"
+                told = len(run_events)
+                if tick % 5 == 4:
+                    yield ": keepalive\n\n"
         return StreamingResponse(stream(), media_type="text/event-stream")
 
     @app.post("/__stub/background")
@@ -1700,7 +1717,9 @@ def stub_app() -> FastAPI:
             {"type": "image", "name": "sketch.png"},
             {"type": "audio", "name": "briefing.wav"},
         ]} if found.get("attachments") else {"role": "user", "content": "Build the kit"}
-        if found.get("run") in STORED_RUNS:
+        if found.get("messages") is not None:    # a test says them itself (POST /__stub/sessions)
+            messages = found["messages"]
+        elif found.get("run") in STORED_RUNS:
             messages = STORED_RUNS[found["run"]]
         elif found.get("run"):
             # Two LLM calls: one that reasoned and called a tool, one that answered.
@@ -1875,6 +1894,7 @@ EXPECTED = [
     'work a turn started that goes on after it shows at work under its call, with its step and a Stop, and its end once it has one',
     'work that goes on after the turn that started it is not marked unfinished when that turn ends',
     'what works now stands above the sessions with the step it is on, and a click opens it in the chat',
+    "a run's session opened by itself is read along as the run goes on, while the viewer follows its end",
     'the list of every session folds away below what works now, as the person left it',
     'a failure nobody saw is seen once its session is opened; a result to check is not',
     '/runs says in the chat what works now, in the terminal\'s words',
@@ -1939,6 +1959,7 @@ EXPECTED = [
     'clicking a tool status line unfolds what it was asked and what it answered, as one block per call',
     'a status line too narrow for its text gives up its words before its brackets, and shows it all on hover',
     'a session read back from disk brings its run with it, not just the answer',
+    'a session read back shows each call as the run showed it: what it did, and how it ended',
     'a session read back shows thinking the server kept only in reasoning_details',
     'a session read back keeps a run a hook continued as one run, not two turns',
     'two runs of a session read back keep their calls apart, whatever id the provider gave them',

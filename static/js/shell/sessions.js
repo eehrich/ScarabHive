@@ -966,8 +966,22 @@ export class SessionManager {
     return true;
   }
 
-  /** Put a fetched session into the chat -- read-only when its sub-agent cannot be picked here. */
-  show(session) {
+  /**
+   * The open session read once more and drawn anew, for a chat that reads along a run it follows by no stream
+   * (chat_module.js openRunMoved). Not a pick: nothing closes for it, nothing is said when it fails, and whatever
+   * the viewer did meanwhile -- another session picked, a message sent -- wins. True when it was drawn.
+   */
+  async readAgain(id) {
+    const attempt = this.loading;
+    const session = await api(`/api/sessions/${encodeURIComponent(id)}`, { quiet: true }).catch(() => null);
+    if (!session || attempt !== this.loading || id !== this.currentSessionId) return false;
+    this.show(session, { again: true });
+    return true;
+  }
+
+  /** Put a fetched session into the chat -- read-only when its sub-agent cannot be picked here. `again`: the
+   * open one, read once more (readAgain). */
+  show(session, { again = false } = {}) {
     const id = session.session_id;
     this.remember([session]);
     this.setCurrent(id, session.title || session.name);
@@ -977,6 +991,7 @@ export class SessionManager {
         session,
         readOnly,
         reason: readOnly ? `Sub-agent "${session.agent_name}" is not available in the agent selector` : null,
+        again,
       },
     }));
   }

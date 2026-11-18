@@ -87,6 +87,8 @@ class StepMixin:
 
         # Drain any appended user messages before each step
         run.messages = await self._drain_appended_messages(run.request_id, run.messages)
+        # the status lines said from here on are this step's (ChatMessage.status_lines)
+        run.context.status_forwarder.begin_step(step + 1, run.messages)
         # Sync context.messages after draining
         run.context.messages = run.messages
 
@@ -263,6 +265,8 @@ class StepMixin:
         )
         st.assistant_msg = assistant_msg
         run.messages.append(assistant_msg)
+        # it holds the step's status lines: those of the model call, and those its tools are about to say
+        run.context.status_forwarder.stamp(run.messages)
         # Only append to context.messages if it's a different list
         if run.context.messages is not run.messages:
             run.context.messages.append(assistant_msg)

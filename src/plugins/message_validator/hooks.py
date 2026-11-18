@@ -680,6 +680,9 @@ class InternalMessageValidator:
                     if _carries_artifacts(m) and getattr(m, 'reasoning_model', None))) or None),
                 "thinking_blocks": merged_tb,
                 "thinking_model": merged_tm if merged_tb else None,
+                # what both steps' operations said (ChatMessage.status_lines): the one message is both now
+                "status_lines": [*(getattr(first_msg, 'status_lines', None) or ()),
+                                 *(getattr(second_msg, 'status_lines', None) or ())] or None,
                 # The later turn's backend is the one holding the cache.
                 "served_by": (getattr(second_msg, 'served_by', None)
                               or getattr(first_msg, 'served_by', None)),

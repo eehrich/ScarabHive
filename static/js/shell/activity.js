@@ -31,12 +31,14 @@ const spent = (run) => FINAL.has(run.state) && !run.needsYou && run.source === '
 
 export class ActivityTree {
   /** host: the element the tree is drawn into; onOpen(run): show the run where it is followed; current(): the id of
-   * the session open in the chat; notify(message): say something to the person (a Stop that could not be sent). */
-  constructor({ host, onOpen, current = () => '', notify = () => {} }) {
+   * the session open in the chat; notify(message): say something to the person (a Stop that could not be sent);
+   * onMove(run): a run said something -- a step, its end. */
+  constructor({ host, onOpen, current = () => '', notify = () => {}, onMove = () => {} }) {
     this.host = host;
     this.onOpen = onOpen;
     this.current = current;
     this.notify = notify;
+    this.onMove = onMove;
     this.runs = new Map();
     /** the runs a Stop was sent for, until they end; and those no Stop from here reaches (held by another process,
      * or by this server with nothing to stop them by) */
@@ -70,9 +72,11 @@ export class ActivityTree {
         this.draw();
       },
       onEvent: (event) => {
-        this.runs.set(event.run_id, liveRun(event, this.runs.get(event.run_id)));
+        const run = liveRun(event, this.runs.get(event.run_id));
+        this.runs.set(event.run_id, run);
         this.forget();
         this.draw();
+        if (event.type !== 'run.heartbeat') this.onMove(run);
       },
     });
     this.timer = setInterval(() => this.draw(), ACTIVITY.checkMs);

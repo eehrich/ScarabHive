@@ -363,6 +363,9 @@ class RunPhasesMixin:
                     # Check if ANY tool modified the session messages during this request
                     # Tools can call session_tracker.set_compacted_messages() to replace the history
                     compacted_msgs = self._session_tracker.get_compacted_messages(sid)
+                    if context is not None and context.status_forwarder is not None:
+                        # each step's status lines on the message that is saved for it (ChatMessage.status_lines)
+                        context.status_forwarder.stamp(compacted_msgs if compacted_msgs is not None else messages)
 
                     if compacted_msgs is not None:
                         # A tool replaced the message history - use those messages for

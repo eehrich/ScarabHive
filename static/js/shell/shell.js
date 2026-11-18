@@ -405,6 +405,8 @@ async function start() {
     onOpen: openRun,
     current: () => sessions.currentSessionId || '',
     notify: (message) => showToast(document, message, 'warn'),
+    // the chat reads a session along whose run it follows by no stream (a sub-agent's, opened by itself)
+    onMove: (run) => window.chatModule?.openRunMoved?.(run),
   });
   activity.start();
   window.addEventListener('session:loaded', () => activity.draw());

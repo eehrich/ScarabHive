@@ -16,6 +16,8 @@ import time
 import pytest
 
 from agent_system.core.session_presence import alive
+from agent_system.llm.models import ChatMessage
+from agent_system.servers.agent.components import status_forwarding
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
 from plugins.coding_cli import live as live_module
 from plugins.coding_cli import run as cli
@@ -49,6 +51,30 @@ def _envelopes(forwarder):
 
 def _status(forwarder):
     return [e for e in forwarder.status_events_to_forward if e["type"] == "status"]
+
+
+async def test_a_run_kept_nowhere_leaves_its_tool_lines_with_the_run_that_called_it(parent, tmp_path):
+    """A coding CLI that answers as the model is one run per model call and is kept in no session of its own
+    (no parent, no user: no background run). What its tools said went out on the stream alone, and the session
+    read back showed a step in which nothing had been called. The calling run keeps them with its step."""
+    messages = [ChatMessage(role="user", content="go")]
+    parent.begin_step(1, messages)
+    view = await LiveRun.open("run1", "answer", tmp_path)       # a model call: under the run's own id
+    await view.feed([
+        _assistant("m1", {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a.py"}}),
+        _tool_result("t1", "the file"),
+        _assistant("m2", {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "make"}}),
+    ])
+    assert view.request_id in status_forwarding._HOMELESS
+    await view.close({"state": "done", "result": "ok"})
+    message = ChatMessage(role="assistant", content="ok", step=1)
+    messages.append(message)
+    parent.stamp(messages)
+    # the call it got an answer to, and the one it never did: said to have ended without one, as its row is
+    assert [(line["request_id"], line["phase"]) for line in message.status_lines] == [
+        (f"{view.request_id}_001", "end"), (f"{view.request_id}_002", "error")]
+    # ended, it is nobody's exception any more
+    assert view.request_id not in status_forwarding._HOMELESS
 
 
 async def test_the_stream_arrives_as_a_sub_agent_would(parent, tmp_path):

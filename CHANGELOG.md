@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn, its sub-agents, theirs --, each with the step it is on, how long, and a Stop; under it what needs you and
   what just ended. A click opens a run where it is followed. "All sessions" folds the session list away below it.
   The terminal has the same reading: `agent-cli runs` (`--watch` follows), and `/runs` in a chat on both surfaces.
+- A run's session by itself: a sub-agent's session opened from what works now is read along as its run goes on
+  -- it showed how it stood when it was opened and nothing since -- and once more at its end. Not under a viewer
+  who scrolled up or unfolded something, nor over a command's answer: what they miss is offered at the chat's end
+  ("New steps"). The session names the one it was called from and leads back there, and the box of a run read
+  back in its caller's chat offers its own session at the chat's full width.
 - Work a turn starts that goes on after it is shown where the chat shows a sub-agent, after the turn too:
   `core/background_runs.py` keeps it as a sub-session of the chat's session (its steps, as an agent's are stored)
   and as a run in the run events below that session. Switched back to the session, or after a reload, the box is
@@ -267,6 +272,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NotRewindable`, a compacted journal). Each such resume counts as a try of the key (`count_by_key`).
 
 ### Fixed
+
+- Chat: a session opened again showed its tool calls by their names alone -- what each did ("Read README.md") and
+  the mark for how it ended went out on the run's stream and were kept nowhere -- and a step whose model ran the
+  tools by itself (a coding CLI as the model) as if nothing had been called. A run keeps the last status line of
+  each operation with the step's message (`ChatMessage.status_lines`, never sent to a provider), and the chat
+  shows them as rows like the live run's. A run started under another keeps its own lines, in its own session --
+  a coding CLI's model call, kept nowhere, leaves them with the run that called it. A call of a session older
+  than that is marked by what it answered.
 
 - Config: a `system_template` starting with `./` or `../` in the master config is relative to that file, as the
   docs say and as it always was in an include and in the local layer. It stayed as written and was opened from the

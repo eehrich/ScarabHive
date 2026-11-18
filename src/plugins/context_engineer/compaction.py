@@ -2482,7 +2482,7 @@ class LayeredCompactionStrategy:
             # read back finds its sub-agents' runs by them, archived or not. And
             # whose signatures its kept tool calls carry: untagged, every model
             # took them as its own.
-            for stamp in ("request_id", "tool_request_ids", "step", "reasoning_model"):
+            for stamp in ("request_id", "tool_request_ids", "step", "reasoning_model", "status_lines"):
                 if msg.get(stamp):
                     archived_msg[stamp] = msg[stamp]
 

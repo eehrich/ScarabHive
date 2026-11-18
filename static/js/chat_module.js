@@ -142,19 +142,31 @@
 
   // Content growing never moves scrollTop, and content shrinking clamps it at the end:
   // a position that came back from further up is somebody moving the chat.
-  function noteScroll() {
+  // byViewer: the chat was scrolled, not asked where it stands (pinEnd).
+  function noteScroll(byViewer = false) {
     const el = scroller();
     if (!el) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 4) following = true;
-    else if (el.scrollTop < lastTop) following = false;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 4) {
+      following = true;
+      // scrolled to the end: done reading, and what was left unread for that is read now (rereadSoon)
+      if (byViewer) {
+        handOpened = false;
+        if (rereadWaits) rereadSoon(rereadWaits);
+      }
+    } else if (el.scrollTop < lastTop) following = false;
     lastTop = el.scrollTop;
   }
+
+  // Whether the viewer opened something by hand since the chat was last drawn: they are reading it. Where the
+  // whole chat fits the window, `following` cannot say so -- there the chat is always at its end.
+  let handOpened = false;
 
   // Opened by hand: the viewer said what they want to look at, and the end is not it.
   // Without this the chat pins itself over what they just unfolded -- the content grew,
   // and growth alone never moves the position, so nothing else says they left the end.
   function readingHere() {
     following = false;
+    handOpened = true;
   }
 
   // force: the end is what the viewer asked for (a message sent, a session opened), so
@@ -190,7 +202,7 @@
     if (watching || !el || !content) return;
     watching = true;
     lastTop = el.scrollTop;
-    el.addEventListener('scroll', noteScroll, { passive: true });
+    el.addEventListener('scroll', () => noteScroll(true), { passive: true });
     new ResizeObserver(() => pinEnd()).observe(content);
   }
 
@@ -200,6 +212,11 @@
    */
   function addNote(chatContainer, text) {
     if (!chatContainer) return;
+    // the offer of what a run did meanwhile (offerNewSteps) stays the last thing in the chat
+    setTimeout(() => {
+      const offer = chatContainer.querySelector(':scope > .new-steps');
+      if (offer && offer !== chatContainer.lastElementChild) chatContainer.appendChild(offer);
+    });
     const row = document.createElement('div');
     row.className = 'row';
     const msgDiv = document.createElement('div');
@@ -2469,27 +2486,37 @@
    * run builds: its thinking and what it asked each tool, foldable as ever.
    *
    * Everything here was already on disk and simply never shown again -- which
-   * is why switching sessions looked like the run had been erased. NOT
-   * rebuilt, because the session does not carry it: the status LINE a plugin
-   * reported ("Read README.md"). A replayed call is named by its tool instead,
-   * which is the same shape a live call with no status scope gets.
+   * is why switching sessions looked like the run had been erased. The status
+   * LINES a step's operations reported ("Read README.md", and how each ended) are
+   * kept with the step's message (status_lines) and come back as the rows the live
+   * run showed -- also where the step has no call of its own: a model that runs
+   * tools by itself (a coding CLI) leaves nothing else of them. A call without a
+   * kept line -- a session older than that -- is named by its tool instead, the
+   * shape a live call with no status scope gets, with a mark for how it ended.
    *
-   * Goes through toolDetail, not past it: a second renderer beside the live one
-   * drifts, and then the page shows two different truths about one run.
+   * Goes through addStatusEvent and toolDetail, not past them: a second renderer
+   * beside the live one drifts, and then the page shows two different truths
+   * about one run.
    */
   function replayStep(blk, msg, stepNo, resultFor) {
     const calls = msg.tool_calls || [];
     const thinking = storedThinking(msg);
-    if (!calls.length && !thinking) return;   // a plain answer needs no step of its own
+    const lines = (Array.isArray(msg.status_lines) ? msg.status_lines : []).filter((line) => line && line.request_id);
+    if (!calls.length && !thinking && !lines.length) return;   // a plain answer needs no step of its own
     const section = stepOf(blk, stepNo);
     if (!section) return;
     if (thinking) thinkingOf(section).textContent = thinking;
+    // The lines another line of the step may stand under. Not one said under the run's own id (a coding CLI as
+    // the model says its run so): the run is its lines' container, live too (addStatusEvent).
+    const own = (blk && blk.depthLevel) || 0;
+    const kept = new Set(lines.filter((line) => ((line.tree || {}).depth_level || 0) > own).map((line) => line.request_id));
     // toolDetail files its block under the step the run is ON. Set here and put
     // back, because replaying is the one case where that is not "now" -- the
     // loop around this is synchronous, so nothing else reads it meanwhile.
     const was = blk.openStep;
     blk.openStep = stepNo;
     try {
+      lines.forEach((line) => replayLine(blk, line, kept));
       calls.forEach((tc) => {
         const fn = tc.function || {};
         const answer = resultFor.get(tc.id);
@@ -2501,13 +2528,66 @@
         const data = {action: fn.name || 'tool', request_id: ranUnder || tc.id || ''};
         toolDetail(blk, data, 'arguments', maybeJson(fn.arguments));
         if (answer) toolDetail(blk, data, 'result', maybeJson(answer.content));
+        // no line kept of it: how it ended is read off its answer
+        if (answer && !lines.some((line) => line.request_id === data.request_id)) {
+          markLooseCall(blk, data, resultIsError(maybeJson(answer.content)));
+        }
       });
     } finally {
       blk.openStep = was;
     }
   }
 
+  /**
+   * A status line the session kept, as the row a run followed live shows for it: what the
+   * operation said last, and how it ended. Each line a row of its own, as the stream made
+   * them: an id may say several (a coding CLI as the model starts its run and waits for it
+   * under the run's own id, in every step). One whose end was never said stays open, marked
+   * so, and is nobody's to end -- unless the stream speaks of it again (addStatusEvent).
+   * `kept`: the ids of the step's lines another may stand under; a line whose parent is
+   * none of them (the run itself) stands on its own.
+   */
+  function replayLine(view, line, kept) {
+    const container = statusBodyFor(view);
+    if (!container) return;
+    const tree = line.tree || {};
+    replaying = true;
+    let row;
+    try {
+      row = addStatusEvent(container, { ...line, tree: { ...tree, parent_id: kept.has(tree.parent_id) ? tree.parent_id : null } }, view);
+    } finally {
+      replaying = false;
+    }
+    if (!row) return;
+    row.dataset.replayed = 'true';
+    if (line.phase === 'end' || line.phase === 'error') return;
+    // not an operation of a run this page follows: the end of a later run does not say "still running" of it
+    activeOperations.delete(row.dataset.operation);
+    const icon = row.querySelector('.progress-icon');
+    if (icon) icon.innerHTML = '<div class="open-mark">⋯</div>';
+  }
+
+  /** Whether what a tool answered reports a failure, in either shape tools use (tool_call_contract.py). */
+  function resultIsError(result) {
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+    // ... or the one a coding CLI's tool results are kept in (is_error)
+    return result.status === 'error' || result.is_error === true || (!('status' in result) && Boolean(result.error));
+  }
+
+  /** How a call read back without a status line ended, in front of its name. */
+  function markLooseCall(blk, data, failed) {
+    const body = looseDetailBlock(blk, data.action, data.request_id);
+    const block = body && body.parentElement;
+    if (!block || block.querySelector(':scope > .tool-detail-mark')) return;
+    const mark = document.createElement('span');
+    mark.className = 'tool-detail-mark';
+    mark.innerHTML = failed ? '<div class="error-mark">✕</div>' : '<div class="checkmark">✓</div>';
+    block.insertBefore(mark, block.firstChild);
+  }
+
   const activeOperations = new Map();
+  //: Whether a line is being read back from the session (replayLine), not said by a stream.
+  let replaying = false;
   const treeNodes = new Map(); // requestId -> { element, parentId, depth, children:Set }
   const lateRows = new Set();   // rows opened by live events released after their stream ended
 
@@ -2766,6 +2846,14 @@
     // Use request_id for hierarchical operations if available
     const requestId = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
     const operationKey = requestId || ev.server;
+    // An operation the session read brought back still going (replayLine: its row wears the open mark) and the
+    // stream speaks of again -- the page was loaded while a tool ran: it goes on on its row.
+    if (requestId && !replaying && !activeOperations.has(operationKey)) {
+      const going = [...chatContainer.querySelectorAll(
+        `.operation-progress[data-replayed][data-request-id="${CSS.escape(requestId)}"]`)]
+        .find((row) => row.querySelector(':scope > .progress-line .open-mark'));
+      if (going) activeOperations.set(operationKey, going);
+    }
     
     // Get tree hierarchy metadata from backend (already calculated correctly)
     const treeInfo = ev.tree || { parent_id: null, depth_level: 0, child_count: 0, is_leaf: true };
@@ -2888,6 +2976,7 @@
       row = operationDiv;
     }
     syncQuestionActions(row, ev);
+    return row;
   }
 
   /**
@@ -3166,6 +3255,151 @@
     };
     watchingForASuccessor = true;
     setTimeout(tick, SUCCESSOR_WAITS[step++]);
+  }
+
+  //: How a session is read along (openRunMoved): how long after a step, and how far apart at least, in ms
+  //: (tests set them).
+  const REREAD = { afterMs: 400, everyMs: 1500 };
+  //: The session this page reads again as its run goes on, '' when none; the session whose next read waits for
+  //: the viewer to be back at the chat's end; the timer of the next read, and when the last one was.
+  let liveRead = '';
+  let rereadWaits = '';
+  let rereadTimer = 0;
+  let rereadFor = '';
+  let rereadAt = 0;
+
+  /**
+   * The open session's run took a step or ended, by the run events -- and this page follows it by no stream.
+   *
+   * A sub-agent's session opened by itself is that: its run streams to the turn that started it, so the chat
+   * showed how the session stood when it was opened and nothing since. It is read again as its run goes on --
+   * the server hands out what the run holds (api/session_live.py) -- and once more at its end.
+   *
+   * Only while the viewer follows the chat's end. One who scrolled up or unfolded something is reading, and a
+   * chat drawn anew would take it from under them: what they missed is offered at the chat's end ("New steps"),
+   * and read when they take it or scroll back there.
+   * Not a run the chat follows by its stream (its own, one its load joined), and not a session another process
+   * works on: the server has nothing of that turn until it ends (watchForASuccessorRun reads it then).
+   *
+   * What is in the chat and not in the session -- a command's answer, a note -- would be gone with the chat
+   * drawn anew: then, too, the new steps are offered, not taken.
+   */
+  function openRunMoved(run) {
+    const session = currentSessionId;
+    if (!run || !session || run.run_id !== session) return;
+    if (chatModule.hasActiveRequest()) {
+      liveRead = '';      // followed by its stream from here on
+      return;
+    }
+    if (watchingForASuccessor) return;
+    if (run.state === 'working' || run.state === 'queued') {
+      liveRead = session;
+    } else if (liveRead === session) {
+      liveRead = '';      // its end: read once more
+    } else {
+      return;             // the end of a run this page did not read along (its own turn's, say)
+    }
+    rereadSoon(session);
+  }
+
+  function rereadSoon(session, wait) {
+    rereadWaits = '';
+    if (rereadTimer && rereadFor === session) return;
+    clearTimeout(rereadTimer);      // one asked for the session shown before: nobody is looking at it
+    if (rereadFor !== session) rereadAt = 0;     // ... and this one's first read does not wait for that one's pace
+    rereadFor = session;
+    rereadTimer = setTimeout(() => reread(session),
+      wait ?? Math.max(REREAD.afterMs, rereadAt + REREAD.everyMs - Date.now()));
+  }
+
+  async function reread(session) {
+    rereadTimer = 0;
+    const manager = window.sessionManager;
+    // the viewer went elsewhere meanwhile, or a run of this page's took the chat
+    if (!manager || session !== currentSessionId || chatModule.hasActiveRequest()) return;
+    // the chat is asking for the session's run (a load just drew it): asked again once it knows -- what the run
+    // said meanwhile, its end too, is not lost for that
+    if (chatModule.askingForRun()) return rereadSoon(session, REREAD.afterMs);
+    if (!following || handOpened || chatContainer.querySelector(':scope > .row > .msg.note')) {
+      rereadWaits = session;
+      offerNewSteps(session);
+      return;
+    }
+    rereadAt = Date.now();
+    const el = scroller();
+    // Straight to the new end: the chat scrolls smoothly, and from the top of a chat drawn anew that is a sweep
+    // over the whole run at every step.
+    if (el) el.style.scrollBehavior = 'auto';
+    try {
+      await manager.readAgain(session);
+    } finally {
+      if (el) requestAnimationFrame(() => requestAnimationFrame(() => { el.style.scrollBehavior = ''; }));
+    }
+  }
+
+  /** A run of this page's takes the chat: it is followed by its stream, nothing is left to offer. */
+  function withdrawNewSteps() {
+    rereadWaits = '';
+    document.querySelector('#chat > .new-steps')?.remove();
+  }
+
+  /** What the run did meanwhile, offered at the chat's end to a viewer who is reading further up. */
+  function offerNewSteps(session) {
+    const chatEl = document.getElementById('chat');
+    if (!chatEl || chatEl.querySelector(':scope > .new-steps')) return;
+    const offer = document.createElement('button');
+    offer.type = 'button';
+    offer.className = 'new-steps';
+    offer.innerHTML = `${kitIcon('arrow-down')}<span>New steps</span>`;
+    offer.addEventListener('click', () => {
+      handOpened = false;
+      following = true;
+      // taken: what stands in the chat alone (a command's answer) goes with it, as with any session opened
+      chatContainer.querySelectorAll(':scope > .row > .msg.note').forEach((note) => note.parentElement.remove());
+      if (rereadWaits === session) rereadSoon(session, 0);
+    });
+    chatEl.appendChild(offer);
+  }
+
+  /**
+   * A session that a turn of another one started says so at its top, and leads back there: opened by itself --
+   * from what works now, from its box -- it stands without the conversation it belongs to.
+   */
+  function showCaller(session) {
+    document.getElementById('callerLink')?.remove();
+    const parent = session?.parent_session?.session_id;
+    const chatEl = document.getElementById('chat');
+    if (!parent || !chatEl) return;
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.id = 'callerLink';
+    link.className = 'caller-link';
+    link.innerHTML = `${kitIcon('arrow-left')}<span></span>`;
+    const title = window.sessionManager?.byId?.get(parent)?.title;
+    link.querySelector('span').textContent = title ? `Called from "${title}"` : 'Open the session that called it';
+    link.addEventListener('click', () => window.sessionManager?.loadSession?.(parent));
+    chatEl.insertBefore(link, chatEl.firstChild);
+  }
+
+  /**
+   * A box whose run has a session of its own offers it by itself, at the chat's full width: a run of many steps
+   * is read badly three boxes deep.
+   */
+  function offerOwnSession(view, session) {
+    const header = view.element.querySelector('.sub-run-header');
+    if (!session || !header || header.querySelector('.sub-run-open')) return;
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'sub-run-open';
+    open.title = 'Open this run by itself';
+    open.setAttribute('aria-label', 'Open this run by itself');
+    open.innerHTML = kitIcon('maximize-2');
+    open.addEventListener('click', (event) => {
+      event.stopPropagation();   // the header folds the box
+      window.sessionManager?.loadSession?.(session);
+    });
+    open.addEventListener('keydown', (event) => event.stopPropagation());
+    header.insertBefore(open, header.querySelector('.sub-run-stop'));
   }
 
   /**
@@ -3812,7 +4046,8 @@
     // row, in the followed block or in a stored run taken over. No row of its call to
     // hang from (its status line never came): the step of the run that started it, not
     // whichever step the followed run is on.
-    const callAt = (id) => (id && chatContainer.querySelector(`.tool-detail[data-key="${CSS.escape(id)}"]`))
+    const callAt = (id) => (id && chatContainer.querySelector(`.tool-detail[data-key="${CSS.escape(id)}"], `
+      + `.operation-progress[data-replayed][data-request-id="${CSS.escape(id)}"]`))
       || rowOf(blk, id) || rowOf(owner, id);
     const anchor = callAt(envelope.run_id) || callAt(envelope.spawned_by)
       || (retried && retried.parentElement) || statusBodyFor(owner);
@@ -3928,6 +4163,7 @@
     // `parent`: the session the run works below -- the open one's, or a sub-agent's whose box is read back in it
     view.background = { session, parent, listed: undefined, seq: null };
     backgroundViews.set(session, view);
+    offerOwnSession(view, session);
     const stop = view.element.querySelector('.sub-run-stop');
     stop.addEventListener('click', async (event) => {
       event.stopPropagation();   // the header folds the box
@@ -4147,8 +4383,10 @@
     const calls = new Map();
     views.forEach((view) => {
       if (!view.box.isConnected) return;   // the chat has moved on meanwhile
-      view.box.querySelectorAll('.tool-detail[data-key]').forEach((el) => {
-        if (!calls.has(el.dataset.key)) calls.set(el.dataset.key, { view, el });
+      // a call read back: its row where the session kept its status line, else the block named after its tool
+      view.box.querySelectorAll('.tool-detail[data-key], .operation-progress[data-replayed]').forEach((el) => {
+        const key = el.dataset.key || el.dataset.requestId;
+        if (!calls.has(key)) calls.set(key, { view, el });
       });
     });
     // The call that ran it -- a state machine's run session keys each agent call by the
@@ -4172,6 +4410,7 @@
       if (background[node.session_id]) markBackground(view, node.session_id, id);
       view.element.dataset.stored = 'pending';
       storedSubRuns.set(view.element, { view, sessionId: node.session_id, runId });
+      offerOwnSession(view, node.session_id);
       storedRunViews.set(runId, view);
       watchStoredSubRun(view.element);
     }));
@@ -4821,6 +5060,7 @@
 
       // No active request: start a new request
       showWorkingElsewhere(false);   // as in attachRun: a run of this page's own takes the chat
+      withdrawNewSteps();
       const blk = addAssistantBlock(chatContainer);
       runActive = true; updateActionButton();  // -> Stop (empty input)
       readyStop();
@@ -5088,6 +5328,7 @@
       // a run begins; not in the watch's own tick, which is on a timer, so the
       // mark would linger for seconds and a check on it would measure the timer.
       showWorkingElsewhere(false);
+      withdrawNewSteps();
       const blk = addAssistantBlock(chatContainer);
       // The session load shows the run's answer already: its final is not shown a second time.
       blk.answerLoaded = answerLoaded;
@@ -5242,6 +5483,9 @@
     // The session pane's activity tick, for a session that starts working in a process this page cannot follow
     // long after the watch below has stopped asking: it says so, and reads the session again once it lets go.
     chatModule.watchForASuccessorRun = watchForASuccessorRun;
+    // The run events of the open session's run, from what works now (shell.js): read along where no stream is.
+    chatModule.openRunMoved = openRunMoved;
+    chatModule.REREAD = REREAD;
     chatModule.watchingForASuccessor = () => watchingForASuccessor;
     // Whether the chat is asking for the open session's run right now: its answer joins it, by how much of it a
     // load shows -- the session pane's activity tick leaves the run to it (joinRunOfOpenSession).
@@ -5289,6 +5533,9 @@
     letGoOfRunningRun();
     letGoOfFinishedRun();
     currentSessionId = null;
+    handOpened = false;
+    rereadWaits = '';
+    liveRead = '';
     const chatEl = document.getElementById('chat');
     chatEl.innerHTML = '';
     forgetStoredSubRuns();
@@ -5301,7 +5548,12 @@
 
   // Listen for session load events
   window.addEventListener('session:loaded', (event) => {
-    const { session, readOnly, reason } = event.detail;
+    // again: the open session read once more for a run this page reads along (sessions.js readAgain), not picked
+    const { session, readOnly, reason, again } = event.detail;
+    // drawn anew: nothing is open by hand any more, and nothing waits to be read
+    handOpened = false;
+    rereadWaits = '';
+    if (liveRead !== session.session_id) liveRead = '';
 
     // The run of the session being LEFT goes on -- the chat just stops watching it.
     // This used to refuse the load outright ("a run is still streaming"), which is
@@ -5458,7 +5710,7 @@
       // What the session ran with: its agent, and the profile and params chosen for it. Not llm_profile:
       // that names the profile that ran, chosen or not -- every web session before llm_profile_override
       // carries the global default there (selector_module handles the fallback to defaults)
-      if (window.selectorModule) {
+      if (window.selectorModule && !again) {     // read again, what the viewer picked for the next message stays
         window.selectorModule.restore({
           agent: session.agent_name || window.selectorModule.getCurrentAgent(),
           profile: session.llm_profile_override, params: session.llm_params,
@@ -5474,6 +5726,7 @@
     } else {
       removeReadOnlyBanner();
     }
+    showCaller(session);
     updateComposer();
     // The session shown may have an agent working in it. Not awaited: the session is
     // rendered either way, and the run joins the view when the server has answered.

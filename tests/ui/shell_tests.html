@@ -1914,6 +1914,118 @@
     }
   });
 
+  await check('a session read back shows each call as the run showed it: what it did, and how it ended', async () => {
+    // What a tool did and how it ended -- "Read README.md", the mark on its row -- went out on the run's stream
+    // and nowhere else: a session opened again named its calls by their tools, without their outcome, and a step
+    // whose model ran the tools by itself (a coding CLI as the model) showed as if nothing had been called.
+    try {
+      const line = (request_id, phase, message, parent = 'r9') => ({ request_id, server: 'file_ops.read_file()', phase,
+        message, timestamp: '2026-11-18T10:00:00+00:00', tree: { parent_id: parent, depth_level: parent === 'r9' ? 1 : 2 } });
+      const call = (id, name) => ({ id, type: 'function', function: { name, arguments: '{"path": "README.md"}' } });
+      await stub('/__stub/sessions', { session_id: 's-lines', title: 'Lines kept', messages: [
+        { role: 'user', content: 'Go', request_id: 'r9' },
+        { role: 'assistant', content: '', step: 1,
+          tool_calls: [call('c1', 'file_ops_read_file'), call('c2', 'file_ops_write_file'), call('c3', 'terminal_run'),
+            call('c4', 'old_tool_failed'), call('c5', 'old_tool_fine'), call('c6', 'old_tool_unanswered'),
+            call('c7', 'cli_tool_failed')],
+          tool_request_ids: { c1: 'r9_003', c2: 'r9_004', c3: 'r9_005', c4: 'r9_006', c5: 'r9_007', c6: 'r9_008', c7: 'r9_009' },
+          status_lines: [line('r9_003', 'end', 'Read README.md (12 lines)'), line('r9_004', 'error', 'No such directory'),
+            line('r9_005', 'progress', 'make: compiling'), null, { server: 'no id', phase: 'end', message: 'whose?' },
+            { ...line('r9', 'progress', 'model call one'), tree: { parent_id: null, depth_level: 0 } }] },
+        { role: 'tool', tool_call_id: 'c1', content: '{"status": "success"}' },
+        { role: 'tool', tool_call_id: 'c2', content: '{"status": "error", "error": "No such directory"}' },
+        { role: 'tool', tool_call_id: 'c4', content: '{"error": "refused"}' },
+        { role: 'tool', tool_call_id: 'c5', content: '{"status": "success", "error": ""}' },
+        { role: 'tool', tool_call_id: 'c7', content: '{"is_error": true, "content": "exit 2"}' },   // as a coding CLI's are kept
+        // its model ran two tools by itself: the step has no call of its own, only what they said
+        { role: 'assistant', content: 'Done.', step: 2,
+          status_lines: [line('r9_010', 'end', 'run finished'), line('r9_010_001', 'end', 'datetime: current', 'r9_010'),
+            // one id, two operations one after the other: a coding CLI as the model starts its run and waits
+            // for it under the run's own id -- in every step
+            { ...line('r9', 'end', 'run started'), tree: { parent_id: null, depth_level: 0 } },
+            { ...line('r9', 'end', 'run done: 3 turns'), tree: { parent_id: null, depth_level: 0 } }] }] });
+      await loadShell();
+      sessionButton('s-lines', 'open').click();
+      await until('the session', () => $('#headerSessionId').textContent === 'Lines kept');
+      const box = $$('#chat .msg.assistant').at(-1);
+      const rows = (id) => [...box.querySelectorAll(`.operation-progress[data-request-id="${id}"]`)];
+      const mark = (id) => rows(id)[0]?.querySelector('.progress-icon > div')?.className;
+      const said = (id) => rows(id)[0]?.querySelector('.progress-message')?.textContent;
+      need(said('r9_003') === 'Read README.md (12 lines)' && mark('r9_003') === 'checkmark',
+        `the call that went well reads "${said('r9_003')}" with ${mark('r9_003')}`);
+      need(said('r9_004') === 'No such directory' && mark('r9_004') === 'error-mark',
+        `the call that failed reads "${said('r9_004')}" with ${mark('r9_004')}`);
+      need(said('r9_005') === 'make: compiling' && mark('r9_005') === 'open-mark',
+        `the call whose end was never said reads "${said('r9_005')}" with ${mark('r9_005')}`);
+      need(box.querySelectorAll('.step-section[data-step="1"] .operation-progress').length === 4,
+        'something that is no line of an operation was drawn as one');
+      // what a call was asked and what it answered are on its row, not in a block of their own beside it
+      need(!box.querySelector('.tool-detail[data-key="r9_003"]')
+        && rows('r9_003')[0].querySelectorAll(':scope > .tool-detail-body > .tool-detail-part').length === 2,
+      'the call with a line has its arguments and result somewhere else');
+      // a call without a line -- a session older than that -- says how it ended by what it answered
+      const loose = (id) => box.querySelector(`.tool-detail[data-key="${id}"] > .tool-detail-mark > div`)?.className;
+      need(loose('r9_006') === 'error-mark' && loose('r9_007') === 'checkmark' && loose('r9_008') === undefined
+        && loose('r9_009') === 'error-mark',
+      `the calls without a line are marked ${loose('r9_006')}, ${loose('r9_007')}, ${loose('r9_008')}, ${loose('r9_009')}`);
+      need(box.querySelector('.tool-detail[data-key="r9_006"]').firstElementChild.classList.contains('tool-detail-mark'),
+        'the mark does not stand in front of the name');
+      // the step whose model called the tools: its lines, the one under the other
+      const second = box.querySelector('.step-section[data-step="2"]');
+      need(second && rows('r9_010').length === 1 && second.contains(rows('r9_010')[0]) && second.contains(rows('r9_010_001')[0]),
+        'the step without a call of its own shows nothing of what ran in it');
+      need(rows('r9_010')[0].dataset.depth === '0' && rows('r9_010_001')[0].dataset.depth === '1'
+        && !box.querySelector('.operation-progress.virtual-parent'), 'the lines do not stand as the run nested them');
+      // the one under the other: folded away with it, by the arrow the row above shows for that
+      unfold(second);
+      const arrow = rows('r9_010')[0].querySelector('.tree-expand-btn');
+      need(arrow.style.display !== 'none', 'the row above shows no arrow for the one below it');
+      arrow.click();
+      need(rows('r9_010_001')[0].getClientRects().length === 0, 'the line below does not fold away with the one above');
+      need(box.querySelector('.response-text').textContent.includes('Done.'), 'the answer is gone');
+      // each line a row of its own, where it was said: not all of an id on the first row of the chat
+      const run = $$('#chat .operation-progress[data-request-id="r9"]');
+      need(run.map((row) => row.querySelector('.progress-message').textContent).join(' | ')
+        === 'model call one | run started | run done: 3 turns', `the lines of one id read ${run.map((row) => row.textContent.trim())}`);
+      need(!second.contains(run[0]) && second.contains(run[1]) && second.contains(run[2]), 'a line stands in another step than its own');
+      need(run[0].querySelector('.open-mark') && run[1].querySelector('.checkmark'), 'a later line of an id ended the row of an earlier one');
+      // The stream speaks of an operation the read brought back -- a run joined from its start: its one row
+      // goes on, there is no second one beside it.
+      await stub('/__stub/sessions', { session_id: 's-take', title: 'Taken over', messages: [
+        { role: 'user', content: 'Before', request_id: 'r-steps' },
+        { role: 'assistant', content: '', step: 1, tool_calls: [call('k1', 'file_ops_read_file')],
+          tool_request_ids: { k1: 'r-steps_003' },
+          status_lines: [{ ...line('r-steps_003', 'progress', 'reading'), tree: { parent_id: 'r-steps', depth_level: 1 } },
+            { ...line('zz_005', 'progress', 'long gone'), tree: { parent_id: null, depth_level: 1 } },
+            { ...line('r-steps_002', 'end', 'an earlier call'), tree: { parent_id: null, depth_level: 1 } }] }] });
+      await loadShell();
+      sessionButton('s-take', 'open').click();
+      await until('the session', () => $('#headerSessionId').textContent === 'Taken over');
+      const all = (id) => $$(`#chat .operation-progress[data-request-id="${id}"]`);
+      need(all('r-steps_003').length === 1 && all('r-steps_003')[0].querySelector('.open-mark'), 'fixture: no open row read back');
+      cookie('stub_stream', 'steps');
+      $('#task').value = 'Two calls please';
+      $('#f').requestSubmit();
+      await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
+      await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
+      need(all('r-steps_003').length === 1, `the operation has ${all('r-steps_003').length} rows`);
+      need(all('r-steps_003')[0].querySelector('.progress-icon .checkmark')
+        && all('r-steps_003')[0].querySelector('.progress-message').textContent === 'Read README.md',
+      `its row reads "${all('r-steps_003')[0].textContent.replace(/\s+/g, ' ').trim()}"`);
+      // an operation that had ended is over: what the stream says under its id is another one, on a row of its own
+      need(all('r-steps_002').length === 2 && all('r-steps_002')[0].querySelector('.progress-message').textContent === 'an earlier call',
+        `an ended row read back was taken up by the stream (${all('r-steps_002').map((row) => row.textContent.replace(/\s+/g, ' ').trim())})`);
+      // an open row the stream never spoke of is no operation of that run: its end does not say "still running
+      // when the run ended" of something an earlier turn left open
+      return need(all('zz_005')[0].querySelector('.open-mark') && !all('zz_005')[0].classList.contains('unfinished')
+        && !all('zz_005')[0].querySelector('.progress-open-note'), 'the end of a later run marked a row read back');
+    } finally {
+      cookie('stub_stream', null);
+      forgetRun();
+      await loadShell();
+    }
+  });
+
   await check('steps stay open while the run works and fold once it has answered; one opened by hand stays open', async () => {
     // Folding the finished call as the next one started took away what the viewer was
     // reading while the next call was still thinking -- the run could not be followed.
@@ -3789,6 +3901,175 @@
     $('#f').requestSubmit();
     await until('the note', () => notes().length === before + 1, 3000);
     return need(notes().pop() === 'At work (0)\n  as a terminal 90 wide reads them', `it says "${notes().pop()}"`);
+  });
+
+  await check('a run\'s session opened by itself is read along as the run goes on, while the viewer follows its end', async () => {
+    // A sub-agent's run streams to the turn that started it. Opened by itself -- from what works now -- its
+    // session showed how it stood at that moment and nothing since: to follow the run one had to click it again.
+    const line = (request_id, message) => ({ request_id, server: 'file_ops.read_file()', phase: 'end', message,
+      timestamp: '2026-11-18T10:00:00+00:00', tree: { parent_id: 'rs', depth_level: 1 } });
+    const step = (number) => ({ role: 'assistant', content: '', step: number,
+      tool_calls: [{ id: `c${number}`, type: 'function', function: { name: 'file_ops_read_file', arguments: '{}' } }],
+      tool_request_ids: { [`c${number}`]: `rs_00${number}` }, status_lines: [line(`rs_00${number}`, `Read file ${number}`)] });
+    const stored = (messages) => stub('/__stub/sessions', { session_id: 's-sub-live', title: 'Read the parser code',
+      agent_name: 'assistant', parent_session: { session_id: 's-1' }, messages: [{ role: 'user', content: 'Read', request_id: 'rs' }, ...messages] });
+    const sub = { run_id: 's-sub-live', agent: 'explorer', source: 'sub_agent', task: 'turn', title: 'Read the parser code',
+      state: 'working', started: new Date(Date.now() - 40000).toISOString(), step_index: 1, step_label: 'Thinking',
+      step_labels: {}, parent_session: 's-1', needs_you: false, last_seq: 1 };
+    let seq = 1;
+    const say = (run_id, type, state, fields = {}) => stub('/__stub/agent-run-events', { events: [{ event_id: `ev${++seq}`,
+      seq, ts: new Date().toISOString(), run_id, type, state, agent: 'explorer', source: 'sub_agent', task: 'turn',
+      subject: { title: 'Read the parser code' }, parent_session: 's-1', needs_you: false, payload: null, touching: [],
+      step: type === 'run.step' ? { index: seq, total: null, key: '', label: 'Thinking' } : null, ...fields }] });
+    const rows = () => $$('#chat .operation-progress .progress-message').map((el) => el.textContent);
+    const reads = () => hits('session:s-sub-live');
+    try {
+      await stored([step(1)]);
+      await stub('/__stub/agent-runs', { runs: [{ ...atWork('s-1')[0] }, sub] });
+      await stub('/__stub/active-runs', { 's-sub-live': 'r-sub-live!' });
+      await loadShell();
+      const item = await until('the sub-agent at work', () => $('#sessionsPane .activity-item[data-run="s-sub-live"]'), 5000);
+      item.querySelector('[data-act="open"]').click();
+      await until('its session', () => $('#headerSessionId').textContent === 'Read the parser code', 3000);
+      need(rows().join() === 'Read file 1', `opened, it shows ${rows()}`);
+      // where it was called from, and the way back there
+      const caller = $('#chat > #callerLink');
+      need(caller && caller.textContent.trim() === 'Called from "Refactor the kit"', `it says "${caller?.textContent.trim()}"`);
+      // its next step: read again, by itself -- read, not picked: what the viewer chose for the next message stays
+      const restore = win().selectorModule.restore;
+      let restored = 0;
+      win().selectorModule.restore = function (...given) { restored += 1; return restore.apply(this, given); };
+      try {
+        await stored([step(1), step(2)]);
+        await say('s-sub-live', 'run.step', 'working');
+        await until('its second step', () => rows().join() === 'Read file 1,Read file 2', 4000);
+      } finally {
+        win().selectorModule.restore = restore;
+      }
+      need(restored === 0, 'the session read along set the agent and the model back');
+      // ... and whatever the viewer does meanwhile wins: another session picked, a message sent
+      need(await win().sessionManager.readAgain('s-1') === false, 'a session that is not the open one was read again');
+      const overtaken = win().sessionManager.readAgain('s-sub-live');
+      win().sessionManager.loading += 1;
+      need(await overtaken === false, 'a read the viewer overtook was drawn all the same');
+      // the viewer unfolds something to read it: the chat is not drawn anew under them -- also where the whole
+      // chat fits the window, and is "at its end" wherever they read
+      const before = await reads();
+      $('#chat .operation-progress .progress-message').click();
+      await stored([step(1), step(2), step(3)]);
+      await say('s-sub-live', 'run.step', 'working');
+      const offer = await until('the offer of what they miss', () => $('#chat > .new-steps'), 3000);
+      // a command answered after it stands above it: the offer stays the last thing in the chat
+      $('#task').value = '/runs';
+      $('#f').requestSubmit();
+      await until('the command answered', () => $('#chat .msg.note'), 3000);
+      await until('the offer below it', () => $('#chat').lastElementChild === offer, 2000);
+      await sleep(1900);
+      need(await reads() === before && rows().join() === 'Read file 1,Read file 2', 'the chat was read again under a reader');
+      // ... taken, it is read
+      offer.click();
+      await until('the step they missed', () => rows().join() === 'Read file 1,Read file 2,Read file 3', 4000);
+      need(!$('#chat > .new-steps'), 'the offer stands after it was taken');
+      // ... and so it is when they scroll back to the end by themselves
+      $('#chat .operation-progress .progress-message').click();
+      await stored([step(1), step(2), step(3), step(4)]);
+      await say('s-sub-live', 'run.step', 'working');
+      await until('the offer again', () => $('#chat > .new-steps'), 3000);
+      const scroll = $('#chatScroll');
+      scroll.scrollTop = scroll.scrollHeight;
+      scroll.dispatchEvent(new (win().Event)('scroll'));
+      await until('the next step', () => rows().join() === 'Read file 1,Read file 2,Read file 3,Read file 4', 4000);
+      // a command's answer stands in the chat and nowhere else: drawn anew it was gone. Offered, then
+      $('#task').value = '/runs';
+      $('#f').requestSubmit();
+      await until('the command answered', () => $('#chat .msg.note'), 3000);
+      const beforeNote = await reads();
+      await stored([step(1), step(2), step(3), step(4), step(5)]);
+      await say('s-sub-live', 'run.step', 'working');
+      const withNote = await until('the offer below the note', () => $('#chat > .new-steps'), 3000);
+      await sleep(1900);
+      need(await reads() === beforeNote && $('#chat .msg.note') && $('#chat').lastElementChild === withNote,
+        'the chat was drawn anew over what a command had answered');
+      withNote.click();
+      await until('the step', () => rows().length === 5, 4000);
+      need(!$('#chat .msg.note'), 'the note is still there after the offer was taken');
+      // what the run says while the chat is asking for the session's run (a load just drew it) is not lost
+      const asking = win().chatModule.askingForRun;
+      win().chatModule.askingForRun = () => true;
+      try {
+        await stored([step(1), step(2), step(3), step(4), step(5), step(6)]);
+        await say('s-sub-live', 'run.step', 'working');
+        await sleep(1900);
+        need(rows().length === 5, 'the chat was read again while it asked for the run');
+      } finally {
+        win().chatModule.askingForRun = asking;
+      }
+      await until('the step said meanwhile', () => rows().length === 6, 4000);
+      // its end: read once more, for its answer
+      await stub('/__stub/active-runs', {});
+      await stored([step(1), step(2), step(3), step(4), step(5), step(6), { role: 'assistant', content: 'Three files read.', step: 7 }]);
+      await say('s-sub-live', 'run.done', 'done');
+      await until('its answer', () => $('#chat .response-text')?.textContent.includes('Three files read.'), 4000);
+      // a run this page did not read along says its end: nothing is read again for that (its own turn's, say)
+      const after = await reads();
+      await say('s-1', 'run.step', 'working');   // another session's run goes on: not this chat's business
+      await say('s-sub-live', 'run.cancelled', 'cancelled');   // a second end: of nothing this page read along
+      await sleep(2300);
+      need(await reads() === after, 'the end of a run the page did not read along drew the chat anew');
+      // The viewer goes on to another run's session while a read of this one is still due: that read is
+      // nobody's any more, and what the other run says is read -- not dropped because "a read is under way".
+      const other = { ...sub, run_id: 's-sub-two', title: 'Read the lexer code' };
+      await stub('/__stub/sessions', { session_id: 's-sub-two', title: 'Read the lexer code', agent_name: 'assistant',
+        parent_session: { session_id: 's-1' }, messages: [{ role: 'user', content: 'Read', request_id: 'rt' }, step(1)] });
+      await stub('/__stub/agent-runs', { runs: [{ ...atWork('s-1')[0] }, sub, other] });
+      await loadShell();
+      (await until('the first run', () => $('#sessionsPane .activity-item[data-run="s-sub-live"] [data-act="open"]'), 5000)).click();
+      await until('its session', () => $('#headerSessionId').textContent === 'Read the parser code', 3000);
+      await sleep(300);
+      const opened = await reads();
+      await say('s-sub-live', 'run.started', 'working');
+      await say('s-sub-live', 'run.step', 'working');
+      await until('read along', async () => await reads() > opened, 4000);
+      const pace = win().chatModule.REREAD.everyMs;
+      win().chatModule.REREAD.everyMs = 20000;
+      try {
+        await say('s-sub-live', 'run.step', 'working');          // the next read of it is due in a long while
+        await sleep(300);
+        $('#sessionsPane .activity-item[data-run="s-sub-two"] [data-act="open"]').click();
+        await until('the other session', () => $('#headerSessionId').textContent === 'Read the lexer code', 3000);
+        const two = await hits('session:s-sub-two');
+        await say('s-sub-two', 'run.step', 'working');
+        await until('the other run read along', async () => await hits('session:s-sub-two') > two, 4000);
+      } finally {
+        win().chatModule.REREAD.everyMs = pace;
+      }
+      (await until('the first run again', () => $('#sessionsPane .activity-item[data-run="s-sub-live"] [data-act="open"]'), 3000)).click();
+      await until('its session again', () => $('#headerSessionId').textContent === 'Read the parser code', 3000);
+      // back to the conversation it belongs to
+      $('#chat > #callerLink').click();
+      await until('the caller', () => $('#headerSessionId').textContent === 'Refactor the kit', 3000);
+      need(!$('#chat > #callerLink'), 'a session nobody called names a caller');
+      // and the other way: a run read back in its caller's chat offers its own session from its box
+      await stub('/__stub/sessions', { session_id: 's-helpers', title: 'Helped', run: 'helpers', has_children: false,
+        metadata: { sub_agents: { 'sub-help': {} } } });
+      await loadShell();
+      sessionButton('s-helpers', 'open').click();
+      const box = await until('the run of the helper', () => $('#chat .sub-run[data-run-id="rh00000001_003_sub_aaaaaa"]'), 4000);
+      const own = box.querySelector(':scope > .sub-run-header > .sub-run-open');
+      need(own, 'the box of a run with a session of its own does not offer it');
+      // the header it stands in folds the box at a click or a key: not at this one, and it leaves the key to it
+      const key = new (win().KeyboardEvent)('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+      own.dispatchEvent(key);
+      need(!key.defaultPrevented, 'the offer cannot be taken with the keyboard');
+      const folded = box.querySelector(':scope > .sub-run-header').getAttribute('aria-expanded');
+      own.click();
+      need(box.querySelector(':scope > .sub-run-header').getAttribute('aria-expanded') === folded, 'the offer folds its box');
+      return Boolean(await until('its own session', () => win().sessionManager.currentSessionId === 'sub-help', 3000));
+    } finally {
+      await stub('/__stub/active-runs', {});
+      await stub('/__stub/agent-runs', { runs: [] });
+      await loadShell();
+    }
   });
 
   await check('the list of every session folds away below what works now, as the person left it', async () => {
