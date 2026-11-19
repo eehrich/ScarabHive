@@ -60,7 +60,8 @@ does not stream. GET/PUT /auth/me/preferences keep the account's display
 preferences, checked by the real model (PUTs at /__stub/preference-puts, POST
 /__stub/preferences/reset); with the cookie ``stub_preferences=fails`` every PUT
 fails, ``slow`` answers after 0.4 s, and ``fails-once`` does too and refuses the
-first. Every status
+first; ``chat-only`` answers as a server from before the ``panels`` part and refuses a
+PUT that sends it. Every status
 event of it carries a ``tree``, as the run's stream does since 6b6a1348. One
 with files starts half a second later, names ``r-files-ended`` and brings its
 final answer and end -- with ``stub_stream=stale``, ``r-files-stale`` in
@@ -1421,6 +1422,8 @@ def stub_app() -> FastAPI:
     @app.get("/auth/me/preferences")
     async def my_preferences(request: Request):
         account(request)
+        if request.cookies.get("stub_preferences") == "chat-only":  # a server from before the panels part
+            return {"chat": preferences["stored"]["chat"]}
         return preferences["stored"]
 
     @app.put("/auth/me/preferences")
@@ -1435,6 +1438,8 @@ def stub_app() -> FastAPI:
             preferences["failed_once"] = True
             raise HTTPException(status_code=500, detail="database is locked")
         body = await request.json()
+        if mode == "chat-only" and set(body) - {"chat"}:
+            raise HTTPException(status_code=422, detail="extra keys are not permitted")
         try:
             chosen = UserPreferences.model_validate(body)  # the real model: what it refuses, the stub refuses
         except ValidationError as error:
@@ -1834,6 +1839,7 @@ EXPECTED = [
     'a framed kit panel leaves its title to the tab and keeps its content',
     'a docked panel detaches into a window and docks back',
     'a window gets its size back once the browser window grows again',
+    'a window folds to its bar and opens again at its size, its page kept loaded',
     'loading a session names it in the header and tells the panels',
     'a panel opens a session in the chat, a sub-session too',
     "a panel opens in a browser tab of its own, docked or in a window, pinned to the chat's session where it shows one",
@@ -2027,6 +2033,8 @@ EXPECTED = [
     'a signed-in user sees their account and can save the profile',
     'a new email in the profile asks for the current password and sends it, the same one is not sent',
     'the chat settings are kept on the account and apply to the chat at once',
+    'a panel opens as a window when the settings say so, kept on the account',
+    'a server from before the panel settings still has the chat settings shown and saved',
     'logging out forgets the layout of the user who left',
     'an expired or deactivated sign-in goes to the login page and comes back',
     'a server failure at start is shown, not a dead page',

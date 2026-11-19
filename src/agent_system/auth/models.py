@@ -113,6 +113,15 @@ class ChatPreferences(BaseModel):
     sub_agent_output: Literal["collapsed", "expanded"] = "collapsed"
 
 
+class PanelPreferences(BaseModel):
+    """Where the web shell opens a panel (Settings -> Panels)."""
+    model_config = {"extra": "forbid"}
+
+    # Beside the chat in the dock, or as a window of its own. A panel opened from another one opens where that one
+    # is, and the layout restored on a visit keeps each where it was.
+    open_as: Literal["docked", "window"] = "docked"
+
+
 class UserPreferences(BaseModel):
     """What a user chose about how things are shown, kept with their account.
 
@@ -122,6 +131,7 @@ class UserPreferences(BaseModel):
     model_config = {"extra": "forbid"}
 
     chat: ChatPreferences = Field(default_factory=ChatPreferences)
+    panels: PanelPreferences = Field(default_factory=PanelPreferences)
 
 
 class User(UserBase):

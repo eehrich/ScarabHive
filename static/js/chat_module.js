@@ -3600,7 +3600,8 @@
     try {
       const response = await fetch('/auth/me/preferences', { credentials: 'include' });
       // 404: a server without accounts; 401: nobody signed in. Neither is an error here.
-      if (response.ok) usePreferences(await response.json());
+      // told as a change is: the shell (where a panel opens) takes them from there as the chat does
+      if (response.ok) window.dispatchEvent(new CustomEvent('preferences:changed', { detail: await response.json() }));
     } catch (error) {
       console.warn('[chat_module] Could not load the display preferences:', error);
     }

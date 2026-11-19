@@ -78,21 +78,30 @@ $('profileForm').addEventListener('submit', async (event) => {
   }
 });
 
-// How the chat shows a run: kept with the account (PUT /auth/me/preferences), applied
-// at once. Each radio saves as it is clicked, the way the theme does -- a Save button
-// for a handful of switches would be one more thing to forget.
-const chatRadios = [...document.querySelectorAll('#chatPreferences input[type="radio"]')];
+// How the chat shows a run and where a panel opens: kept with the account (PUT
+// /auth/me/preferences), applied at once. Each radio saves as it is clicked, the way the
+// theme does -- a Save button for a handful of switches would be one more thing to forget.
+// Each card's radios are one part of the preferences.
+const PARTS = { chatPreferences: 'chat', panelPreferences: 'panels' };
+const prefRadios = Object.keys(PARTS).flatMap((id) => [...document.querySelectorAll(`#${id} input[type="radio"]`)]);
+const partOf = (radio) => PARTS[radio.closest('section').id];
 let preferences = null;
 
+// A part the server does not answer with (one from before it, until a restart) is hidden and never sent:
+// the server would refuse the whole save for it.
+const known = (part) => Boolean(preferences && typeof preferences[part] === 'object' && preferences[part]);
+
 function showPreferences() {
-  chatRadios.forEach((radio) => { radio.checked = preferences.chat[radio.name] === radio.value; });
+  Object.entries(PARTS).forEach(([id, part]) => { $(id).hidden = !known(part); });
+  prefRadios.filter((radio) => known(partOf(radio)))
+    .forEach((radio) => { radio.checked = preferences[partOf(radio)][radio.name] === radio.value; });
 }
 
 async function loadPreferences() {
   try {
     preferences = await api('/auth/me/preferences', { quiet: true });
   } catch (error) {
-    $('chatPreferences').hidden = true;  // no account to keep them: nothing to choose
+    Object.keys(PARTS).forEach((id) => { $(id).hidden = true; });  // no account to keep them: nothing to choose
     if (!(error instanceof ApiError && error.status === 404)) {
       toast(`The chat settings could not be loaded: ${error.message}`, { kind: 'error' });
     }
@@ -108,14 +117,17 @@ async function loadPreferences() {
 let saving = Promise.resolve();
 let pending = 0;
 
-chatRadios.forEach((radio) => radio.addEventListener('change', () => {
+prefRadios.forEach((radio) => radio.addEventListener('change', () => {
   if (!preferences) return;
   pending += 1;
   saving = saving.then(async () => {
-    const shown = Object.fromEntries(chatRadios.filter((r) => r.checked).map((r) => [r.name, r.value]));
+    const next = { ...preferences };
+    for (const part of Object.values(PARTS).filter(known)) {
+      const shown = prefRadios.filter((r) => r.checked && partOf(r) === part).map((r) => [r.name, r.value]);
+      next[part] = { ...preferences[part], ...Object.fromEntries(shown) };
+    }
     try {
-      preferences = await api('/auth/me/preferences', {
-        method: 'PUT', json: { ...preferences, chat: { ...preferences.chat, ...shown } } });
+      preferences = await api('/auth/me/preferences', { method: 'PUT', json: next });
       announcePreferences(preferences);
     } catch {
       // Not saved: show what is in effect, not what was clicked -- unless a later click

@@ -67,11 +67,23 @@ def test_a_choice_is_kept_and_comes_back_whole(client, db, db_path):
 
     saved = client.put("/auth/me/preferences", headers=headers, json={"chat": {key: value}})
     assert saved.status_code == 200
-    expected = {"chat": {**DEFAULTS["chat"], key: value}}
+    expected = {**DEFAULTS, "chat": {**DEFAULTS["chat"], key: value}}
     assert saved.json() == expected, "what is left out is the default"
     assert client.get("/auth/me/preferences", headers=headers).json() == expected
     # Kept on disk, not in the process: a restart reads it back.
     assert setup_database(db_path).get_preferences(db.get_user_by_username("alice").id).model_dump() == expected
+
+
+def test_where_a_panel_opens_is_kept_beside_the_chats_choices(client, db):
+    """The shell reads panels.open_as; a value it does not know is refused, not stored."""
+    _user(db, "alice")
+    headers = _auth(client, "alice")
+    field = UserPreferences.model_fields["panels"].annotation.model_fields["open_as"]
+    other = next(v for v in field.annotation.__args__ if v != field.default)
+    saved = client.put("/auth/me/preferences", headers=headers, json={"chat": OTHER, "panels": {"open_as": other}})
+    assert saved.status_code == 200, saved.text
+    assert client.get("/auth/me/preferences", headers=headers).json() == {"chat": OTHER, "panels": {"open_as": other}}
+    assert client.put("/auth/me/preferences", headers=headers, json={"panels": {"open_as": "tab"}}).status_code == 422
 
 
 def test_a_later_choice_replaces_the_earlier(client, db):
@@ -88,7 +100,7 @@ def test_one_accounts_choice_is_not_anothers(client, db):
     _user(db, "alice")
     _user(db, "bob")
     client.put("/auth/me/preferences", headers=_auth(client, "alice"), json={"chat": OTHER})
-    assert client.get("/auth/me/preferences", headers=_auth(client, "alice")).json() == {"chat": OTHER}
+    assert client.get("/auth/me/preferences", headers=_auth(client, "alice")).json() == {**DEFAULTS, "chat": OTHER}
     assert client.get("/auth/me/preferences", headers=_auth(client, "bob")).json() == DEFAULTS
 
 
@@ -103,7 +115,7 @@ def test_what_nobody_reads_is_refused_and_nothing_is_stored(client, db, body):
     client.put("/auth/me/preferences", headers=headers, json={"chat": OTHER})
 
     assert client.put("/auth/me/preferences", headers=headers, json=body).status_code == 422
-    assert client.get("/auth/me/preferences", headers=headers).json() == {"chat": OTHER}
+    assert client.get("/auth/me/preferences", headers=headers).json() == {**DEFAULTS, "chat": OTHER}
 
 
 def test_without_signing_in_there_are_none(client, db):
@@ -164,4 +176,4 @@ def test_a_database_from_before_gets_the_table(db_path):
     db = setup_database(db_path)
     user = _user(db, "alice")
     db.set_preferences(user.id, UserPreferences.model_validate({"chat": OTHER}))
-    assert db.get_preferences(user.id).model_dump() == {"chat": OTHER}
+    assert db.get_preferences(user.id).model_dump() == {**DEFAULTS, "chat": OTHER}

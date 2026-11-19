@@ -304,6 +304,10 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 .app-window-bar > .pk-btn--icon + .pk-btn--icon { margin-left: calc(-1 * var(--space-2)); }  /* the buttons closer together */
 .app-window-title { flex: 1; min-width: 0; font-size: var(--text-sm); font-weight: 500; }
 .app-window-body { position: relative; flex: 1; min-height: 0; }
+/* Folded to its bar (workspace.js, fold): the page stays loaded, hidden; the bar still moves the window */
+.app-window[data-collapsed] { height: auto !important; min-height: 0; }
+.app-window[data-collapsed] .app-window-bar { border-bottom: 0; }
+.app-window[data-collapsed] .app-window-body, .app-window[data-collapsed] .app-window-resize { display: none; }
 .app-window-resize { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; }
 .app-window-resize::after {
   content: ""; position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px;
@@ -393,6 +397,9 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
   .app-search span, .app-search kbd, .app-brand span, .app-session { display: none; }
   .app-search { width: auto; margin-left: auto; }
   .app-window { inset: 0 !important; width: auto !important; height: auto !important; border-radius: 0; }
+  /* a window fills the narrow screen: nothing to fold, the page shows */
+  .app-window-fold { display: none; }
+  .app-window[data-collapsed] .app-window-body { display: block; }
 }
 
 /* The dock's help button: at the end of its bar, for the tab in front (workspace.js, openHelp) */

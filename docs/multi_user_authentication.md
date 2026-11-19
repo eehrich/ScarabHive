@@ -425,7 +425,7 @@ curl -X PATCH http://localhost:8000/auth/me \
 ```
 
 #### GET/PUT /auth/me/preferences
-Display settings of the logged-in account (today: the chat). `GET` always answers
+Display settings of the logged-in account (the chat, and where a panel opens). `GET` always answers
 with all keys, anything not chosen with its default; `PUT` replaces the whole
 object, anything omitted becomes the default. Unknown keys and values are
 rejected with 422 instead of being silently stored. Stored in the table
@@ -434,7 +434,8 @@ account. Without a login: 401; without authentication the endpoint does not exis
 
 ```json
 {"chat": {"fold_steps": "at_end", "thinking": "collapsed", "sub_agents": "expanded",
-          "sub_agent_output": "collapsed"}}
+          "sub_agent_output": "collapsed"},
+ "panels": {"open_as": "docked"}}
 ```
 
 - `fold_steps`: `at_end` (steps collapse when the answer arrives), `at_next_step`
@@ -443,6 +444,8 @@ account. Without a login: 401; without authentication the endpoint does not exis
 - `sub_agents`: `expanded` | `collapsed` (sub-agent runs in the chat)
 - `sub_agent_output`: `collapsed` | `expanded` (a sub-agent's answer within its
   run)
+- `panels.open_as`: `docked` | `window` (where the shell opens a panel; one opened
+  from another panel opens where that one is)
 
 A key added later also reaches accounts that have saved before: it is missing from
 their row, so it is read with its default and everything they chose is kept.

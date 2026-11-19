@@ -52,10 +52,11 @@ export class Workspace {
     this.layer = document.getElementById('floatingLayer');
     this.floatingList = document.getElementById('floatingList');
     /**
-     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect, dirty, scope}
+     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect, dirty, scope, collapsed}
      * linked: the path is where a link sent the panel, not where it navigated itself
      * dirty: the page reported unsaved input (pk:dirty)
      * scope: 'all' while its <pk-session all> shows all sessions (pk:scope)
+     * collapsed: a window folded to its bar -- the page stays loaded behind it, told it is not visible
      */
     this.items = new Map();
     this.active = null;
@@ -66,6 +67,12 @@ export class Workspace {
     this.tabDropped = false;
     this.zTop = 1;
     this.dockWidth = 520;
+    // Where a panel opens that names no place (Settings -> Panels): the chat's preferences:changed carries them
+    // from the account on load and from the Settings panel on a change.
+    this.openAs = 'dock';
+    window.addEventListener('preferences:changed', (event) => {
+      this.openAs = event.detail?.panels?.open_as === 'window' ? 'float' : 'dock';
+    });
     window.addEventListener('message', (event) => this.onMessage(event));
     this.wireResizer();
     this.wireTabBar();
@@ -157,11 +164,12 @@ export class Workspace {
   // ------------------------------------------------------------ opening
 
   /**
-   * Open a panel (or focus it if it is open). place: 'dock' (default) or 'float'.
+   * Open a panel (or focus it if it is open). place: 'dock' or 'float'; without one where the viewer's settings say
+   * (openAs) -- a panel opened from another one, and the layout restored, name theirs.
    * path: where a link sends the panel. Opened again without one, a panel a
    * link sent somewhere starts over; a path it navigated to itself stays.
    */
-  async open(panelId, { path = '', place = 'dock', rect = null, linked = Boolean(path), quietly = false } = {}) {
+  async open(panelId, { path = '', place = this.openAs, rect = null, linked = Boolean(path), quietly = false, collapsed = false } = {}) {
     const panel = this.panel(panelId);
     if (!panel) {
       showToast(document, `Panel "${panelId}" is not available`, 'warn');
@@ -181,7 +189,7 @@ export class Workspace {
       this.focus(existing.key, { quietly });
       return;
     }
-    const item = { key: `${panelId}:${Date.now().toString(36)}`, panelId, path, linked, place, rect, frame: null, element: null };
+    const item = { key: `${panelId}:${Date.now().toString(36)}`, panelId, path, linked, place, rect, collapsed, frame: null, element: null };
     this.items.set(item.key, item);
     this.mount(item);
     this.focus(item.key, { quietly });
@@ -269,6 +277,7 @@ export class Workspace {
     const item = this.items.get(key);
     if (!item || item.place === place || (item.dirty && !(await this.mayDiscard(item)))) return;
     item.place = place;
+    item.collapsed = false;  // a window docked and detached again comes back open
     if (place === 'dock') this.active = key;
     this.mount(item);
     this.focus(key);
@@ -279,9 +288,10 @@ export class Workspace {
     return [...this.items.values()].filter((item) => item.place === 'dock');
   }
 
-  /** Whether a panel is on screen: the front tab of a shown dock, or a window while its layer shows. */
+  /** Whether a panel is on screen: the front tab of a shown dock, or a window while its layer shows and it is not
+   *  folded to its bar. */
   shown(item) {
-    if (item.place === 'float') return getComputedStyle(this.layer).display !== 'none';
+    if (item.place === 'float') return getComputedStyle(this.layer).display !== 'none' && !this.folded(item);
     return item.key === this.active && getComputedStyle(this.dock).display !== 'none';
   }
 
@@ -479,6 +489,7 @@ export class Workspace {
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-back" data-act="aside" title="Back to the chat">${icon('arrow-left', { size: 'sm' })}</button>
         ${icon(panel.icon, { size: 'sm' })}
         <span class="app-window-title pk-truncate"></span>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-window-fold" data-act="fold"></button>
         ${panel.help && html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="help" title="Help for this panel">${icon('circle-help', { size: 'sm' })}</button>`}
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="tab" title="Open in a new browser tab">${icon('external-link', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="dock" title="Dock beside the chat">${icon('panel-right', { size: 'sm' })}</button>
@@ -498,9 +509,37 @@ export class Workspace {
     element.querySelector('[data-act="dock"]').addEventListener('click', () => this.move(item.key, 'dock'));
     element.querySelector('[data-act="tab"]').addEventListener('click', () => this.openInTab(item.key));
     element.querySelector('[data-act="help"]')?.addEventListener('click', () => this.openHelp(item));
+    element.querySelector('[data-act="fold"]').addEventListener('click', () => this.fold(item.key));
+    element.querySelector('.app-window-bar').addEventListener('dblclick', (event) => {
+      if (!event.target.closest('button')) this.fold(item.key);
+    });
+    this.showFold(item);
     this.dragging(element.querySelector('.app-window-bar'), item, (rect, dx, dy) => ({ ...rect, x: rect.x + dx, y: rect.y + dy }));
     this.dragging(element.querySelector('.app-window-resize'), item,
       (rect, dx, dy) => ({ ...rect, w: Math.max(MIN_WIDTH, rect.w + dx), h: Math.max(MIN_HEIGHT, rect.h + dy) }));
+  }
+
+  /** Folded to its bar on a wide screen; a narrow one has a window fill the screen, folded or not. */
+  folded(item) {
+    return Boolean(item.collapsed) && !this.narrow();
+  }
+
+  /** Fold a window to its bar to make room for a moment, or open it again at its size. Its page stays loaded. */
+  fold(key) {
+    const item = this.items.get(key);
+    if (!item || item.place !== 'float' || this.narrow()) return;
+    item.collapsed = !item.collapsed;
+    this.showFold(item);
+    this.post(item, 'pk:visibility', { visible: this.shown(item) });
+    this.save();
+  }
+
+  showFold(item) {
+    const button = item.element.querySelector('[data-act="fold"]');
+    item.element.toggleAttribute('data-collapsed', Boolean(item.collapsed));
+    button.setAttribute('aria-expanded', String(!item.collapsed));
+    button.title = item.collapsed ? 'Expand the window' : 'Fold to the title bar';
+    render(button, icon(item.collapsed ? 'chevron-down' : 'chevron-up', { size: 'sm' }));
   }
 
   showTitle(item) {
@@ -590,7 +629,8 @@ export class Workspace {
       dockWidth: this.dockWidth,
       active: this.items.get(this.active)?.panelId || null,
       dockAway: this.dockAway,
-      items: [...this.items.values()].map(({ panelId, path, linked, place, rect }) => ({ panelId, path, linked, place, rect })),
+      items: [...this.items.values()].map(({ panelId, path, linked, place, rect, collapsed }) => ({
+        panelId, path, linked, place, rect, ...(place === 'float' && collapsed ? { collapsed: true } : {}) })),
     };
     try { localStorage.setItem(this.layoutKey, JSON.stringify(layout)); } catch { /* storage unavailable */ }
   }
@@ -621,6 +661,7 @@ export class Workspace {
         linked: Boolean(path) && saved.linked === true,
         place: saved.place === 'float' ? 'float' : 'dock',
         rect: storedRect(saved.rect),
+        collapsed: saved.place === 'float' && saved.collapsed === true,
         quietly: true,
       });
     }

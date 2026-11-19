@@ -548,6 +548,29 @@
     return true;
   });
 
+  await check('a window folds to its bar and opens again at its size, its page kept loaded', async () => {
+    $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="float"]').click();
+    const window_ = await until('the window', () => $('#floatingLayer .app-window'));
+    await until('pk:init in the window', () => received('pk:init').at(-1)?.visible === true);
+    const page = probeFrame().contentWindow;
+    const height = () => window_.getBoundingClientRect().height;
+    const full = height();
+    const stored = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'probe');
+    const fold = window_.querySelector('[data-act="fold"]');
+    fold.click();
+    await until('the window folded to its bar', () => height() < 60);
+    await until('the page told it is hidden', () => received('pk:visibility').at(-1)?.visible === false);
+    const folded = fold.getAttribute('aria-expanded') === 'false' && stored().collapsed === true;
+    // the bar's double click opens it again: the same page, at the size it had
+    window_.querySelector('.app-window-bar').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await until('the window at its size again', () => Math.abs(height() - full) < 1);
+    await until('the page told it shows', () => received('pk:visibility').at(-1)?.visible === true);
+    const opened = probeFrame().contentWindow === page && fold.getAttribute('aria-expanded') === 'true' && !stored().collapsed;
+    window_.querySelector('[data-act="dock"]').click();
+    await until('the tab again', () => !$('#floatingLayer .app-window') && received('pk:init').length);
+    return need(folded, 'not folded, or not kept') && need(opened, 'reloaded, or still kept folded');
+  });
+
   await check('loading a session names it in the header and tells the panels', async () => {
     sessionButton('s-1', 'open').click();
     await until('the header title', () => $('#headerSessionId').textContent === 'Refactor the kit');
@@ -6726,6 +6749,63 @@
     } finally {
       cookie('stub_preferences', null);
       await stub('/__stub/preferences/reset', {});
+    }
+  });
+
+  await check('a panel opens as a window when the settings say so, kept on the account', async () => {
+    const radio = () => panelFrame('/ui/panels/settings')?.contentDocument
+      ?.querySelector('#panelPreferences input[name="open_as"][value="window"]');
+    const memoryWindow = () => $$('#floatingLayer .app-window').find((w) => w.textContent.includes('Memory'));
+    const openMemory = async () => {
+      $('#launcherButton').click();
+      (await until('the memory entry', () => $('#launcherList [data-panel="memory"]'))).click();
+    };
+    const closeMemory = () => {
+      memoryWindow()?.querySelector('[data-act="close"]').click();
+      $$('.dock-tab').find((t) => t.textContent.includes('Memory'))?.querySelector('[data-act="close"]').click();
+    };
+    try {
+      closeMemory();
+      (await until('the panel settings', () => radio(), 3000)).click();
+      await until('the saved choice', async () => (await (await stub('/__stub/preference-puts')).json())
+        .at(-1)?.panels?.open_as === 'window', 3000);
+      await openMemory();
+      await until('Memory as a window', () => memoryWindow(), 3000);
+      need(!$$('.dock-tab').some((t) => t.textContent.includes('Memory')), 'Memory docked as well');
+      closeMemory();
+      // read back from the account after a reload, not kept in this page
+      await loadShell();
+      await until('the settings read back', () => radio()?.checked, 3000);
+      await openMemory();
+      await until('Memory as a window again', () => memoryWindow(), 3000);
+      closeMemory();
+      return true;
+    } finally {
+      await stub('/__stub/preferences/reset', {});
+      choose({});  // the shell back on the default for the checks after this one
+      closeMemory();
+    }
+  });
+
+  await check('a server from before the panel settings still has the chat settings shown and saved', async () => {
+    // the API restarts after the page's files have changed: until then it answers without `panels`, and refuses it
+    cookie('stub_preferences', 'chat-only');
+    const settings = () => panelFrame('/ui/panels/settings');
+    try {
+      await loadShell();
+      const panel = await until('the settings page', () => settings()?.contentDocument?.getElementById('chatPreferences')
+        && !settings().contentDocument.getElementById('chatPreferences').hidden && settings().contentDocument);
+      await until('the chat choice shown', () => panel.querySelector('#chatPreferences input[name="thinking"]:checked'), 3000);
+      need(panel.getElementById('panelPreferences').hidden, 'the part the server does not know is offered');
+      const puts = (await (await stub('/__stub/preference-puts')).json()).length;
+      panel.querySelector('#chatPreferences input[name="thinking"][value="expanded"]').click();
+      await until('the chat choice saved', async () => (await (await stub('/__stub/preference-puts')).json()).length === puts + 1, 3000);
+      const sent = (await (await stub('/__stub/preference-puts')).json()).at(-1);
+      return need(!('panels' in sent) && sent.chat.thinking === 'expanded', `sent ${JSON.stringify(sent)}`);
+    } finally {
+      cookie('stub_preferences', null);
+      await stub('/__stub/preferences/reset', {});
+      await loadShell();
     }
   });
 
