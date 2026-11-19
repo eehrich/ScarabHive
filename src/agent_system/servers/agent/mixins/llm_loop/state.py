@@ -90,6 +90,9 @@ class LoopState:
     #: when the current one began (fallback._now) and how often it has waited -- reset by an answer.
     max_outage_seconds: float = 0.0
     outage_started: Optional[float] = None
+    #: When the current outage began; outage_started moves on while the network is gone, this does
+    #: not -- it bounds the whole wait (network_state.LONGEST_OUTAGE_S).
+    outage_began: Optional[float] = None
     outage_waits: int = 0
     #: Fingerprint of the tool list the run's last call sent
     #: (fallback._prepare_llm_call); its answer keeps it as ChatMessage.tools_key.
@@ -174,13 +177,17 @@ class StepState:
     round_reached: bool = False
     #: Whether a call of this round failed before any request could reach a provider (connect, DNS):
     #: the evidence of an outage. A failure that says nothing either way (LLMServerError.reach_unknown)
-    #: sets neither, so the round waits for the network when it has this and not round_reached.
+    #: sets neither, so the round waits for the network when it has this and not round_reached --
+    #: or, without it, when other runs of the process have just found the network gone
+    #: (llm/network_state.py).
     round_unreachable: bool = False
     #: The run's base (active_llm, base_profile, display_profile_info) as the round began: after an
     #: outage the run asks it again, not the chain's last member the round moved the base to.
     round_base: Optional[tuple] = None
-    #: When the round began (fallback._now): an outage is counted from its first round on.
-    round_started: float = 0.0
+    #: When the first call of the round failed (fallback._now): an outage is counted from there on.
+    #: Not from the round's start: a call that streamed for an hour before the network went
+    #: would have spent the whole budget before the outage began.
+    round_failed_at: Optional[float] = None
     budget_note: Optional[ChatMessage] = None
 
     # -- the call and its retries (fallback.py)

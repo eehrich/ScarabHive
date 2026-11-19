@@ -21,6 +21,7 @@ from agent_system.servers.agent.components.tool_bindings import form_problem, in
 from agent_system.services.session_manager import SessionNotFoundError
 from agent_system.services.session_service import is_ephemeral_session
 from agent_system.utils.id import short_id
+from agent_system.llm import network_state
 from agent_system.llm.token_utils import extract_text_from_content
 
 if TYPE_CHECKING:
@@ -2827,9 +2828,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
                         return job
 
-                # Check timeout
+                # Check timeout -- not while the process sees the network gone: the sub-agent then
+                # only waits for it (llm/network_state.py), and an answer of "timeout" would read
+                # as its failure to the caller, who starts it again or gives up. No bound of its own:
+                # the evidence ends with the runs that give it, each of which stops waiting within
+                # LONGEST_OUTAGE_S and its budget -- a bound here could end the wait before them.
                 elapsed = asyncio.get_event_loop().time() - start_time
-                if elapsed > timeout:
+                if elapsed > timeout and not network_state.network_down():
                     if status_ctx:
                         await status_ctx.error(f"Timeout waiting for {instance_id} ({elapsed:.1f}s)")
                     return {

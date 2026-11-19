@@ -3486,6 +3486,41 @@ class TestAFinishedJobDoesNotStayInMemory:
         assert server._runs_in_another_process.await_count == 3, "it asked again every turn"
 
     @pytest.mark.asyncio
+    async def test_a_wait_does_not_time_out_while_the_network_is_gone(self, server, monkeypatch):
+        """A sub-agent that waits for the network is not failing: answered "timeout", its caller
+        would start it again or give up. The wait runs on past its timeout until the run ends."""
+        import asyncio
+        from agent_system.llm import network_state
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "the whole thought"}])
+        # its own poll, then one per turn: the second turn looks at the clock after a 0.5 s pause
+        server._runs_in_another_process = AsyncMock(side_effect=[True, True, True, False])
+        server.default_wait_timeout = 0.2
+        monkeypatch.setattr(network_state, "network_down", lambda: True)
+
+        result = await asyncio.wait_for(
+            server._handle_wait({"instance_id": "sub_done", "_session_id": "parent1"}), 10)
+
+        assert result["status"] == "completed", result
+        assert server._runs_in_another_process.await_count == 4, "fixture: the run ended before the timeout"
+
+    @pytest.mark.asyncio
+    async def test_a_wait_times_out_once_the_network_is_back(self, server, monkeypatch):
+        """The evidence is what holds the timeout off: once it is gone, a sub-agent still running
+        past its time ends the wait as a timeout, as before."""
+        import asyncio
+        from agent_system.llm import network_state
+        self.stored(server, self.ACTIVE, [{"role": "assistant", "content": "half a thought"}])
+        server._runs_in_another_process = AsyncMock(side_effect=[True] * 4)
+        server.default_wait_timeout = 0.2
+        down = iter([True])   # gone at the first look past the timeout, back at the next
+        monkeypatch.setattr(network_state, "network_down", lambda: next(down, False))
+
+        result = await asyncio.wait_for(
+            server._handle_wait({"instance_id": "sub_done", "_session_id": "parent1"}), 10)
+
+        assert result["status"] == "error" and "Timeout" in result["error"], result
+
+    @pytest.mark.asyncio
     async def test_a_transcript_that_cannot_be_read_is_not_an_error(self, server):
         """The session file may be gone, unreadable or half-written. None of that is worth
         turning a poll into a failure: the caller keeps the answer it had before this existed."""

@@ -9,7 +9,8 @@ then a rate limit, an exhausted quota or a refused key blocks the LLM for every 
 transport error moves on without a block; running out of file descriptors moves nowhere. "Moves on"
 is the next fallback of the step (step_llm.py), and when the chain is used up the error goes to the
 caller -- unless no LLM of the chain could even be reached (a network outage): then the step waits
-and asks the run's own model again, within the agent's network_outage_seconds. A cancel or a timeout
+and asks the run's own model again, within the agent's network_outage_seconds, which do not run while
+other runs of the process find the network gone too (llm/network_state.py, at most a day). A cancel or a timeout
 ends the run. Its own module because what each error means is the one place the rules of docs/_arch_agent_architecture.md ("What Triggers a Block") live in code.
 """
 from __future__ import annotations
@@ -25,10 +26,12 @@ import socket
 import ssl
 import time
 from typing import TYPE_CHECKING, Any, Dict
+from urllib.parse import urlsplit
 
 import httpcore
 import httpx
 
+from .....llm import network_state
 from .....llm.model_health import model_health
 from .....llm.message_roles import opens_a_turn
 from .....llm.models import (
@@ -112,6 +115,14 @@ def _never_reached(exc: BaseException) -> bool:
             found = True
         cur = cur.__cause__ or cur.__context__
     return found
+
+
+def _host_of(client: Any) -> str:
+    """Where a client's calls go, as the network evidence counts hosts (llm/network_state.py): the
+    host of its base_url, else the base_url itself (a coding CLI's ``coding_cli:<instance>``), else
+    the client's class -- not its model: two models of one SDK client go to one provider."""
+    base = str(getattr(client, "base_url", None) or getattr(client, "_base_url", None) or "")
+    return urlsplit(base).hostname or base or type(client).__name__
 
 
 def _is_local_resource_exhaustion(exc: BaseException) -> bool:
@@ -211,7 +222,8 @@ class FallbackMixin:
                 model_health.release(st.current_llm, asked_at=st.health_asked_at)
                 # An answer ends an outage: a later one gets the whole budget, and the base it
                 # moved off is not brought back (one endpoint down is what the swap is for).
-                run.outage_started, run.outage_waits = None, 0
+                run.outage_started, run.outage_began, run.outage_waits = None, None, 0
+                network_state.note_answer()
                 if st.pending_thinking_complete:
                     yield _name_the_model(st.pending_thinking_complete, st.current_llm)
                 break
@@ -592,6 +604,7 @@ class FallbackMixin:
         """A 5xx: the step moves to the next fallback, no block. False (logged) when none is left."""
         # 5xx server errors (e.g. DeepSeek 504) — try fallback, but no block.
         # Server errors are transient outages; the primary LLM should be retried next time.
+        self._note_round_failure(st)
         taken = self._take_fallback(run, st)
         if taken:
             fallback_profile, fallback_llm = taken
@@ -611,7 +624,7 @@ class FallbackMixin:
             # call never reached.
             self._switch_to_fallback(run, st, fallback_profile, fallback_llm, swap_base=True)
             return True
-        if self._round_met_an_outage(st) and await self._wait_out_outage(run, st, e):
+        if self._round_met_an_outage(run, st) and await self._wait_out_outage(run, st, e):
             return True     # a coding CLI that cannot say why was last, a link before it found no route
         logger.error(f"[{self.name}] No fallback profiles available, server error unrecoverable")
         return False
@@ -645,6 +658,7 @@ class FallbackMixin:
         #                re-probed max_steps times. A cross-provider
         #                chain member has its own key and still rescues
         #                the run.
+        self._note_round_failure(st)
         status_code = getattr(getattr(e, "response", None), "status_code", None)
         endpoint_level = status_code in (401, 402, 403, 404)
         if status_code is None and _is_local_resource_exhaustion(e):
@@ -663,6 +677,7 @@ class FallbackMixin:
             st.round_reached = True     # an answer of some kind, or a provider that got the request
         else:
             st.round_unreachable = True
+            network_state.note_unreachable(_host_of(st.current_llm), run.request_id)
         kind = (f"HTTP {status_code}" if status_code
                 else "Connection/transport error")
         if endpoint_level:
@@ -686,36 +701,53 @@ class FallbackMixin:
             # (~connect timeout x retries per step).
             self._switch_to_fallback(run, st, fallback_profile, fallback_llm, swap_base=True)
             return True
-        if self._round_met_an_outage(st) and await self._wait_out_outage(run, st, e):
+        if self._round_met_an_outage(run, st) and await self._wait_out_outage(run, st, e):
             return True
         logger.error(f"[{self.name}] No fallback profiles available, connection error unrecoverable")
         return False
 
     @staticmethod
-    def _round_met_an_outage(st: StepState) -> bool:
-        """No call of the round reached a provider, and one found no way to it."""
-        return st.round_unreachable and not st.round_reached
+    def _note_round_failure(st: StepState) -> None:
+        """A call of the round failed: the first such is when an outage would have begun."""
+        if st.round_failed_at is None:
+            st.round_failed_at = _now()
+
+    @staticmethod
+    def _round_met_an_outage(run: LoopState, st: StepState) -> bool:
+        """No call of the round reached a provider, and one found no way to it -- or none could
+        tell, and other runs of the process have just found the network gone."""
+        if st.round_reached:
+            return False
+        return st.round_unreachable or network_state.network_down(exclude=run.request_id)
 
     def _start_round(self: Agent, run: LoopState, st: StepState) -> None:
         """A round of the chain begins (a step, or the next try after an outage wait): nothing was
         reached yet, and the base it starts from is kept to come back to."""
         st.round_reached = st.round_unreachable = False
         st.round_base = (run.active_llm, run.base_profile, run.display_profile_info)
-        st.round_started = _now()
+        st.round_failed_at = None
 
     async def _wait_out_outage(self: Agent, run: LoopState, st: StepState, e: Exception) -> bool:
         """No LLM of the round could even be reached: most likely the network, not every provider
         at once. The step waits (``st.network_wait``, taken at the top of the retry loop) and then
         asks again from the base the round started on -- walking on would end the run, and a chain
         ends on its priciest members. False once network_outage_seconds have passed since the
-        outage began (calls included, not only the waits)."""
+        outage began (calls included, not only the waits) -- time in which other runs of the process
+        found the network gone too (llm/network_state.py) does not count, up to LONGEST_OUTAGE_S: the
+        budget is for providers that are down while the network is up, and a run that ends in an
+        outage of the network only fails the work that waited for it."""
         now = _now()
         if run.outage_started is None:
-            run.outage_started = st.round_started   # the calls of the first round count too
+            # the failed calls of the first round count too
+            run.outage_started = run.outage_began = st.round_failed_at if st.round_failed_at is not None else now
+        if (network_state.network_down(exclude=run.request_id)
+                and now - run.outage_began < network_state.LONGEST_OUTAGE_S):
+            run.outage_started = now    # while other runs find the network gone too, nothing counts
         left = run.max_outage_seconds - (now - run.outage_started)
         if left <= 0:
             return False
-        seconds = min(OUTAGE_FIRST_WAIT_S * 2 ** run.outage_waits, OUTAGE_MAX_WAIT_S, left)
+        # the exponent capped: a wait of hours would otherwise overflow the float
+        seconds = min(OUTAGE_FIRST_WAIT_S * 2 ** min(run.outage_waits, 8), OUTAGE_MAX_WAIT_S, left)
         run.outage_waits += 1
         logger.warning(
             f"[{self.name}] No LLM of the chain could be reached ({e}); waiting {seconds:.0f}s for "

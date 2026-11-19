@@ -830,7 +830,15 @@ def _reset_all_global_state():
         auth_db_module._db = None
     except ImportError:
         pass
-    
+
+    # The network evidence of the agent loops: a test that failed to reach two hosts would make a
+    # later test's chain wait for a network that is only gone in the earlier test
+    try:
+        from agent_system.llm import network_state
+        network_state.reset()
+    except ImportError:
+        pass
+
     # Reset plugin registries.
     #
     # tools/integration.py aliases this registry at IMPORT time

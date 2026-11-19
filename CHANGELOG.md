@@ -299,6 +299,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A network outage of hours no longer ends the agent runs that wait for it. While other runs of the process find
+  the network gone -- since the last answer of any run, they could not reach two or more hosts
+  (`llm/network_state.py`) -- `network_outage_seconds` does not run, a chain that cannot tell whether it reached its
+  provider (a coding CLI) waits as well, and a sub-agent `wait` does not time out. A run's budget stands still for at most a day. A
+  run's own failures do not count for itself: alone behind a firewall it still ends. The budget counts from the
+  first failed call, not from the start of a call that streamed for an hour before the network went and spent it.
 - `core/turn_runs.py` no longer imports the services layer: the background job manager registers itself
   with it, and a turn's Stop goes through the caller (`plugins/agent_tasks.py`).
 - A test that starts a pytest of its own no longer breaks when a directory in the shared temp directory goes
