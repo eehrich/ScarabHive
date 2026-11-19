@@ -109,7 +109,7 @@ plugins:
       max_parallel: 1
       max_task_chars: 20000
       # One of `agy models`; the level is in the name (an effort beside it would be dropped).
-      model: gemini-4-argon-medium
+      model: gemini-4-neon-medium
       pass_env: []
 
     agy_code_agent:
