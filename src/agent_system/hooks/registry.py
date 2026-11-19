@@ -58,6 +58,8 @@ class HookRegistry:
         # Hook storage: hook_type -> list of (hook_name, hook_instance, order_spec, metadata)
         # metadata contains: enabled, timeout, description
         self._hooks: Dict[HookType, List[tuple[str, PluginHook, Dict[str, List[str]], Dict[str, Any]]]] = defaultdict(list)
+        # The last execution order per hook type, with the entries it was sorted from (execute_hooks)
+        self._order: Dict[HookType, tuple[tuple[Any, ...], List[tuple[str, PluginHook, Dict[str, Any]]]]] = {}
 
         # Lock for thread-safe registration
         self._lock = asyncio.Lock()
@@ -199,9 +201,17 @@ class HookRegistry:
             logger.debug(f"No hooks registered for {hook_type.value}")
             return context
 
-        # Resolve execution order
+        # Resolve execution order -- sorted again only when the hooks changed: the sort ran for every hook call of
+        # every step. The entries are compared by identity and kept with the order, so none can be freed and its
+        # id reused while the order stands; an entry's name, order spec and metadata are fixed at registration.
+        known = self._order.get(hook_type)
         try:
-            ordered_hooks = self._topological_sort(hooks_list)
+            if known is not None and len(known[0]) == len(hooks_list) and all(
+                    kept is entry for kept, entry in zip(known[0], hooks_list)):
+                ordered_hooks = known[1]
+            else:
+                ordered_hooks = self._topological_sort(hooks_list)
+                self._order[hook_type] = (tuple(hooks_list), ordered_hooks)
         except CircularDependencyError as e:
             logger.error(f"Circular dependency in hooks for {hook_type.value}: {e}")
             # Continue with original order if we can't resolve dependencies

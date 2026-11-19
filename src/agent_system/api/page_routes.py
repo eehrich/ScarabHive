@@ -11,6 +11,7 @@ the generated /docs page.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import time
@@ -38,23 +39,18 @@ router = APIRouter()
 favicon_router = APIRouter()
 
 
-# Health check endpoint
-@health_router.get("/health")
-def health(ctx: AppContext = Depends(app_context)):
-    uptime_seconds = time.time() - app_state.app_start_time if app_state.app_start_time else 0
+@functools.lru_cache(maxsize=4)
+def _config_name_version(text: str) -> tuple[str, str]:
+    """The ``name`` and ``version`` of a config, parsed once per text: reading the file costs next to nothing,
+    parsing it was the cost. A text that fails to parse raises, and is not kept: the next call tries it again."""
+    agent_config = yaml_io.safe_load(text) or {}
+    return agent_config.get("name", "AgentSystem"), agent_config.get("version", "unknown")
 
-    agent_config: dict = {}
-    try:
-        with open(ctx.config_path, 'r', encoding='utf-8') as f:  # the config this app was built from
-            agent_config = yaml_io.safe_load(f) or {}
-    except Exception as e:
-        logger.debug(f"Failed to load config for health check: {e}")
 
-    # Get Python version
-    import sys
-    python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-
-    # Get key package versions
+@functools.cache
+def _package_versions() -> dict[str, str]:
+    """The versions of the key packages, found once: a module is imported once per process, so its version cannot
+    change while the process runs, and a missing one was searched for on disk at every call."""
     packages = {}
     try:
         import fastapi
@@ -92,15 +88,34 @@ def health(ctx: AppContext = Depends(app_context)):
 
     except Exception as e:
         logger.debug(f"Failed to get package versions: {e}")
+    return packages
+
+
+# Health check endpoint -- every open web UI tab asks it every 30 s, monitors too, so it parses nothing it parsed
+# before: the config only when its text changed, the package versions once.
+@health_router.get("/health")
+def health(ctx: AppContext = Depends(app_context)):
+    uptime_seconds = time.time() - app_state.app_start_time if app_state.app_start_time else 0
+
+    name, version = "AgentSystem", "unknown"
+    try:
+        with open(ctx.config_path, 'r', encoding='utf-8') as f:  # the config this app was built from
+            name, version = _config_name_version(f.read())
+    except Exception as e:
+        logger.debug(f"Failed to load config for health check: {e}")
+
+    # Get Python version
+    import sys
+    python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
     return {
         "status": "ok",
-        "version": agent_config.get("version", "unknown"),
-        "name": agent_config.get("name", "AgentSystem"),
+        "version": version,
+        "name": name,
         "uptime_seconds": round(uptime_seconds, 2),
         "timestamp": datetime.now().isoformat(),
         "python_version": python_version,
-        "packages": packages
+        "packages": dict(_package_versions())
     }
 
 

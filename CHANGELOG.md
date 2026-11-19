@@ -239,7 +239,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a save reads the session file for its metadata only when the file is not the one this process wrote last
     (file id, mtime and size of the write; always on a file system without file ids);
   - a prompt is compiled once per text; it is still read from disk on every call, so an edit -- of a partial
-    too -- takes effect at once.
+    too -- takes effect at once;
+  - the hooks of a lifecycle point are sorted into their order again only when they changed, not at every call;
+  - `GET /health` parses the config for its name and version again only when its text changed, and finds the
+    package versions once; a config whose top level is not a mapping now answers the defaults instead of an
+    error.
 - coder: the prompt asks for calls that do not depend on each other in one step (in a sample of its sessions a
   sixth of the steps were single reads in a row) and for no read-back after an edit that succeeded; the working
   loop has a bug seen failing before the first edit and the change staying inside the request. Explorer and
