@@ -6,6 +6,7 @@ clear error with migration guidance.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -343,3 +344,59 @@ class TestEdgeCases:
         assert "Spécial Àgent 🤖" in result["system_prompt"]
         assert "äöü" in result["system_prompt"]
         assert "こんにちは" in result["system_prompt"]
+
+
+class TestCompiledOnceReadEveryTime:
+    """A prompt is compiled once per text (compiling took ~180x as long as rendering), and still read from disk on
+    every render: an edit of the prompt or of a partial it includes takes effect at the next call."""
+
+    def test_the_same_text_is_compiled_once_and_other_text_anew(self) -> None:
+        from agent_system.utils.prompt_renderer import PROMPT_ENV, compiled
+
+        first = compiled(PROMPT_ENV, "Hello {{ name }} -- compiled once")
+        assert compiled(PROMPT_ENV, "Hello {{ name }} -- compiled once") is first
+        assert compiled(PROMPT_ENV, "Hello {{ name }} -- other text") is not first
+        assert first.render(name="ada") == "Hello ada -- compiled once"
+
+    def test_an_edited_prompt_takes_effect_at_the_next_render(self, tmp_path: Path) -> None:
+        prompt = tmp_path / "agent.md"
+        prompt.write_text("You are {{ name }}, first.", encoding="utf-8")
+        assert _render_text_template(str(prompt), {"name": "ada"})["system_prompt"] == "You are ada, first."
+        prompt.write_text("You are {{ name }}, edited.", encoding="utf-8")
+        assert _render_text_template(str(prompt), {"name": "ada"})["system_prompt"] == "You are ada, edited."
+
+    def test_an_edited_partial_takes_effect_at_the_next_render(self, tmp_path: Path) -> None:
+        prompt, partial = tmp_path / "agent.md", tmp_path / "rule.md"
+        prompt.write_text('Rules: {% include "rule.md" %}', encoding="utf-8")
+        partial.write_text("be brief", encoding="utf-8")
+        assert _render_text_template(str(prompt), {})["system_prompt"] == "Rules: be brief"
+        before = partial.stat().st_mtime_ns
+        partial.write_text("be thorough", encoding="utf-8")
+        # the loader tells an edited partial by its mtime; a coarse clock (FAT: 2 s) could leave it unchanged
+        os.utime(partial, ns=(before + 2_000_000_000, before + 2_000_000_000))
+        assert _render_text_template(str(prompt), {})["system_prompt"] == "Rules: be thorough"
+
+    def test_a_broken_prompt_is_not_kept_broken_once_fixed(self, tmp_path: Path) -> None:
+        prompt = tmp_path / "agent.md"
+        prompt.write_text("Broken {{ name ", encoding="utf-8")
+        assert _render_text_template(str(prompt), {"name": "ada"})["system_prompt"] == "Broken {{ name "
+        prompt.write_text("Fixed {{ name }}", encoding="utf-8")
+        assert _render_text_template(str(prompt), {"name": "ada"})["system_prompt"] == "Fixed ada"
+
+    def test_an_inline_system_prompt_is_compiled_once(self, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from agent_system.servers.agent import prompt_strategies
+        from agent_system.utils.prompt_renderer import PROMPT_ENV, compiled
+
+        compiled.cache_clear()   # a second run in one process would find the text compiled already
+        compiles = []
+        build = PROMPT_ENV.from_string
+        monkeypatch.setattr(PROMPT_ENV, "from_string", lambda source, *a, **k: compiles.append(source) or build(source))
+        strategy = prompt_strategies.RawPromptStrategy()
+        context = SimpleNamespace(agent_config=SimpleNamespace(system_prompt="Inline {{ agent_name }} -- once"),
+                                  agent_name="inline")
+        monkeypatch.setattr(strategy, "_get_context_values", lambda ctx: {"agent_name": "inline"})
+        assert strategy.render(context)[0] == "Inline inline -- once"
+        assert strategy.render(context)[0] == "Inline inline -- once"
+        assert compiles.count("Inline {{ agent_name }} -- once") == 1, compiles

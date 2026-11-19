@@ -8,13 +8,13 @@ with support for named dependencies and parallel execution.
 from __future__ import annotations
 
 import asyncio
-import copy
 import dataclasses
 import inspect
 import logging
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional
 
+from ..utils.deep_copy import deep_copy
 from .exceptions import CircularDependencyError
 from .ordering import topological_sort
 from .plugin_hook import HookContext, HookResult, HookType, PluginHook
@@ -405,6 +405,9 @@ class HookRegistry:
 
         Note: Some fields (agent, llm, cancellation_token) are copied by reference since they're
         stateful objects that hooks should not modify directly.
+
+        deep_copy is copy.deepcopy's result at about twice its speed: this copy ran for every hook of every step,
+        the whole conversation each time, and took a fifth of the API's Python time under load (utils/deep_copy.py).
         """
         # replace(): every field not named here is carried over by reference
         # (agent, llm, cancellation_token, tools_schema -- read-only for hooks;
@@ -412,15 +415,15 @@ class HookRegistry:
         # new HookContext field until someone added it here too.
         return dataclasses.replace(
             context,
-            messages=copy.deepcopy(context.messages) if context.messages else None,
-            llm_response=copy.deepcopy(context.llm_response) if context.llm_response else None,
-            tool_call=copy.deepcopy(context.tool_call) if context.tool_call else None,
-            tool_result=copy.deepcopy(context.tool_result) if context.tool_result else None,
-            metadata=copy.deepcopy(context.metadata),
-            hook_config=copy.deepcopy(context.hook_config) if context.hook_config else {},
-            llm_request_payload=copy.deepcopy(context.llm_request_payload) if context.llm_request_payload else None,
-            llm_response_data=copy.deepcopy(context.llm_response_data) if context.llm_response_data else None,
-            llm_usage=copy.deepcopy(context.llm_usage) if context.llm_usage else None,
+            messages=deep_copy(context.messages) if context.messages else None,
+            llm_response=deep_copy(context.llm_response) if context.llm_response else None,
+            tool_call=deep_copy(context.tool_call) if context.tool_call else None,
+            tool_result=deep_copy(context.tool_result) if context.tool_result else None,
+            metadata=deep_copy(context.metadata),
+            hook_config=deep_copy(context.hook_config) if context.hook_config else {},
+            llm_request_payload=deep_copy(context.llm_request_payload) if context.llm_request_payload else None,
+            llm_response_data=deep_copy(context.llm_response_data) if context.llm_response_data else None,
+            llm_usage=deep_copy(context.llm_usage) if context.llm_usage else None,
         )
 
     # Keys managed by the hook system itself — stripped from hook_config

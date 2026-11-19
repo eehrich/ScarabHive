@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
 import weakref
@@ -26,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from ..paths import data_path
+from ..utils.deep_copy import deep_copy
 from ..utils.io import atomic_write_json, read_json_retrying
 from . import session_files
 from .session_cache import SessionCache
@@ -58,6 +60,18 @@ class SessionPermissionError(Exception):
 
 class SessionDeletedError(Exception):
     """Raised when a write would bring back a session this manager has deleted."""
+
+
+# How many sessions' last writes SessionManager._written keeps; the oldest goes first.
+_WRITTEN_KEPT = 1024
+
+
+def _file_key(stat: Optional[os.stat_result]) -> Optional[tuple[int, int, int]]:
+    """What tells one write of a file from another: its id, mtime and size. None where the file system gives files
+    no id (st_ino 0: FAT, some network shares) -- there every save reads the file, as before."""
+    if stat is None or not stat.st_ino:
+        return None
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
 
 class SessionManager:
@@ -95,6 +109,10 @@ class SessionManager:
 
         # Recently used sessions, and what this process has seen of their files (changed_on_disk)
         self._cache = SessionCache()
+        # The file this process wrote last for each session, as it stood then -- its id, mtime and size -- and the
+        # metadata written into it (_write_session_file). save_session takes the file's metadata from here as long
+        # as the file stats the same, instead of reading the whole conversation again before every save.
+        self._written: Dict[str, tuple[tuple[int, int, int], Dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
         # Per-session locks to prevent concurrent writes to the same session. Weak values, as
@@ -319,14 +337,15 @@ class SessionManager:
             if "role" not in msg or "content" not in msg:
                 raise ValueError(f"Message {i} missing role or content")
 
-    def _atomic_write(self, path: Path, data: Dict[str, Any]) -> None:
-        """Write a session or index file atomically (``utils.io.atomic_write_json``).
+    def _atomic_write(self, path: Path, data: Dict[str, Any]) -> os.stat_result:
+        """Write a session or index file atomically (``utils.io.atomic_write_json``); the file's stat as written.
 
         NOTE: This is a synchronous method. Use _atomic_write_async() in async contexts
         to avoid blocking the event loop.
         """
-        atomic_write_json(path, data)
+        written = atomic_write_json(path, data)
         logger.debug("Atomically wrote session to %s", path)
+        return written
 
     def is_deleted(self, session_id: str) -> bool:
         """Whether this manager has deleted the session and its file is still gone: nothing here writes it again.
@@ -359,11 +378,17 @@ class SessionManager:
         Every caller holds the session's lock or ``_lock``; delete_session holds both, so no write slips between
         the check and the delete.
         """
-        if self.is_deleted(session_data["session_id"]):
-            raise SessionDeletedError(f"Session {session_data['session_id']} has been deleted")
-        await self._atomic_write_async(path, session_data)
+        session_id = session_data["session_id"]
+        if self.is_deleted(session_id):
+            raise SessionDeletedError(f"Session {session_id} has been deleted")
+        self._written.pop(session_id, None)   # until this write is done, the file is nobody's known one
+        key = _file_key(await self._atomic_write_async(path, session_data))
+        if key is not None:
+            self._written[session_id] = (key, deep_copy(session_data.get("metadata") or {}))
+            if len(self._written) > _WRITTEN_KEPT:   # oldest write first: a session left out is read once again
+                del self._written[next(iter(self._written))]
 
-    async def _atomic_write_async(self, path: Path, data: Dict[str, Any]) -> None:
+    async def _atomic_write_async(self, path: Path, data: Dict[str, Any]) -> os.stat_result:
         """Async wrapper for atomic write to avoid blocking event loop.
 
         A cancel does not stop the thread, so it does not end the wait either: the write finishes first, then the
@@ -373,7 +398,7 @@ class SessionManager:
         """
         write = asyncio.ensure_future(asyncio.to_thread(self._atomic_write, path, data))
         try:
-            await asyncio.shield(write)
+            return await asyncio.shield(write)
         except asyncio.CancelledError:
             while not write.done():
                 try:
@@ -694,11 +719,15 @@ class SessionManager:
             session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             
             # What update_session_metadata merged since the caller loaded its copy (a
-            # sub-agent linked during a checkpoint save) stays: the file's metadata wins.
-            try:
-                on_disk = (await self._read_session_file_async(path)).get("metadata") or {}
-            except (SessionNotFoundError, ValueError):
-                on_disk = {}  # nothing readable to keep: the caller's copy is all there is
+            # sub-agent linked during a checkpoint save) stays: the file's metadata wins. Read from the file
+            # unless it is still the one this process wrote last: then its metadata is what was written into it
+            # (every write of this manager goes through _write_session_file, which keeps it).
+            on_disk = self._metadata_written(session_id, path)
+            if on_disk is None:
+                try:
+                    on_disk = (await self._read_session_file_async(path)).get("metadata") or {}
+                except (SessionNotFoundError, ValueError):
+                    on_disk = {}  # nothing readable to keep: the caller's copy is all there is
             session_data["metadata"] = {**session_data["metadata"], **on_disk}
 
             # Update metadata
@@ -723,6 +752,18 @@ class SessionManager:
             self._noted_index_write(session_id)
             
             logger.debug("Saved session %s", session_id)
+
+    def _metadata_written(self, session_id: str, path: Path) -> Optional[Dict[str, Any]]:
+        """The metadata of the session's file when the file is the one this process wrote last -- a copy -- else
+        None: another writer, another process, a delete, or a file system that gives files no id."""
+        written = self._written.get(session_id)
+        if written is None:
+            return None
+        try:
+            now = _file_key(os.stat(path))
+        except OSError:
+            return None
+        return deep_copy(written[1]) if now is not None and now == written[0] else None
 
     async def _read_to_change(self, path: Path, user_id: str, session_id: str) -> Dict[str, Any]:
         """The session's file as a change by its owner starts from -- the caller holds the session's lock.
@@ -987,6 +1028,7 @@ class SessionManager:
 
             # Remove from cache
             self._cache.drop(session_id)
+            self._written.pop(session_id, None)
             
             # Remove from index (target the right partition based on parent)
             await self._index.remove_entry(
@@ -1035,6 +1077,7 @@ class SessionManager:
             if self.session_id_exists(session_id):
                 raise ValueError(f"Session {session_id} is live for another user -- refusing a second one")
 
+            self._written.pop(session_id, None)
             await self._atomic_write_async(path, session_data)
             self._cache.wrote(session_id, session_data)
             await self._index.update_entry(

@@ -56,7 +56,7 @@ def atomic_write_json(
     *,
     indent: int = 2,
     retries: int = _WRITE_RETRIES,
-) -> None:
+) -> os.stat_result:
     """Write *data* as JSON to *path* atomically: a temp file, then ``os.replace``.
 
     The temp file is unique per write (``.<name>.<hex>.tmp`` next to the
@@ -66,17 +66,21 @@ def atomic_write_json(
     backoff; anything else (a value JSON cannot encode) fails at once. The
     temp file never outlives a failed write.
 
+    Returns the file's stat as written, taken before it took its name -- nobody else knows a temp file's name, and a
+    rename keeps a file's id and mtime: as long as *path* stats the same, it is this write's file.
+
     Raises:
         OSError: when the write still fails after *retries* attempts, or
             failed for any other reason (the cause is chained).
     """
-    _atomic_replace(Path(path), lambda handle: json.dump(data, handle, indent=indent, ensure_ascii=False),
-                    encoding="utf-8", mode=0o666, mkdir=False, retries=retries)
+    return _atomic_replace(Path(path), lambda handle: json.dump(data, handle, indent=indent, ensure_ascii=False),
+                           encoding="utf-8", mode=0o666, mkdir=False, retries=retries)
 
 
 def _atomic_replace(path: Path, write: Callable[[IO[str]], Any], *, encoding: str, mode: int,
-                    mkdir: bool, retries: int) -> None:
-    """``write`` into a temp file of this write's own beside *path*, then ``os.replace`` it onto *path*.
+                    mkdir: bool, retries: int) -> os.stat_result:
+    """``write`` into a temp file of this write's own beside *path*, then ``os.replace`` it onto *path*. Returns the
+    temp file's stat, taken after it is closed and before it is renamed.
 
     *mode* is the new file's permission bits before the umask. An OSError is
     retried with an exponential backoff, anything else fails at once; either
@@ -91,8 +95,9 @@ def _atomic_replace(path: Path, write: Callable[[IO[str]], Any], *, encoding: st
             fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), mode)
             with os.fdopen(fd, "w", encoding=encoding) as handle:
                 write(handle)
+            written = os.stat(temp_path)
             os.replace(temp_path, path)
-            return
+            return written
         except OSError as e:
             if attempt < retries - 1:
                 logger.debug("File lock conflict writing %s (attempt %d/%d), retrying in %.2fms: %s",

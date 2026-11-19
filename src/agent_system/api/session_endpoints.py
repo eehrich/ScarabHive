@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -21,6 +22,7 @@ from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.app_context import NotAnAgent, registered_agent
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
+from agent_system.api.json_answer import json_answer
 from agent_system.api.session_http import session_errors_as_http
 from agent_system.api.session_listing_routes import (  # noqa: F401 -- re-exported: the names tests and callers import
     _DESCENDANT_READS_AT_ONCE,
@@ -301,7 +303,6 @@ async def _background_runs_below(agent: Any, wanted: List[str], user_id: str) ->
         return None
 
 
-@session_router.get("/{session_id}")
 async def get_session(
     session_id: str,
     descendants: bool = False,
@@ -373,6 +374,16 @@ async def get_session(
 
         # The answers as the models wrote them -- Markdown, which the chat draws.
         return session
+
+
+# GET /api/sessions/{session_id}: get_session's record, encoded as it is (api/json_answer.py) -- it is JSON already,
+# and FastAPI's jsonable_encoder walk over a whole conversation, which the chat reads again while a run goes on, cost
+# more than the encoding. functools.wraps hands FastAPI get_session's signature (its parameters and dependencies), its
+# name (the operation's) and its docstring (the route's description); callers in-process keep get_session's dict.
+@session_router.get("/{session_id}")
+@functools.wraps(get_session)
+async def _get_session_answer(*args, **kwargs):
+    return json_answer(await get_session(*args, **kwargs))
 
 
 @session_router.get("/{session_id}/messages")

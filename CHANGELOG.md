@@ -229,6 +229,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster under load, nothing else changed (a load test of 50 agents at once with 50 viewers, measured on the
+  thread holding the GIL: -15 % of the API's Python time, the slowest session read 1.06 s -> 0.48 s):
+  - the copy of the run's context each hook gets is made by `utils/deep_copy.py`, `copy.deepcopy`'s result at
+    about twice its speed;
+  - `GET /api/sessions/{id}` encodes the session as it is instead of walking it through `jsonable_encoder`
+    first (`api/json_answer.py`; the same bytes, except that a key starting with `_sa`, such as `_saved`, is no
+    longer dropped);
+  - a save reads the session file for its metadata only when the file is not the one this process wrote last
+    (file id, mtime and size of the write; always on a file system without file ids);
+  - a prompt is compiled once per text; it is still read from disk on every call, so an edit -- of a partial
+    too -- takes effect at once.
 - coder: the prompt asks for calls that do not depend on each other in one step (in a sample of its sessions a
   sixth of the steps were single reads in a row) and for no read-back after an edit that succeeded; the working
   loop has a bug seen failing before the first edit and the change staying inside the request. Explorer and
