@@ -38,7 +38,7 @@ For developers
 @{table}
 Profile | Runs on | Tools
 claude-code-opus, claude-code-sonnet, claude-code-haiku | Claude Code, the operator's subscription | the agent's own
-agy-gemini-flash, agy-gemini-hydrogen, agy-gemini-argon, agy-gemini-carbon | Antigravity (agy), the operator's Google login | the agent's own, beside agy's web search
+agy-gemini-flash, agy-gemini-hydrogen, agy-gemini-argon, agy-gemini-carbon, agy-gemini-neon | Antigravity (agy), the operator's Google login | the agent's own, beside agy's web search
 @{body}
 
 Pick one where any profile is picked: the chat's profile selector, @{tt}/model

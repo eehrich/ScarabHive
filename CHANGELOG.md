@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Gemini 4 Neon (`gemini-4-neon`, above Argon) on every way to Gemini: `gemini-neon` (direct, also `-stream` and
+  `-batch`), `or-gemini-neon` (OpenRouter, also `-unlimited`) and `agy-gemini-neon` (Antigravity); Gemini
+  3.5 Flash-Lite directly as well (`gemini-flash-lite`, `-stream`, `-batch`). agy offers no Flash-Lite.
 - Every turn of an agent is told as a run (`core/turn_runs.py`): who works now, on which step, below whom. A chat's
   turn, the sub-agents and machines below it and theirs are runs in the run events, each under its session's id and
   with the session that started it as `parent_session`; their steps are the model thinking and the tools it calls.

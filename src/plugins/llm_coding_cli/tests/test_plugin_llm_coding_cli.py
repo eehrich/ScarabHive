@@ -763,3 +763,24 @@ def test_a_model_entry_names_the_instances_model_and_the_runs_effort():
     assert built(model="cc/sonnet", thinking_level="high") == ("cc", "sonnet", "high", "cc/sonnet")
     assert built(model="cc", thinking_level="minimal") == ("cc", "", "low", "cc")
     assert built(model="cc", thinking_level="none")[2] is None and built(model="cc")[2] is None
+
+
+def test_every_shipped_model_entry_names_a_model_its_instance_runs():
+    """A model entry names <instance>/<model>, and the instance refuses a model outside its `models` (or its own
+    `model`) on every call: an entry added without its instance's list stood in the profile selector and never
+    answered -- an agent's chain only moved on past it."""
+    from pathlib import Path
+
+    from agent_system.utils import yaml_io
+
+    shipped = yaml_io.safe_load((Path(__file__).parents[1] / "agents" / "llm_coding_cli.yaml").read_text(encoding="utf-8"))
+    servers = shipped["plugins"]["servers"]
+    entries = {name: entry["model"] for name, entry in shipped["llm_system"]["models"].items()}
+    assert len(entries) >= 4, f"fixture: the shipped file has {len(entries)} model entries"
+    refused = []
+    for name, model in entries.items():
+        instance, _, cli_model = model.partition("/")
+        runs = set(servers[instance].get("models") or []) | {servers[instance].get("model")}
+        if cli_model and cli_model not in runs:
+            refused.append(f"{name}: {instance} does not run {cli_model}")
+    assert not refused, refused

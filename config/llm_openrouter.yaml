@@ -97,6 +97,18 @@ llm_system:
       extends: openrouter-gemini-carbon
       max_tokens: 0
 
+    # Gemini 4 Neon (18.11.2026): above Argon, 3.00 / 15.00 per M (regular price, no
+    # promotion). AI Studio's standard endpoint caps the output at 65536; flex, priority
+    # and Vertex global do not.
+    openrouter-gemini-neon:
+      extends: openrouter-gemini
+      model: google/gemini-4-neon
+      context_window: 1048576     # no long-context tier
+
+    openrouter-gemini-neon-unlimited:
+      extends: openrouter-gemini-neon
+      max_tokens: 0
+
     openrouter-gemini-flash:
       extends: openrouter-gemini
       model: ~google/gemini-flash-latest
@@ -481,6 +493,16 @@ llm_system:
     or-gemini-carbon-unlimited:
       model_ref: openrouter-gemini-carbon-unlimited
       description: "OpenRouter Gemini 4 Carbon - No output token limit"
+      max_steps: 500
+
+    or-gemini-neon:
+      model_ref: openrouter-gemini-neon
+      description: "OpenRouter Gemini 4 Neon"
+      max_steps: 500
+
+    or-gemini-neon-unlimited:
+      model_ref: openrouter-gemini-neon-unlimited
+      description: "OpenRouter Gemini 4 Neon - No output token limit"
       max_steps: 500
 
     or-claude-sonnet:

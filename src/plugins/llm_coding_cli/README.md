@@ -7,7 +7,7 @@ handed to it through the [MCP gateway](../mcp_gateway/README.md) -- and its fina
 assistant message.
 
 - **Ready-made profiles** (`agents/llm_coding_cli.yaml`): `claude-code-opus`, `claude-code-sonnet`,
-  `claude-code-haiku` (Claude Code, with the agent's tools) and `agy-gemini-flash`, `-hydrogen`, `-argon`, `-carbon`
+  `claude-code-haiku` (Claude Code, with the agent's tools) and `agy-gemini-flash`, `-hydrogen`, `-argon`, `-carbon`, `-neon`
   (Antigravity, with the agent's tools beside its web search). Pick one in the chat's profile selector, with
   `/model` or `--llm`, or put it first in an agent's profile chain.
 

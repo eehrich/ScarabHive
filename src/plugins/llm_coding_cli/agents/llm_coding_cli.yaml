@@ -74,7 +74,8 @@ plugins:
       # One of `agy models`; the level is in the name.
       model: gemini-3.8-flash-medium
       models: [gemini-3.8-flash-medium, gemini-3.8-flash-high, gemini-4-hydrogen-medium, gemini-4-hydrogen-high,
-               gemini-4-argon-medium, gemini-4-argon-high, gemini-4-carbon-medium, gemini-4-carbon-high]
+               gemini-4-argon-medium, gemini-4-argon-high, gemini-4-carbon-medium, gemini-4-carbon-high,
+               gemini-4-neon-medium, gemini-4-neon-high]
       wait_s: 300
       max_run_minutes: 60
       max_parallel: 8
@@ -118,6 +119,10 @@ llm_system:
       provider: antigravity
       model: agy_llm/gemini-4-carbon-medium
       context_window: 55000
+    agy-gemini-neon:
+      provider: antigravity
+      model: agy_llm/gemini-4-neon-medium
+      context_window: 55000
 
   profiles:
     claude-code-opus:
@@ -141,3 +146,6 @@ llm_system:
     agy-gemini-carbon:
       model_ref: agy-gemini-carbon
       description: "Antigravity (Gemini Carbon) on the Google login, with the agent's tools and web search"
+    agy-gemini-neon:
+      model_ref: agy-gemini-neon
+      description: "Antigravity (Gemini Neon) on the Google login, with the agent's tools and web search"
