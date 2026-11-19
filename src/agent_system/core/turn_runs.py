@@ -46,9 +46,19 @@ _on = False
 _every = False
 #: The turns of this process at work, by session id.
 _TURNS: dict[str, "Turn"] = {}
+#: The process's background jobs (services/background_job_manager.py), which a turn of the server runs as: who reads
+#: a job, and how one is stopped. Registered by the manager as it is made -- this layer imports none above it; None
+#: where nothing runs as a job (agent-cli).
+_jobs: Any = None
 #: The end being written for a session's turn (RunReporter.end_detached): the session's next turn waits for it --
 #: begun before that end was written, the end would end the new turn.
 _ENDING: dict[str, threading.Thread] = {}
+
+
+def keep_jobs(manager: Any) -> None:
+    """Said by the background job manager as it is made (None as it is dropped): the jobs the turns run as."""
+    global _jobs
+    _jobs = manager
 
 
 def report_turns(on: bool = True, *, every: bool = False) -> None:
@@ -112,11 +122,9 @@ class Turn:
         terminal, or by a stream of its job (a tab closed since, a session woken while nobody looked: not)."""
         if not self.attended:
             return False
-        try:
-            from agent_system.services.background_job_manager import get_background_job_manager
-            unread = get_background_job_manager().unread_for(self.request_id)
-        except Exception:  # noqa: BLE001 - no job manager here (a CLI): read at its terminal
+        if _jobs is None:      # no job manager here (a CLI): read at its terminal
             return True
+        unread = _jobs.unread_for(self.request_id)
         return not unread      # None: no job, read inline for as long as it runs; 0.0: a stream reads it
 
 
@@ -234,17 +242,12 @@ def ended(turn: Optional[Turn], session_id: str, results: dict[str, Any], cancel
         logger.exception("turn in %s: its end was not told", session_id)
 
 
-async def cancel(session_id: str) -> bool:
-    """Stop the turn of this process working in ``session_id``, as the app stops any request (its sub-requests
-    with it): a chat's turn, or one sub-agent below it -- the turn that called it goes on, and is told. False
-    when no turn of this process works there."""
+def request_of(session_id: str) -> str:
+    """The request of the turn of this process working in ``session_id`` -- what stops it, as the app stops any
+    request (its sub-requests with it): a chat's turn, or one sub-agent below it, and the turn that called it goes
+    on and is told. "" when no turn of this process works there."""
     turn = _TURNS.get(session_id or "")
-    if turn is None or not turn.request_id:
-        return False
-    from agent_system.services.background_job_manager import get_background_job_manager
-
-    # forced after a while, as a panel's task is: a turn stuck in blocking work would never see the token
-    return bool(await get_background_job_manager().cancel_job(turn.request_id, force_timeout=5.0))
+    return turn.request_id if turn is not None else ""
 
 
 def settle(timeout: float = 5.0) -> None:

@@ -26,6 +26,7 @@ function makeElement() {
     className: '',
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     appendChild(child) { this.children.push(child); return child; },
+    prepend(child) { this.children.unshift(child); },  // a note's close button goes first
     // Kept, so a test can do what the page does: submit the form.
     addEventListener(type, fn) { (this.listeners = this.listeners || {})[type] = fn; },
     removeEventListener() {},

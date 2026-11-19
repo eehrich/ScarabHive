@@ -13,6 +13,8 @@ from typing import Any, Iterator
 
 import yaml
 
+from agent_system.utils import yaml_io
+
 #: Keys a workflow must not use (skill stategraph-workflows, "The subset").
 FORBIDDEN_TOP = ("python", "resources")
 FORBIDDEN_KINDS = ("call", "callback", "acquire", "release")
@@ -103,7 +105,7 @@ def validation_errors(text: str) -> list[str]:
     from plugins.stategraph.model.validate import validate_tree
 
     try:
-        machine_id = str((yaml.safe_load(text) or {}).get("id") or "workflow")
+        machine_id = str((yaml_io.safe_load(text) or {}).get("id") or "workflow")
     except Exception:
         machine_id = "workflow"
     path = f"{machine_id}.yaml"
@@ -119,7 +121,7 @@ def score(workspace: Any, run: dict, task: Any) -> dict[str, Any]:
     met: dict[str, bool] = {}
     notes: list[str] = []
     try:
-        spec = yaml.safe_load(text)
+        spec = yaml_io.safe_load(text)
     except yaml.YAMLError as exc:
         spec, notes = None, [f"yaml: {exc}"[:200]]
     met["parses"] = isinstance(spec, dict) and spec.get("stategraph") == 1

@@ -497,9 +497,12 @@ def run_nested_pytest(request, tmp_path, source, **env):
     # -p conftest: the probe lies outside the repo, so the repo's conftest is
     # loaded by name (the working directory is on sys.path under -m). -s: what
     # the session fixture prints around the test is part of what is checked.
+    # --confcutdir: collecting the probe, pytest reads every directory above it up to that line -- the shared
+    # temp directory too, where this run's fixtures make and remove directories meanwhile: one gone between
+    # listing and lstat broke the inner collection (FileNotFoundError). Its own directory holds still.
     command = [sys.executable, "-m", "pytest", str(probe), "-c", str(REPO_ROOT / "pytest.ini"),
-               "--rootdir", str(REPO_ROOT), "-p", "conftest", "-p", "no:cacheprovider", "-p", "no:warnings",
-               "-q", "-s"]
+               "--rootdir", str(REPO_ROOT), "--confcutdir", str(tmp_path), "-p", "conftest",
+               "-p", "no:cacheprovider", "-p", "no:warnings", "-q", "-s"]
     for plugin in request.config.option.plugins:
         command += ["-p", plugin]
     # Into a file, not a pipe: a leftover holding the pipe open would keep the

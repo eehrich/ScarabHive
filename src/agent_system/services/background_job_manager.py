@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional
 
+from agent_system.core import turn_runs
 from agent_system.core.cancellation import get_cancellation_manager
 
 if TYPE_CHECKING:
@@ -822,6 +823,7 @@ def get_background_job_manager() -> BackgroundJobManager:
     global _background_job_manager
     if _background_job_manager is None:
         _background_job_manager = BackgroundJobManager()
+        turn_runs.keep_jobs(_background_job_manager)   # a turn told as a run asks it who reads it, and stops by it
     return _background_job_manager
 
 
@@ -829,3 +831,4 @@ def reset_background_job_manager() -> None:
     """Reset the singleton instance (mainly for testing)."""
     global _background_job_manager
     _background_job_manager = None
+    turn_runs.keep_jobs(None)

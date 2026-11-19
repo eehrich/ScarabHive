@@ -1009,6 +1009,7 @@ def _reset_all_global_state():
         from agent_system.core import turn_runs
         turn_runs.report_turns(False)
         turn_runs._TURNS.clear()
+        turn_runs.keep_jobs(None)   # the job manager is reset above without a word to it
     except ImportError:
         pass
 

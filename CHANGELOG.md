@@ -284,6 +284,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `core/turn_runs.py` no longer imports the services layer: the background job manager registers itself
+  with it, and a turn's Stop goes through the caller (`plugins/agent_tasks.py`).
+- A test that starts a pytest of its own no longer breaks when a directory in the shared temp directory goes
+  while it collects (pytest read every directory above the probe; `--confcutdir` stops at its own).
 - A turn that is told as a run -- one a person is at, and what it starts -- is written as it begins. Until its
   first model answer nothing of it was on disk: the session of a chat's first turn could not
   be opened ("Session not found" from what works now) and was not listed, and a later turn's question was

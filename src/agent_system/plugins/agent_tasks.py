@@ -331,13 +331,16 @@ async def cancel_run(session_id: str, who: str) -> bool:
 
     if await background_runs.cancel(session_id):
         return True
+    from agent_system.services.background_job_manager import get_background_job_manager
+
     request_id = _REQUESTS.get(session_id)
     if request_id is None:
-        # no panel's task: an agent's turn told as a run (core/turn_runs.py), stopped as the chat stops it
+        # no panel's task: an agent's turn told as a run (core/turn_runs.py), stopped as the chat stops it --
+        # forced after a while, as a panel's task is: a turn stuck in blocking work would never see the token
         from agent_system.core import turn_runs
-        return await turn_runs.cancel(session_id)
+        turn = turn_runs.request_of(session_id)
+        return bool(turn) and bool(await get_background_job_manager().cancel_job(turn, force_timeout=5.0))
     _CANCELLED_BY[session_id] = who
-    from agent_system.services.background_job_manager import get_background_job_manager
 
     if await get_background_job_manager().cancel_job(request_id, force_timeout=5.0):
         return True
