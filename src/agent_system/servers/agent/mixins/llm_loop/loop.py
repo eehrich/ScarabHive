@@ -13,6 +13,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from .....core import turn_runs
 from .....llm.models import LLMClient
 from .....llm.structured_output import (
     STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE, STRUCTURED_OUTPUT_UNSUPPORTED,
@@ -108,6 +109,15 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         main_token = context.main_token
 
         max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
+
+        # The turn as it begins, before the first model call: from here on the session holds the question, and
+        # the session of a first turn is on disk. Nothing was kept until the first answer -- whoever looked
+        # from elsewhere (another tab, a reload, what works now) found no such session for as long as that
+        # call took, and a coding CLI answering as the model takes minutes over it. Where the turn is told as
+        # a run -- a person's, and each run it starts below it: there someone may look for it. A program's runs
+        # by the thousand, told nowhere, write as they did.
+        if turn_runs.told(session_id):
+            await self._persist_conversation(session_id, messages, to_disk=True, note="turn start")
 
         # A format nobody checked yet (a caller that built it itself; openai_api prepares its own):
         # its schema goes through the worker's subset before anything runs, and the run works with

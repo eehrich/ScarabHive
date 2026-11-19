@@ -573,10 +573,10 @@ def told(tmp_path):
     store = RunEventStore(tmp_path / "run_events.db")
     run_events.use_run_events(store, RunEventBus())
     turn_runs.report_turns()
-    for request_id in ("req1", "book-9_sub_ab12"):
+    for request_id in ("req1", "req2", "book-9_sub_ab12"):
         set_run_attended(request_id, True)
     yield store
-    for request_id in ("req1", "book-9_sub_ab12"):
+    for request_id in ("req1", "req2", "book-9_sub_ab12"):
         release_run_attended(request_id)
     turn_runs.settle()
     turn_runs._ENDING.clear()
@@ -588,6 +588,92 @@ def _settled(store, session_id="sess1"):
 
     turn_runs.settle()
     return store.run(session_id)
+
+
+def _opened(env, tmp_path, session_id="sess1"):
+    """The session as its caller opens it before the run (the API, the chat): a service that writes it, and whose
+    it is. What the service holds on disk comes back as the roles and words of its messages."""
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+
+    (tmp_path / "sessions").mkdir(exist_ok=True)
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path / "sessions")))
+    service.checkpoint_interval_seconds = 60  # never fires during a test
+    env.agent._session_service = service
+    env.agent._session_tracker.set_session_metadata(
+        session_id, {"user_id": "alice", "agent_name": "story_machine", "llm_profile": "normal"})
+
+    async def on_disk():
+        session = await service.session_manager.load_session("alice", session_id)
+        return [(message["role"], message["content"]) for message in session["messages"]]
+
+    return on_disk
+
+
+async def test_a_machines_told_turn_is_written_as_it_begins(env, told, tmp_path):
+    """A machine addressed as an agent skips the agent's loop, and with it the save at the turn's start: what
+    works now listed the turn, and its session could not be opened until the machine's outcome."""
+    on_disk = _opened(env, tmp_path)
+
+    assert final_of(await env.ask("Nachtzug|a thriller"))["type"] == "final"
+    # nobody saved after the run here (its caller does): what is on disk is what the turn wrote as it began
+    assert await on_disk() == [("user", "Nachtzug|a thriller")]
+    held = env.agent._session_tracker.get_session_messages("sess1")
+    assert [message.role for message in held] == ["user", "assistant"], "the question kept early stands twice"
+
+    # a later turn, a request of its own (under the first one's id it is that request again, and a new run)
+    from agent_system.core import turn_runs
+    turn_runs.settle()
+    await env.ask("and again", request_id="req2")
+    assert len(env.runs()) == 1, "fixture: the later turn started a run of its own"
+    assert [role for role, _ in await on_disk()] == ["user", "assistant", "user"]
+    assert (await on_disk())[-1] == ("user", "and again")
+    held = env.agent._session_tracker.get_session_messages("sess1")
+    assert [message.role for message in held] == ["user", "assistant", "user", "assistant"]
+
+
+async def test_a_machines_turn_in_a_session_it_creates_is_written_as_it_begins(env, told, tmp_path):
+    """A new chat names no session: the turn creates it, and its caller says whose it is at the start event --
+    which a stream reads some time later. Written as it begins, the turn does not wait for that."""
+    from agent_system.core.request_context import get_request_user
+
+    _opened(env, tmp_path, session_id="another")   # the service; this turn's session is not opened by anybody
+    events = [event async for event in env.agent.run_events("Nachtzug|a thriller", request_id="req1")]
+    session_id = events[0]["session_id"]
+    assert final_of(events)["type"] == "final" and session_id not in ("another", None)
+    session = await env.agent._session_service.session_manager.load_session(get_request_user("req1"), session_id)
+    assert [(message["role"], message["content"]) for message in session["messages"]] == [("user", "Nachtzug|a thriller")]
+
+
+async def test_a_machines_turn_kept_early_in_another_process_keeps_what_is_stored(env, told, tmp_path):
+    """The save replaces what is stored: kept before the session's transcript was loaded -- by a process that
+    never held it -- the question would stand alone on disk, the exchange before it gone."""
+    from agent_system.core import turn_runs
+
+    on_disk = _opened(env, tmp_path)
+    await env.ask("Nachtzug|a thriller")
+    assert await env.agent._save_session_to_disk("sess1")  # the caller's save after the run
+    assert [role for role, _ in await on_disk()] == ["user", "assistant"], "fixture: the exchange is not stored"
+    turn_runs.settle()
+
+    other = env.fresh_agent()
+    other._session_service = env.agent._session_service
+    other._session_tracker.set_session_metadata("sess1", env.agent._session_tracker.get_session_metadata("sess1"))
+    assert not other._session_tracker.get_session_messages("sess1"), "fixture: the other process holds the session"
+    [event async for event in other.run_events("and again", request_id="req2", session_id="sess1")]
+    assert len(env.runs()) == 1, "fixture: the later turn started a run of its own"
+    assert await on_disk() == [("user", "Nachtzug|a thriller"), (await on_disk())[1], ("user", "and again")]
+
+
+async def test_a_machines_turn_nobody_is_told_of_is_left_to_its_caller(env, tmp_path):
+    """A program's machine runs write as they did: the caller's save after the outcome, nothing before."""
+    from agent_system.services.session_manager import SessionNotFoundError
+
+    on_disk = _opened(env, tmp_path)
+
+    assert final_of(await env.ask("Nachtzug|a thriller"))["type"] == "final"
+    with pytest.raises(SessionNotFoundError):
+        await on_disk()
 
 
 async def test_a_machines_turn_is_a_run_with_its_states_as_its_steps(env, told):

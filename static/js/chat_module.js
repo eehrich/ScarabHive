@@ -2852,7 +2852,11 @@
       const going = [...chatContainer.querySelectorAll(
         `.operation-progress[data-replayed][data-request-id="${CSS.escape(requestId)}"]`)]
         .find((row) => row.querySelector(':scope > .progress-line .open-mark'));
-      if (going) activeOperations.set(operationKey, going);
+      if (going) {
+        activeOperations.set(operationKey, going);
+        // at work again, and it says so: the open mark was "nobody knows" (its end sets its own)
+        going.querySelector(':scope > .progress-line .progress-icon').innerHTML = '<div class="spinner"></div>';
+      }
     }
     
     // Get tree hierarchy metadata from backend (already calculated correctly)
@@ -4256,10 +4260,7 @@
     const kept = (session.metadata && session.metadata.background) || {};
     const working = view.background.listed !== undefined ? view.background.listed : kept.state === 'running';
     if (working) {
-      if (view.element.dataset.state !== 'running') {
-        view.element.dataset.state = 'running';
-        view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
-      }
+      showWorking(view);
       showBackgroundWorking(view, true, view.background.label || '');
       return true;
     }
@@ -4321,16 +4322,16 @@
       view.background.stoppable = !run || run.stoppable !== false;
       if (view.live) continue;   // the stream of the turn that started it shows it as it goes
       if (run) {
-        if (view.element.dataset.state !== 'running') {
-          view.element.dataset.state = 'running';
-          view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
-        }
+        showWorking(view);
         showBackgroundWorking(view, true, view.background.label);
         if (run.seq !== view.background.seq) {
           view.background.seq = run.seq;
           if (was !== undefined) rereadBackground(view);   // the first tick: the box was read just now
         }
       } else if (was !== false && view.element.dataset.state === 'running') {
+        // no process holds it any more: how it ended is for its read to say, once the box is in view -- until
+        // then it is no sign of work, folded away it would keep the steps above it saying that work goes on
+        view.element.querySelector('.sub-run-icon .spinner')?.classList.add('unread');
         rereadBackground(view);
       }
     }
@@ -4361,10 +4362,7 @@
   function takeOverStoredRun(owner, view) {
     storedRunViews.delete(view.runId);
     view.live = true;
-    if (view.element.dataset.state !== 'done') {
-      view.element.dataset.state = 'running';
-      view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
-    }
+    if (view.element.dataset.state !== 'done') showWorking(view);
     owner.subRuns.set(view.runId, view);
     // Not read yet, or its read failed: what it did so far comes now, into the steps
     // before the live ones -- and the read's error is not its answer.
@@ -4461,6 +4459,9 @@
       const view = makeSubRun(call.view, call.el, runId, depthOf(runId), node.agent_name);
       if (background[node.session_id]) markBackground(view, node.session_id, id);
       view.element.dataset.stored = 'pending';
+      // Not read yet, how its run stands is not known: it turns until its read says, and is no sign of work --
+      // a step folded over it would say in its header that something in it still goes on (showWorking)
+      view.element.querySelector('.sub-run-icon .spinner').classList.add('unread');
       storedSubRuns.set(view.element, { view, sessionId: node.session_id, runId });
       offerOwnSession(view, node.session_id);
       storedRunViews.set(runId, view);
@@ -4603,6 +4604,13 @@
       markSubRun(view, 'unfinished');
     }
     endSubRuns(view);
+  }
+
+  /** Say on a sub-run's header that its run is at work: known now, where the box only waited for its read. */
+  function showWorking(view) {
+    if (view.element.dataset.state === 'running' && !view.element.querySelector(':scope > .sub-run-header .unread')) return;
+    view.element.dataset.state = 'running';
+    view.element.querySelector('.sub-run-icon').innerHTML = '<div class="spinner"></div>';
   }
 
   /** Say on a sub-run's header how it ended. */

@@ -123,7 +123,14 @@ class MachineAgent(Agent):
                    "message": f"{self.name}: a machine cannot hold tool bindings -- its steps run agents of their own"}
             yield {"type": "end"}
             return
-        session_id = session_id or short_id()
+        if not session_id:
+            # A session this turn creates says whose it is from here on, as an agent's does (Agent.run_events).
+            # Its caller says so too, at the start event -- read by the stream, some time after this turn went
+            # on: what the turn writes as it begins (_keep_question) would depend on which came first.
+            session_id = short_id()
+            self._session_tracker.set_session_metadata(session_id, {
+                "user_id": get_request_user(request_id), "agent_name": self.name,
+                "llm_profile": self.agent_config.default_llm_profile})
         text = task if isinstance(task, str) else task.get_text_content()
         entry: dict[str, Any] = {"cancel": asyncio.Event(), "message_event": asyncio.Event(), "appended": []}
         self._request_manager.register_active_request(request_id, entry)
@@ -228,6 +235,7 @@ class MachineAgent(Agent):
             if stopped():
                 yield await refuse(f"{self.name}: cancelled before the run started", "cancelled")
                 return
+            await self._keep_question(session_id, text)
             try:
                 run_id = await self._start(server, self._params(text, server), f"{self.name}:{request_id}", request_id,
                                            user_id, session_id, token, entry)
@@ -237,6 +245,7 @@ class MachineAgent(Agent):
             server.run_store.set_caller(caller, run_id)
         else:  # a continue: never a second run
             await self._load_transcript(session_id, user_id)
+            await self._keep_question(session_id, text)
             state = (row or {}).get("status")
             if ask and state == "waiting" and run_id not in server.run_manager.live:
                 # a wait no process here runs -- agent-cli is a process per message, or the API restarted before
@@ -495,12 +504,26 @@ class MachineAgent(Agent):
         except Exception:
             logger.debug("transcript of %s not loaded", session_id, exc_info=True)
 
+    async def _keep_question(self, session_id: str, text: str) -> None:
+        """The turn as it begins, on disk before the machine runs -- as an agent's loop keeps its own
+        (``_execute_llm_loop``). Told as a run it is looked for, and its session was first written by the caller
+        after the outcome: until then, hours for a long machine, no such session could be opened or was listed.
+        Only after the transcript is loaded -- the save replaces what is stored."""
+        if not turn_runs.told(session_id) or not self._session_tracker.get_session_metadata(session_id):
+            return  # nobody looks for it, or nobody opened the session: its caller keeps it
+        messages = list(self._session_tracker.get_session_messages(session_id))
+        await self._persist_conversation(session_id, messages + [ChatMessage(role="user", content=text)],
+                                         to_disk=True, note="turn start")
+
     def _remember(self, session_id: str, text: str, answer: str) -> None:
         """The exchange in the session's transcript -- whatever the outcome: the caller saves the session only
         when it holds messages (an empty list saves nothing)."""
         try:
             messages = list(self._session_tracker.get_session_messages(session_id))
-            messages += [ChatMessage(role="user", content=text), ChatMessage(role="assistant", content=answer)]
+            last = messages[-1] if messages else None
+            if last is None or last.role != "user" or last.content != text:  # else kept as the turn began
+                messages.append(ChatMessage(role="user", content=text))
+            messages.append(ChatMessage(role="assistant", content=answer))
             self._session_tracker.set_session_messages(session_id, messages)
         except Exception:  # bookkeeping must never fail the answer
             logger.debug("transcript of %s not recorded", session_id, exc_info=True)

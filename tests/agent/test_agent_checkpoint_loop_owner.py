@@ -49,6 +49,58 @@ def _agent_with_service(tmp_path):
     return agent, service
 
 
+async def test_a_turn_is_kept_as_it_begins_before_the_first_model_call_answers(tmp_path):
+    """The session of a chat's first turn was written after the first answer: for as long as that call took,
+    no such session could be opened or listed -- minutes, where a coding CLI answers as the model."""
+    from agent_system import run_events
+    from agent_system.core import turn_runs
+    from agent_system.core.request_context import release_run_attended, set_run_attended
+    from agent_system.run_events import RunEventBus, RunEventStore
+
+    agent, service = _agent_with_service(tmp_path)
+    kept = []
+
+    class _Looks(_Answers):
+        def __init__(self, session):
+            self.session = session
+
+        async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
+            try:
+                session = await service.session_manager.load_session("anonymous", self.session)
+                kept.append([(m["role"], m["content"]) for m in session["messages"]])
+            except Exception as error:  # noqa: BLE001 - what the test reports
+                kept.append(type(error).__name__)
+            yield FINAL
+
+    async def turn(task, session, request_id):
+        agent.llm = _Looks(session)
+        return [event async for event in agent.run_events(task, session_id=session, request_id=request_id)]
+
+    run_events.use_run_events(RunEventStore(tmp_path / "run_events.db"), RunEventBus())
+    turn_runs.report_turns()
+    set_run_attended("rq1", True)      # a person started it, as the chat marks the turns it sends
+    set_run_attended("rq2", True)
+    try:
+        events = await turn("hello", "S", "rq1")
+        assert any(event.get("type") == "final" for event in events), f"fixture: no answer: {events}"
+        assert kept == [[("user", "hello")]], "the turn was not on disk while its first model call ran"
+        # ... and a later turn's question is, too, before it is answered
+        kept.clear()
+        turn_runs.settle()
+        await turn("and now?", "S", "rq2")
+        assert [role for role, _ in kept[0]] == ["user", "assistant", "user"] and kept[0][-1] == ("user", "and now?")
+        # a run no person is at -- a program's, by the thousand -- is written as before: not as it begins
+        kept.clear()
+        await turn("hello", "T", "rq3")
+        assert kept == ["SessionNotFoundError"], f"a run nobody is at was written as it began: {kept}"
+    finally:
+        release_run_attended("rq1")
+        release_run_attended("rq2")
+        turn_runs.settle()
+        turn_runs._ENDING.clear()
+        run_events.use_run_events(None)
+
+
 async def test_a_refused_request_neither_starts_nor_stops_a_loop():
     agent = _real_agent()
     agent.llm = _Answers()

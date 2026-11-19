@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Beside it the pill in the shell's head no longer says the same again: it keeps to what warns (a run gone quiet,
   one that needs you) and counts the agents at work only with the sessions closed. Runs that name each other as
   the session they work below are listed on their own, in the shell and in the terminal.
+- Chat: a step with something still going in it -- a call, a run below it -- says so in its header, in the
+  colour of what goes on. Folded, it is where to look.
 - A run's session by itself: a sub-agent's session opened from what works now is read along as its run goes on
   -- it showed how it stood when it was opened and nothing since -- and once more at its end. Not under a viewer
   who scrolled up or unfolded something, nor over a command's answer: what they miss is offered at the chat's end
@@ -279,6 +281,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn that is told as a run -- one a person is at, and what it starts -- is written as it begins. Until its
+  first model answer nothing of it was on disk: the session of a chat's first turn could not
+  be opened ("Session not found" from what works now) and was not listed, and a later turn's question was
+  missing from a session read meanwhile. That lasted the whole run where a coding CLI answers as the model, and
+  where a state machine is addressed as an agent.
+- A session woken as a process of its own (a wake that comes from outside the server) tells its turn as a run:
+  the session list said the session was at work while what works now said its last turn had ended.
+- What works now: how long a run has been at work stands where the rows below say how long ago one ended. Stop
+  had a column of its own in the rows at work and pushed their time to the left.
 - Chat: a session opened again showed its tool calls by their names alone -- what each did ("Read README.md") and
   the mark for how it ended went out on the run's stream and were kept nowhere -- and a step whose model ran the
   tools by itself (a coding CLI as the model) as if nothing had been called. A run keeps the last status line of

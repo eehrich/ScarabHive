@@ -111,7 +111,7 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 .activity-heading .sessions-count { margin-left: auto; }
 .activity-list { list-style: none; margin: 0; padding: 0; }
 .activity-item {
-  display: flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-md);
+  position: relative; display: flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-md);
   padding-left: calc(var(--depth, 0) * 14px); color: var(--text-secondary);
 }
 .activity-item:hover { background: var(--surface-3); color: var(--text-primary); }
@@ -131,8 +131,13 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 .activity-title { color: var(--text-secondary); }
 .activity-line { color: var(--text-muted); }
 .activity-group[data-activity="working"] .activity-line { color: var(--accent-text, var(--accent)); }
-/* Stop shows with the pointer on its row and with the keyboard in it (a hidden button takes no focus of its own) */
-.activity-stop { flex: none; visibility: hidden; }
+/* Stop shows with the pointer on its row and with the keyboard in it (a hidden button takes no focus of its own).
+   Below the row's first line, at its end: a column of its own pushed how long a run works to the left of where
+   the rows without a Stop say how long ago they ended. The words under the agent end before it. */
+.activity-stop { position: absolute; right: var(--space-1); bottom: var(--space-1); visibility: hidden; }
+.activity-item:has(.activity-stop) :is(.activity-title, .activity-line) { padding-right: calc(var(--control-h-sm) + var(--space-1)); }
+/* ... and a run that says nothing of what it is about keeps that line: on two lines Stop would lie over how long */
+.activity-item:has(.activity-stop) .activity-title:empty::before { content: "\200b"; }
 .activity-item:hover .activity-stop, .activity-item:focus-within .activity-stop, .activity-stop[disabled] { visibility: visible; }
 /* the head of the list of every session: there only while something stands above it, and it folds the list away */
 .sessions-archive {

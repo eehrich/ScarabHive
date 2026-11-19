@@ -91,6 +91,38 @@ async def test_a_process_nobody_is_at_tells_nothing(store, monkeypatch):
     assert store.run("turn-2") is None
 
 
+async def test_a_session_woken_as_a_process_of_its_own_tells_its_turn(store, monkeypatch):
+    """A wake that comes from outside the server starts an agent-cli for the session. Nobody is at that process,
+    so its turn counted as nobody's: the session list said the session was at work, what works now did not."""
+    from agent_system.cli_utils.commands import run as run_command
+
+    class _Presence:
+        taken = []
+
+        def hold(self, session_id, user, entry):
+            pass
+
+        def pending(self, session_id, user):
+            return True
+
+        def take_for_wake(self, session_id, user):
+            self.taken.append(session_id)
+
+    monkeypatch.setattr(turn_runs, "_every", False)      # set back when the test ends
+    hold = dict(session_id="turn-1", session_user="alice", entry_name="coder", force=False, vprint=lambda *a, **k: None)
+    # a run somebody typed (a script, a person): as before, nothing is told that nobody attends
+    assert run_command.hold_session(_Presence(), woken=False, **hold) is True
+    await _run(_agent(), _Model(), attended=False)
+    assert store.run("turn-1") is None, "a one-shot run nobody attends was told"
+
+    assert run_command.hold_session(_Presence(), woken=True, **hold) is True
+    assert _Presence.taken == ["turn-1"]
+    await _run(_agent(), _BrokenModel(), attended=False)
+    told = store.run("turn-1")
+    assert told is not None and told["source"] == "chat", "the woken turn was told nowhere"
+    assert told["needs_you"] is True, "nobody watched it fail: it is theirs to hear of"
+
+
 async def test_a_turn_no_person_started_tells_nothing_nor_does_what_runs_below_it(store, world):  # noqa: F811
     """A worker sends its jobs to the server by the thousand: told, each wrote its steps into the one file every
     process writes, pushed the chats out of the list, and rang for its person at every failure."""

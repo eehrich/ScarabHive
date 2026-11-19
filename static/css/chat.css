@@ -58,6 +58,11 @@
   font-size: var(--text-xs); color: var(--text-muted); cursor: pointer; user-select: none;
 }
 .container-header:hover { color: var(--text-secondary); background: var(--surface-3); }
+/* A step with something still going in it -- a call, a run below it -- says so in its header, in the colour of
+   what goes on: folded, it is where to look. Every step on the way down to it does. Not for a run read back
+   whose box was not read yet (.unread): it turns until it knows, and most of those ended long ago. */
+.container-section:has(.spinner:not(.unread)) > .container-header,
+.container-section:has(.spinner:not(.unread)) > .container-header .type-icon { color: var(--accent-text); }
 .toggle-arrow { display: inline-flex; }
 .toggle-arrow .pk-icon { transition: transform var(--duration-fast); }
 .container-section[data-open="true"] > .container-header .toggle-arrow .pk-icon { transform: rotate(90deg); }

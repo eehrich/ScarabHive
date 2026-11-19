@@ -56,6 +56,13 @@
   // A condition a check needs, failing with the condition itself as the reason -- a bare
   // `return false` reports 'failed' and leaves the reader to guess which line it was.
   const need = (ok, why) => { if (!ok) throw new Error(why); return true; };
+  /** The colour a token of the kit stands for in the shell, as getComputedStyle says a colour. */
+  const tone = (name) => {
+    const probe = doc().createElement('span');
+    probe.style.color = `var(${name})`;
+    doc().body.appendChild(probe);
+    try { return win().getComputedStyle(probe).color; } finally { probe.remove(); }
+  };
   // Does a title cut short keep five characters and the ellipsis? The room from its first character to the end of its
   // box, against those six set in its font (as kit_js_tests.html).
   const holdsFive = (box) => {
@@ -2003,12 +2010,19 @@
       await until('the session', () => $('#headerSessionId').textContent === 'Taken over');
       const all = (id) => $$(`#chat .operation-progress[data-request-id="${id}"]`);
       need(all('r-steps_003').length === 1 && all('r-steps_003')[0].querySelector('.open-mark'), 'fixture: no open row read back');
+      // taken up by the stream it is at work again and turns, as a row the stream began does: its step says so
+      const marks = [];
+      const watch = new (win().MutationObserver)((records) => records.forEach((record) => record.addedNodes.forEach(
+        (node) => marks.push(node.className))));
+      watch.observe(all('r-steps_003')[0].querySelector('.progress-icon'), { childList: true });
       cookie('stub_stream', 'steps');
       $('#task').value = 'Two calls please';
       $('#f').requestSubmit();
       await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-steps', 3000);
       await until('its end', () => !win().chatModule.hasActiveRequest(), 6000);
       need(all('r-steps_003').length === 1, `the operation has ${all('r-steps_003').length} rows`);
+      watch.disconnect();
+      need(marks.join() === 'spinner,checkmark', `taken up by the stream, the row read back open was marked ${marks.join() || 'not at all'}`);
       need(all('r-steps_003')[0].querySelector('.progress-icon .checkmark')
         && all('r-steps_003')[0].querySelector('.progress-message').textContent === 'Read README.md',
       `its row reads "${all('r-steps_003')[0].textContent.replace(/\s+/g, ' ').trim()}"`);
@@ -2017,8 +2031,14 @@
         `an ended row read back was taken up by the stream (${all('r-steps_002').map((row) => row.textContent.replace(/\s+/g, ' ').trim())})`);
       // an open row the stream never spoke of is no operation of that run: its end does not say "still running
       // when the run ended" of something an earlier turn left open
-      return need(all('zz_005')[0].querySelector('.open-mark') && !all('zz_005')[0].classList.contains('unfinished')
+      need(all('zz_005')[0].querySelector('.open-mark') && !all('zz_005')[0].classList.contains('unfinished')
         && !all('zz_005')[0].querySelector('.progress-open-note'), 'the end of a later run marked a row read back');
+      // nothing goes on in any of these steps: none says in its header that something does (it would, in the
+      // colour of what goes on, while a call of it runs)
+      const heads = $$('#chat .container-section > .container-header').filter((head) => head.getClientRects().length);
+      return need(heads.length > 1 && !$('#chat .spinner')
+        && heads.every((head) => win().getComputedStyle(head).color === tone('--text-muted')),
+        `of ${heads.length} steps with nothing going on, one says that something is`);
     } finally {
       cookie('stub_stream', null);
       forgetRun();
@@ -2594,6 +2614,11 @@
       // the run has answered, its step is folded: nothing of the sub-agents is read yet
       await painted();
       need(await read('sub-help') === 0, 'a sub-run was read before it could be seen');
+      // ... so its box does not know how its run stands and turns until it does: no sign of work -- the step folded
+      // over it does not say in its header that something in it still goes on
+      need(first.querySelector('.sub-run-icon .spinner')
+        && win().getComputedStyle(step.querySelector(':scope > .container-header')).color === tone('--text-muted'),
+      'a step folded over runs that ended long ago says that something in it still goes on');
       need(unfold(step), 'the step does not open');
       await until('its steps', () => first.querySelector(':scope > .sub-run-body > .steps > .step-section[data-step="1"]'), 3000);
       need(first.dataset.state === 'done' && first.querySelector('.sub-run-task').textContent === 'Research the icons'
@@ -3718,6 +3743,21 @@
       pane.refreshActivity = async () => {};
       sessionButton('s-bg', 'open').click();
       await until('the session', () => $('#headerSessionId').textContent === 'Backgrounded');
+      // Folded under its step its box is not read: nothing says yet how the run stands, and the step does not say
+      // in its header that something in it goes on -- until a tick says a process holds the run, unread still
+      const folded = await until('the work, folded away', () => $('#chat .sub-run[data-run-id="rb00000001_003_sub_bgbgbg"]'), 3000);
+      const says = (el) => win().getComputedStyle(el.closest('.step-section').querySelector(':scope > .container-header')).color;
+      need(says(folded) === tone('--text-muted'), 'a step folded over a box not read yet says that something in it goes on');
+      await tick();
+      await until('the step says that work goes on in it', () => says(folded) === tone('--accent-text'), 3000);
+      need(await hits('session:sub-bg') === 0, 'the box was read while folded away');
+      // no longer held: ended, or its process gone -- folded away nothing reads how, and the step stops saying
+      // that work goes on in it
+      win().chatModule.showBackgroundRuns({}, ['s-bg']);
+      await until('the step no longer says that work goes on in it', () => says(folded) === tone('--text-muted'), 3000);
+      need(await hits('session:sub-bg') === 0, 'the box was read while folded away');
+      sessionButton('s-bg', 'open').click();
+      await until('the session shown anew', () => !folded.isConnected, 3000);
       const box = await until('the work under its call', () => $(
         '#chat .tool-detail[data-key="rb00000001_003"] > .sub-run[data-run-id="rb00000001_003_sub_bgbgbg"]'), 3000);
       unfold(box.closest('.step-section'));
@@ -3725,6 +3765,7 @@
       // before any tick: at work, as its sub-session says
       need(box.dataset.state === 'running' && !box.querySelector('.sub-run-stop').hidden,
         `read back before the first tick, the run is shown ${box.dataset.state}`);
+      need(says(box) === tone('--accent-text'), 'read and at work, its step does not say that something in it goes on');
       await tick();
       const stop = box.querySelector('.sub-run-stop');
       await until('at work, with its step and a Stop', () => box.dataset.state === 'running' && !stop.hidden
@@ -3813,8 +3854,14 @@
       await until('its run', () => sessionStorage.getItem('activeRequestId') === 'r-background', 3000);
       await until('its end', () => !win().chatModule.hasActiveRequest(), 8000);
       const box = $('#chat .sub-run[data-run-id="r-background_001_sub_bgbgbg"]');
-      return need(box && box.dataset.state === 'running' && !box.querySelector('.sub-run-stop').hidden,
+      need(box && box.dataset.state === 'running' && !box.querySelector('.sub-run-stop').hidden,
         `the work was marked ${box && box.dataset.state} when the turn ended`);
+      // the step that holds it says that something in it still goes on, in its header: folded, it is where to look
+      const head = (section) => section.querySelector(':scope > .container-header');
+      const shown = (section) => head(section)?.getClientRects().length > 0;
+      const going = $$('#chat .container-section').filter((section) => shown(section) && section.contains(box));
+      return need(going.length && going.every((section) => win().getComputedStyle(head(section)).color === tone('--accent-text')),
+        `of ${going.length} steps that hold work still going, not every one says so`);
     } finally {
       await stub('/__stub/background', { runs: {} });
       cookie('stub_stream', null);
@@ -3828,10 +3875,26 @@
     // the pane said that a session ran, with a dot.
     try {
       await stub('/__stub/sessions', { session_id: 's-act', title: 'Import path' });
-      await stub('/__stub/agent-runs', { runs: atWork('s-act') });
+      await stub('/__stub/agent-runs', { runs: [...atWork('s-act'), { ...atWork('s-over')[0], state: 'done',
+        ended: new Date(Date.now() - 120000).toISOString() }, { ...atWork('s-bare')[0], title: '' }] });
       await loadShell();
       const item = (id) => $(`#sessionsPane .sessions-activity .activity-item[data-run="${id}"]`);
-      await until('the turn at work', () => item('s-act'), 5000);
+      await until('the turn at work', () => item('s-act') && item('s-over') && item('s-bare'), 5000);
+      // how long stands at the same place in every row: Stop, which only a run at work has, takes none of that
+      // line -- a column of its own pushed the time of the runs at work to the left
+      const box = (el) => el.getBoundingClientRect();
+      const time = (id) => box(item(id).querySelector('.activity-time'));
+      const stop = box(item('s-act').querySelector('.activity-stop'));
+      need(Math.abs(time('s-act').right - time('s-over').right) < 1,
+        `a run at work says how long ${Math.round(time('s-over').right - time('s-act').right)}px left of where one that ended does`);
+      need(stop.width > 0 && stop.top >= time('s-act').bottom - 1 && stop.right <= box(item('s-act')).right,
+        'Stop lies over how long the run works, or outside its row');
+      // ... also in a row that says nothing of what it is about (a message without words): it keeps that line
+      need(box(item('s-bare').querySelector('.activity-stop')).top >= time('s-bare').bottom - 1,
+        'Stop lies over how long a run works that says nothing of what it is about');
+      need(parseFloat(win().getComputedStyle(item('s-act').querySelector('.activity-title')).paddingRight) >= stop.width
+        && parseFloat(win().getComputedStyle(item('s-over').querySelector('.activity-title')).paddingRight) === 0,
+      'what a run is about does not end before its Stop, or ends early where there is none');
       const activity = $('#sessionsPane .sessions-activity');
       need(!activity.hidden && (activity.compareDocumentPosition($('#sessionsPane .sessions-list')) & 4) !== 0,
         'what works now does not stand above the sessions');
@@ -3841,7 +3904,7 @@
       need(item('s-act-sub').style.getPropertyValue('--depth').trim() === '1'
         && item('s-act-sub').querySelector('.activity-line').textContent.trim() === 'file_ops: read_file · parser.c',
       'the sub-agent does not stand below its turn with its step');
-      await until('the pill counts both', () => $('#agentRunsPill').textContent.includes('2 agents at work'), 3000);
+      await until('the pill counts the three', () => $('#agentRunsPill').textContent.includes('3 agents at work'), 3000);
       item('s-act').querySelector('[data-act="open"]').click();
       await until('its session in the chat', () => $('#headerSessionId').textContent === 'Import path', 3000);
       // at once: the session opened says so, the tree does not wait for its next look at the clock

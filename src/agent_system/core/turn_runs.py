@@ -42,6 +42,8 @@ TASK = "turn"
 THINKING = "Thinking"
 
 _on = False
+#: Every turn of this process is told, attended or not (report_turns).
+_every = False
 #: The turns of this process at work, by session id.
 _TURNS: dict[str, "Turn"] = {}
 #: The end being written for a session's turn (RunReporter.end_detached): the session's next turn waits for it --
@@ -49,10 +51,14 @@ _TURNS: dict[str, "Turn"] = {}
 _ENDING: dict[str, threading.Thread] = {}
 
 
-def report_turns(on: bool = True) -> None:
-    """Said once by a process a person may be at (the server, agent-cli): its turns are told as runs."""
-    global _on
-    _on = on
+def report_turns(on: bool = True, *, every: bool = False) -> None:
+    """Said once by a process a person may be at (the server, agent-cli): its turns are told as runs.
+
+    ``every``: said by a process that runs one turn for a person who is not at it -- a session woken for its
+    person as an agent-cli of its own. Nobody started that turn at this process, so it counted as nobody's and
+    was told nowhere: the session list said the session was at work, what works now said it had ended."""
+    global _on, _every
+    _on, _every = on, every
 
 
 def telling() -> str:
@@ -63,7 +69,7 @@ def telling() -> str:
         return ""
     if forced in ("1", "on", "true", "yes"):
         return "all"
-    return "attended" if _on else ""
+    return "all" if _every else "attended" if _on else ""
 
 
 def title_of(task: str) -> str:
@@ -158,6 +164,11 @@ async def started(*, agent: str, system_config: Any, session_id: str, user_id: s
     except Exception:  # noqa: BLE001 - see the module docstring
         logger.exception("turn in %s: not told as a run", session_id)
         return None
+
+
+def told(session_id: str) -> bool:
+    """Whether the turn at work in ``session_id`` is told as a run: one a person may look for."""
+    return (session_id or "") in _TURNS
 
 
 def ending(session_id: str) -> bool:

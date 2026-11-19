@@ -174,7 +174,10 @@ agent: `plugins/stategraph/facade.py`).
 - **Which**: a turn a person started -- one that is attended
   (`request_context.run_is_attended`: a chat in the browser or at the
   terminal, a session the server woke) -- and whatever runs below a run that
-  is told, a panel's task included. What a program sends the server (a
+  is told, a panel's task included. A session woken as a process of its own
+  (`agent-cli run --woken`, where the wake comes from outside the server) is
+  its person's as well, though nobody is at that process: it tells every turn
+  it runs (`report_turns(every=True)`). What a program sends the server (a
   worker's job, a call through the OpenAI API, `/run` without a person) and
   what runs below it tells nothing. The process says at its start that it
   tells at all (the server, agent-cli); `AGENT_TURN_RUNS=0` silences a

@@ -428,6 +428,10 @@ def hold_session(presence: Any, *, session_id: str, session_user: str, entry_nam
             # wake run per ring, up to max_wake_depth, and a run that
             # never reaches an LLM call left the mark and woke itself.
             presence.take_for_wake(session_id, session_user)
+            # ... and its turn is its person's, though nobody is at this process: told as a run
+            # (core/turn_runs.py), with what it starts below it
+            from ...core.turn_runs import report_turns
+            report_turns(every=True)
     return True
 
 
