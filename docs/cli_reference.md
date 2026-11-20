@@ -49,8 +49,10 @@ Run an agent with a given prompt.
 ### Usage
 
 ```bash
-agent-cli run [OPTIONS] PROMPT
+agent-cli run [OPTIONS] [AGENT] PROMPT
 agent-cli PROMPT                     # `run` may be left out
+agent-cli run coder "PROMPT"         # first word an agent: as --agent
+agent-cli -s ID "PROMPT"             # run's options first: `run` may be left out too
 
 # Default agent (default_agent in config.yaml)
 agent-cli run "What is the weather in Berlin?"
@@ -82,9 +84,12 @@ agent-cli run "What's in this image?" --attach screenshot.png
                                 instead of reporting a missing request
 --max-steps N                   Step budget for this run (overrides the
                                 agent's max_steps; this process only)
---session ID|TITLE              Continue an existing session -- its ID or the
+-s, --session ID|TITLE          Continue an existing session -- its ID (the
+                                first four characters or more do), or the
                                 title given to it with `/title` (unknown:
-                                creates a session with this ID)
+                                creates a session with this ID -- unless it
+                                is the start of exactly one existing ID or
+                                title; the CLI then names the session taken)
 --session-title TEXT            Title for the new session
 --list-sessions [COUNT|all]     List this user's sessions, one line each
                                 (default 20, 0 = no limit; no sub-agent sessions).
@@ -149,18 +154,26 @@ agent-cli run --raw "List top 3 tech stocks" | jq '.summary'
 REPL mode: stay in the session and keep talking to the agent, like `ollama run`.
 The session is saved after every turn and can be resumed later (`--session`).
 
+`chat` and `run` read their first word as the agent when the config defines
+an agent of that name and no `--agent` is given; any other word is the
+message, as before. With two words the first must be an agent -- a typo there
+is an error, not a message to the default agent. A message of several words
+goes in quotes.
+
 ```bash
 # Chat with the default agent
 agent-cli chat
 
-# Chat with a specific agent and LLM profile
-agent-cli chat --agent coder --llm deepseek-chat
+# Chat with a specific agent -- the first word, when it names one
+agent-cli chat coder
+agent-cli chat coder --llm deepseek-chat
 
 # Send a first message immediately
-agent-cli chat "What is the status?" --agent sysadmin_agent
+agent-cli chat coder "What is the status?"
+agent-cli chat "What is the status?"          # to the default agent
 
-# Resume an earlier session (/sessions and /session print this line for you)
-agent-cli chat --session a1b2c3d4 --agent coder
+# Resume an earlier session: its ID, the first characters of it, or its title
+agent-cli chat -s a1b2
 
 # List sessions without entering the chat
 agent-cli chat --list-sessions
@@ -194,9 +207,10 @@ Takes the same options as `run`: `--agent`, `--llm`, `--llm-params`,
 |---------|--------|
 | `/exit`, `/quit`, `/q`, `/bye` | End the chat (Ctrl-D / Ctrl-Z+Enter work too) |
 | `/new`, `/clear`, `/reset` | Start a fresh session (the current one stays saved) |
+| `/cls` | Clear the screen; the session stays. The terminal clears the screen (with colour on, the scrollback too) and names agent and session; the browser empties its view (refused while a run writes into it), `/history` or a reload brings it back |
 | `/session` | Show the current session and the command that resumes it |
 | `/sessions [count\|all]` | List this user's sessions, one line each (default 20, `0` = no limit). Sub-agent sessions are left out — they outnumber the real ones ten to one. So are the runs of agents that are not meant for chat (visibility neither `ui` nor `both`; measured 25.09.: 4562 of 5054, almost all pipeline evaluators) — the agent of this chat and the running session always stay in. A footer counts the rest, `/sessions all` shows it. The browser chat reads the same list via `GET /api/sessions/listing?count=&agent=&current=` — the server computes count, `all`, filter and footer with the same functions as the terminal |
-| `/resume [id\|titel]`, `/continue` | Continue an earlier session without leaving the chat; without an argument the last one this user left (in the browser the most recent one from `/sessions` except the open one, from any chat agent: the browser switches the agent along with the session, the terminal stays with its own). The title works instead of the ID: IDs are machine-generated (`2332j2kj22k`) and **cannot** be renamed — they are the key under which usage tracker, message debugger, context store, sub-session indexes and presence locks keep their rows. Several sessions with the same title: the most recently used; a prefix suffices. Like `--session <id>`: the session continues on its own LLM. In the terminal a session of another agent is rejected, with the command that resumes it (the browser switches the agent instead) — in this chat it would run with foreign tools and a foreign prompt, and the next save would write this agent into its record. The same applies if its LLM cannot be started here (missing key): otherwise it would run on this chat's profile, and saving would overwrite its own choice |
+| `/resume [id\|titel]`, `/continue` | Continue an earlier session without leaving the chat; without an argument the last one this user left (in the browser the most recent one from `/sessions` except the open one, from any chat agent: the browser switches the agent along with the session, the terminal stays with its own). The title works instead of the ID: IDs are machine-generated (`2332j2kj22k`) and **cannot** be renamed — they are the key under which usage tracker, message debugger, context store, sub-session indexes and presence locks keep their rows. Several sessions with the same title: the most recently used; a prefix suffices — of the title, or of the ID from four characters on; a prefix that fits two sessions names neither. Like `--session <id>`: the session continues on its own LLM. In the terminal a session of another agent is rejected, with the command that resumes it (the browser switches the agent instead) — in this chat it would run with foreign tools and a foreign prompt, and the next save would write this agent into its record. The same applies if its LLM cannot be started here (missing key): otherwise it would run on this chat's profile, and saving would overwrite its own choice |
 | `/title [text]`, `/rename` | Give the session a name — the one `/sessions` shows, and under which `/resume` and `--session` find it again; without text it shows the current one. Titles are searched only among top-level sessions (sub-agent titles are their task text); an ID reaches any session. If several sessions carry the same title, `/resume` takes the most recent and says that there are others. A session without a first turn has no record yet; there the title goes along with the first save. The same in the browser: there is not even a session ID before the first message, the title goes along with the first message as `session_title` to `/run` or `/events` (only for a session the run creates), a rejected first message hands it back to the next one, and switching the session beforehand drops it with a notice. A `/title` during the first run, before it has saved, is remembered by the server for its first save (as in the terminal, which writes it after the turn) |
 | `/agent [name]` | Agent of this chat — without an argument it lists the agents of the configuration, with an argument it switches. The switch **always starts a new session**: a session carries the agent it ran with, and under another one it would run with foreign tools and a foreign prompt. The new agent runs on its own LLM, a `/model` or `/think` before it does not apply to it |
 | `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
@@ -616,8 +630,10 @@ the exit code.
 
 ## Troubleshooting
 
-**"Agent not found"** — the error message lists the available agents; the
-name belongs after `--agent`, not as the first word of the task.
+**"Agent not found"** — the error message lists the available agents; check
+the name after `--agent`. **"'x' is no agent"** — two words without quotes:
+the first is read as the agent's name. Put a message of several words in
+quotes, or fix the name.
 
 **ANSI codes in redirected output** — `--no-color` or `NO_COLOR=1`. With
 `--color auto` (default) no escape sequences are produced in pipes.
@@ -643,7 +659,8 @@ name belongs after `--agent`, not as the first word of the task.
 ```bash
 agent-cli "task"                                # run with the default agent
 agent-cli run "task" --agent NAME --llm PROFILE
-agent-cli chat --agent NAME                     # interactive
+agent-cli chat NAME ["first message"]          # interactive
+agent-cli chat -s ID|TITLE                      # continue a session
 agent-cli run --list-sessions                   # this user's sessions
 
 agent-cli runs [--watch]                        # what the agents are doing now

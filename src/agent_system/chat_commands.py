@@ -65,6 +65,9 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
                 "end the chat (Ctrl-D / Ctrl-Z+Enter work too)", surfaces=(CLI,)),
     ChatCommand("new", ("/new", "/clear", "/reset"),
                 "start a fresh session (current one stays saved)"),
+    # The screen only; /clear stays /new, as the other coding CLIs taught it.
+    # The browser empties its view, the terminal its scrollback.
+    ChatCommand("cls", ("/cls",), "clear the screen; the session stays"),
     ChatCommand("session", ("/session",), "show the current session and how to resume it"),
     ChatCommand("sessions", ("/sessions",),
                 "list recent sessions of the agents meant for chat (0 = no limit, all = every one)",

@@ -911,6 +911,28 @@ class TestResolveSessionRef:
         assert await session_manager.resolve_session_ref("u", "Build") is None
 
     @pytest.mark.asyncio
+    async def test_the_start_of_an_id_is_enough(self, session_manager):
+        """The listing shows ids; their first characters are what a person types."""
+        await self._titled(session_manager, "FPGA Quartus", "k3x9q2w7ab")
+        await self._titled(session_manager, "Other", "m1n2b3v4cd")
+
+        assert await session_manager.resolve_session_ref("u", "K3X9") == "k3x9q2w7ab"
+
+    @pytest.mark.asyncio
+    async def test_a_short_start_of_an_id_names_nothing(self, session_manager):
+        """Three characters fit some id by chance: the session the ref names is created instead."""
+        await self._titled(session_manager, "FPGA Quartus", "k3x9q2w7ab")
+
+        assert await session_manager.resolve_session_ref("u", "k3x") is None
+
+    @pytest.mark.asyncio
+    async def test_a_ref_starting_one_title_and_another_id_names_neither(self, session_manager):
+        await self._titled(session_manager, "abcd notes", "zzzz111111")
+        await self._titled(session_manager, "Other", "abcd999999")
+
+        assert await session_manager.resolve_session_ref("u", "abcd") is None
+
+    @pytest.mark.asyncio
     async def test_a_name_nobody_gave_resolves_to_nothing(self, session_manager):
         await self._titled(session_manager, "FPGA Quartus", "xyz789")
 

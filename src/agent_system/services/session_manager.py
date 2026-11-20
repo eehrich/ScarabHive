@@ -65,6 +65,10 @@ class SessionDeletedError(Exception):
 # How many sessions' last writes SessionManager._written keeps; the oldest goes first.
 _WRITTEN_KEPT = 1024
 
+#: The shortest start of a session id that resolve_session_ref takes for the id: a shorter one fits
+#: some id by chance and joins a stranger's conversation instead of creating the session it names.
+MIN_ID_PREFIX = 4
+
 
 def _file_key(stat: Optional[os.stat_result]) -> Optional[tuple[int, int, int]]:
     """What tells one write of a file from another: its id, mtime and size. None where the file system gives files
@@ -1156,7 +1160,11 @@ class SessionManager:
         only when it names exactly ONE session: ``--session build`` creates a
         session called "build" unless a single stored title starts that way,
         and joining a stranger's conversation because the first letters
-        matched is worse than starting a new one. None when nothing matches.
+        matched is worse than starting a new one. The start of an ID counts
+        the same way, from ``MIN_ID_PREFIX`` characters on -- the listing
+        shows ids, and a title prefix and an id prefix are one pool: a ref
+        that starts one session's title and another's id names neither.
+        None when nothing matches.
 
         *others*, when given, receives the ids of the other sessions that
         carry the same exact title -- so the caller can say it took the newest
@@ -1190,8 +1198,12 @@ class SessionManager:
             if others is not None:
                 others.extend(r.get("session_id") for r in same if r.get("session_id") != exact)
             return exact
-        starting = [r for r, title in titled if title.startswith(wanted)]
-        return starting[0].get("session_id") if len(starting) == 1 else None
+        by_id = len(wanted) >= MIN_ID_PREFIX
+        starting = {r.get("session_id") for r, title in titled
+                    if title.startswith(wanted)
+                    or (by_id and str(r.get("session_id") or "").casefold().startswith(wanted))}
+        starting.discard(None)
+        return starting.pop() if len(starting) == 1 else None
 
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session -- read, renamed and written back under the session's lock (``_mutate``), so a write

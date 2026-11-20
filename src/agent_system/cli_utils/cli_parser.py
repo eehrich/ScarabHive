@@ -14,16 +14,20 @@ checked, before any config is loaded.
 from __future__ import annotations
 
 import argparse
-from typing import Any, Dict, List, Literal, Optional, get_args, get_origin
+from typing import Any, Callable, Dict, List, Literal, Optional, get_args, get_origin
 
 from .session_listing import DEFAULT_LIMIT
 
 #: What --color takes, in agent-cli's parsers and in agent-run's.
 COLOR_CHOICES = ("auto", "always", "never", "ansi", "html", "text")
 
+#: What `run` asks without a task.
+RUN_DEFAULT_TASK = "What can you do?"
+
 #: The words the main parser knows as its first token; anything else gets an
 #: implicit `run` in front of it.
 _SUBCOMMANDS = ("plugins", "mcp", "hooks", "run", "chat", "users", "reload", "runs", "-h", "--help")
+_HELP = ("-h", "--help")
 
 
 def _literal_strings(annotation: Any) -> frozenset:
@@ -151,6 +155,10 @@ def main_parser_args(ns: argparse.Namespace, rest: List[str]) -> List[str]:
     if rest:
         if not rest[0].startswith("-") and rest[0] not in _SUBCOMMANDS:
             rest.insert(0, "run")
+        # `agent-cli -s ID "task"`: run's options first and no command anywhere. A word that
+        # names one stays a command (`-s ID chat`); help after run's options is run's help.
+        elif rest[0] not in _HELP and not any(word in _SUBCOMMANDS and word not in _HELP for word in rest):
+            rest.insert(0, "run")
     else:
         # no remaining tokens: nothing to parse further
         rest = []
@@ -188,7 +196,8 @@ def _add_agent_session_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-steps", dest="max_steps", type=int, metavar="N",
                    help="Step budget for this run, overriding the agent's max_steps. "
                         "Only for this process -- nothing is written to the YAML.")
-    p.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
+    p.add_argument("-s", "--session", dest="session_id",
+                   help="Continue an existing session: its ID, the start of it, or its title")
     p.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
     p.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
     p.add_argument("--force", dest="force", action="store_true",
@@ -223,6 +232,37 @@ def _add_agent_session_args(p: argparse.ArgumentParser) -> None:
                    help="With --archive-sessions: report, change nothing.")
     p.add_argument("--vars", "--template-vars", dest="template_vars", nargs="+", metavar="KEY=VALUE",
                    help="Template variables for prompt rendering (e.g. --vars lang=German user_name=Alice)")
+
+
+def _add_agent_and_task(p: argparse.ArgumentParser, task_help: str, default: Optional[str]) -> None:
+    """`AGENT TASK`, `AGENT` or `TASK`: which one a single word is, take_agent_word decides."""
+    p.set_defaults(default_task=default)
+    p.add_argument("task", nargs="?", default=default, metavar="AGENT|TASK",
+                   help=f"an agent name (as --agent), else {task_help}")
+    p.add_argument("task_after_agent", nargs="?", default=None, metavar="TASK",
+                   help=f"after an agent name: {task_help}")
+
+
+def take_agent_word(args: argparse.Namespace, is_agent: Callable[[str], bool]) -> Optional[str]:
+    """Read `run`/`chat`'s leading agent name into --agent; an error message, or None.
+
+    One word is the agent when *is_agent* knows it and no --agent was given,
+    else the task as always. Two words: the first must be an agent -- a
+    typo there is an error, not a message to the default agent.
+    """
+    first, second = getattr(args, "task", None), getattr(args, "task_after_agent", None)
+    override = getattr(args, "agent_override", None)
+    if second is not None:
+        if override:
+            return (f"--agent {override} and a second word: put the message in quotes "
+                    f"(\"{first} {second} ...\")")
+        if not is_agent(first):
+            return (f"'{first}' is no agent; a message of several words "
+                    f"goes in quotes (\"{first} {second} ...\")")
+        args.agent_override, args.task = first, second
+    elif first is not None and not override and is_agent(first):
+        args.agent_override, args.task = first, getattr(args, "default_task", None)
+    return None
 
 
 def _add_attachment_args(p: argparse.ArgumentParser) -> None:
@@ -266,13 +306,13 @@ def main_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     # run subcommand (default behavior)
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
-    run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
+    _add_agent_and_task(run_parser, "the task to run", RUN_DEFAULT_TASK)
     _add_attachment_args(run_parser)
     _add_agent_session_args(run_parser)
 
     # chat subcommand: interactive REPL that keeps the session across turns
     chat_parser = subparsers.add_parser("chat", help="Interactive chat with an agent (stays in the session)")
-    chat_parser.add_argument("task", nargs="?", default=None, help="Optional first message to send immediately")
+    _add_agent_and_task(chat_parser, "a first message, sent at once", None)
     _add_attachment_args(chat_parser)
     _add_agent_session_args(chat_parser)
 

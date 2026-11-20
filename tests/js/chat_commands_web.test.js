@@ -22,11 +22,19 @@ const PAGE_IDS = (fs.readFileSync(PAGE, 'utf8').match(/id="[^"]+"/g) || [])
 
 function makeElement() {
   const el = {
-    style: {}, dataset: {}, children: [], value: '', textContent: '', innerHTML: '',
+    style: {}, dataset: {}, children: [], value: '', textContent: '',
     className: '',
+    // Emptied, an element has no children left -- as /cls and a session load rely on.
+    get innerHTML() { return this.html || ''; },
+    set innerHTML(value) { this.html = value; if (value === '') this.children.length = 0; },
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     appendChild(child) { this.children.push(child); return child; },
     prepend(child) { this.children.unshift(child); },  // a note's close button goes first
+    insertBefore(child, before) {
+      const at = this.children.indexOf(before);
+      if (at < 0) this.children.push(child); else this.children.splice(at, 0, child);
+      return child;
+    },
     // Kept, so a test can do what the page does: submit the form.
     addEventListener(type, fn) { (this.listeners = this.listeners || {})[type] = fn; },
     removeEventListener() {},
@@ -34,6 +42,7 @@ function makeElement() {
     getAttribute() { return null; }, setAttribute() {}, insertAdjacentHTML() {},
     scrollIntoView() {}, focus() {}, closest() { return null; },
     remove() { this.removed = true; }, select() { this.selected = true; },
+    get isConnected() { return !this.removed; },
     // A real element has these, and the code under test uses them: an input
     // says it changed, and the export link is clicked to start the download.
     dispatchEvent() {}, click() {},
@@ -62,12 +71,27 @@ function load(sessions, options) {
   // Only the ids the PAGE really has, read off the page itself. A stub that
   // answers every id hides the bug this harness exists to catch: a handler
   // reaching for an element by a name that is not there gets a
-  // healthy-looking object here and null in the browser. Everything else
-  // answers null, exactly as the DOM would -- including an element the
-  // module creates at runtime and then looks up (the read-only banner).
+  // healthy-looking object here and null in the browser. Any other id is
+  // found as the DOM finds it: on an element the module put into the page
+  // (the caller link, the read-only banner) and has not taken out again.
+  const inPage = (node, id) => {
+    for (const child of node.children || []) {
+      if (child.removed) continue;
+      if (child.id === id) return child;
+      const found = inPage(child, id);
+      if (found) return found;
+    }
+    return null;
+  };
   const document = {
     getElementById(id) {
-      if (!PAGE_IDS.includes(id)) return null;
+      if (!PAGE_IDS.includes(id)) {
+        for (const el of Object.values(byId)) {
+          const found = inPage(el, id);
+          if (found) return found;
+        }
+        return null;
+      }
       return (byId[id] = byId[id] || makeElement());
     },
     querySelector() { return makeElement(); },
@@ -146,7 +170,11 @@ function load(sessions, options) {
         const text = answer.sse.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('');
         let read = false;
         return { ok: true, status: 200, body: { getReader: () => ({ read: async () => {
-          if (read) return { done: true, value: undefined };
+          if (read) {
+            // its end held back: the run has answered, its request is not over yet
+            if (answer.untilEnd) await answer.untilEnd;
+            return { done: true, value: undefined };
+          }
           // held back until the test lets it through: the run has not started yet
           if (answer.until) await answer.until;
           read = true;
@@ -265,6 +293,10 @@ function load(sessions, options) {
     // The chat keeps its end in view with one once it scrolls (a5b1b35f7): every
     // note scrolls, so without it every command here threw on its first note.
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    // a box read once it comes into view (stored sub-runs); never in view here
+    IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
+    // a sub-run's box is looked up by its run id
+    CSS: { escape: (text) => String(text) },
   });
   vm.runInNewContext(fs.readFileSync(MODULE, 'utf8'), sandbox,
     { filename: 'chat_module.js' });
@@ -888,7 +920,8 @@ test('a stored session that could not be shown keeps the waiting title', async (
   await chatModule.runCommand('title', '');
   const note = notesOf(container).join('\n');
   assert.ok(!note.includes('was not written'), note);
-  assert.ok(note.split('Title: Blitter umbauen').length === 3, 'dropped: ' + note);
+  // session:new empties the view, so the note of the bare /title is the one left to read
+  assert.ok(notesOf(container).pop().startsWith('Title: Blitter umbauen'), 'dropped: ' + note);
 });
 
 test('a waiting title is dropped with a word when the chat goes elsewhere first', async () => {
@@ -1250,6 +1283,86 @@ test('/model while a request runs: the running one keeps its model', async () =>
   assert.ok(notesOf(container).pop().includes('the running one keeps its model'));
   gate.open();
   await sent;
+});
+
+test('/cls empties the view and keeps the session', async () => {
+  const { chatModule, container } = load([], { session: 'sid7' });
+  await chatModule.runCommand('session', '');
+  assert.strictEqual(notesOf(container).length, 1, 'fixture: nothing on screen to clear');
+  await chatModule.runCommand('cls', '');
+  assert.deepStrictEqual(notesOf(container),
+    ['Screen cleared -- the session stays; /history or a reload shows it again.']);
+  await chatModule.runCommand('session', '');
+  assert.strictEqual(notesOf(container).pop(), 'Session: sid7', 'the session went with the screen');
+});
+
+test('/cls while a run streams leaves its block on the page', async () => {
+  const gate = held();
+  const { chatModule, container, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' },
+                       { type: 'final', content: 'fertig' }], untilEnd: gate.until } } });
+  const sent = send('hallo');
+  for (let i = 0; i < 5; i++) await tick();
+  const before = container.children.length;
+  await chatModule.runCommand('cls', '');
+  // past its answer too: the stream is open until its end, and what comes then goes into the block
+  assert.ok(notesOf(container).pop().startsWith('A run is writing into the chat'));
+  assert.strictEqual(container.children.length, before + 1, 'the run\'s block was cleared away');
+  gate.open();
+  await sent;
+});
+
+test('/cls leaves a working background run\'s box, and its Stop, on the page', async () => {
+  const { chatModule, container, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' },
+                       { type: 'sub_run', run_id: 'bg1', event: { type: 'start', task: 'lang',
+                         background: 'sub1', background_parent: 'sid7' } },
+                       { type: 'final', content: 'fertig' }] } } });
+  await send('hallo');
+  // the session pane's tick: a process still holds the run
+  chatModule.showBackgroundRuns({ sid7: [{ run_id: 'sub1', step_label: 'step 2' }] }, ['sid7']);
+  const before = container.children.length;
+  await chatModule.runCommand('cls', '');
+  assert.ok(notesOf(container).pop().startsWith('A background run is shown working'), notesOf(container).join('\n'));
+  assert.strictEqual(container.children.length, before + 1, 'the box was cleared away');
+});
+
+test('/cls leaves the box of a background run its turn left working, before any tick says so', async () => {
+  // the turn has ended: its box is drawn working from what the turn saw, the tick has not asked yet
+  const { chatModule, container, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' },
+                       { type: 'sub_run', run_id: 'bg1', event: { type: 'start', task: 'lang',
+                         background: 'sub1', background_parent: 'sid7' } },
+                       { type: 'final', content: 'fertig' }, { type: 'end' }] } } });
+  await send('hallo');
+  const before = container.children.length;
+  await chatModule.runCommand('cls', '');
+  assert.ok(notesOf(container).pop().startsWith('A background run is shown working'), notesOf(container).join('\n'));
+  assert.strictEqual(container.children.length, before + 1, 'the box was cleared away');
+});
+
+test('/cls clears the box of a background run once the tick says no process holds it', async () => {
+  const { chatModule, container, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' },
+                       { type: 'sub_run', run_id: 'bg1', event: { type: 'start', task: 'lang',
+                         background: 'sub1', background_parent: 'sid7' } },
+                       { type: 'final', content: 'fertig' }, { type: 'end' }] } } });
+  await send('hallo');
+  // the run is over: nothing holds it -- its box says so only once it is read again
+  chatModule.showBackgroundRuns({}, ['sid7']);
+  await chatModule.runCommand('cls', '');
+  assert.deepStrictEqual(notesOf(container),
+    ['Screen cleared -- the session stays; /history or a reload shows it again.']);
+});
+
+test('/cls keeps the link to the session that called this one', async () => {
+  const { chatModule, container, window } = load([], {});
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: {
+    session_id: 'sub9', parent_session: { session_id: 'sid7' }, messages: [] } } });
+  assert.strictEqual(container.children[0].id, 'callerLink', 'fixture: no caller link drawn');
+  await chatModule.runCommand('cls', '');
+  assert.deepStrictEqual(container.children.map((el) => el.id || ''), ['callerLink', ''],
+    'the link back to the caller went with the screen');
 });
 
 test('/model says so when the profiles could not be read', async () => {

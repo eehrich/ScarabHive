@@ -63,6 +63,17 @@ async def load_session_llm_params(session_manager: Any, session_user: str,
     return dict(params) if isinstance(params, dict) and params else None
 
 
+def config_defines_agent(config: Any, name: str) -> bool:
+    """Whether *name* is an agent of this config.
+
+    The RAW entry, the same gate the agent factory uses: the merged config
+    gives every tool server an agent_config.
+    """
+    plugins = getattr(config, "plugins", None)
+    raw = plugins.servers.get(name) if plugins else None
+    return bool(raw and getattr(raw, "agent_config", None))
+
+
 def usable_session_defaults(stored_agent: Optional[str], stored_llm: Optional[str],
                             config: Any) -> tuple[Optional[str], Optional[str]]:
     """Drop stored values the current configuration no longer knows.
@@ -80,11 +91,7 @@ def usable_session_defaults(stored_agent: Optional[str], stored_llm: Optional[st
     """
     agent = stored_agent
     if agent:
-        plugins = getattr(config, "plugins", None)
-        raw = plugins.servers.get(agent) if plugins else None
-        # The RAW entry, the same gate the agent factory uses: the merged
-        # config gives every tool server an agent_config.
-        if not raw or not getattr(raw, "agent_config", None):
+        if not config_defines_agent(config, agent):
             logger.info("Session names agent '%s', which this config does not "
                         "define -- falling back to the default", agent)
             agent = None

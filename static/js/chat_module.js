@@ -1639,6 +1639,29 @@
       await window.sessionManager.newConversation();
       return;
     }
+    if (name === 'cls') {
+      // The view only. A stream writes into its block up to its end, past the answer (the save, sub-runs that
+      // outlive the turn), and a working background run's box carries its Stop: both must stay on the page.
+      if (runActive || chatModule.hasActiveRequest()) {
+        addNote(container, 'A run is writing into the chat -- /cls once it has ended.');
+        return;
+      }
+      // Drawn working, and the activity tick has not said since that no process holds it.
+      if ([...backgroundViews.values()].some((view) => view.element.isConnected && view.background.working
+          && view.background.listed !== false)) {
+        addNote(container, 'A background run is shown working here -- /cls once it has ended (/runs shows it).');
+        return;
+      }
+      // What the session's load put at the top stays: only a load draws it again (showCaller, showReadOnlyBanner).
+      const head = ['callerLink', 'readOnlyBanner'].map((id) => document.getElementById(id)).filter(Boolean);
+      container.innerHTML = '';
+      head.forEach((el) => container.appendChild(el));
+      forgetRows();
+      forgetStoredSubRuns();
+      releasePreviewObjectUrls();
+      addNote(container, 'Screen cleared -- the session stays; /history or a reload shows it again.');
+      return;
+    }
     if (name === 'session') {
       addNote(container, currentSessionId
         ? 'Session: ' + currentSessionId
@@ -4246,6 +4269,7 @@
     step.hidden = !working || !label;
     step.textContent = working ? label : '';
     stop.hidden = !working || (view.background || {}).stoppable === false;   // held where no Stop reaches it
+    if (view.background) view.background.working = working;   // what the box shows: /cls asks this
     if (!working) {
       stop.disabled = false;
       stop.textContent = 'Stop';

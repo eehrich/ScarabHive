@@ -239,6 +239,26 @@ def _on_runs(repl: _Repl, payload: str) -> None:
     print(runs_text())
 
 
+def _on_cls(repl: _Repl, payload: str) -> None:
+    """Empty the screen and its scrollback; the session is not touched."""
+    if not repl.interactive:
+        print("(/cls: the output is not a terminal, nothing to clear)")
+        return
+    if repl.ansi:
+        # 2J the screen, 3J the scrollback, H the cursor home.
+        sys.stdout.write("\033[2J\033[3J\033[H")
+        sys.stdout.flush()
+    else:
+        try:
+            from prompt_toolkit.shortcuts import clear
+            clear()
+        except Exception:
+            logger.debug("Could not clear the screen", exc_info=True)
+            print("(/cls: this terminal cannot be cleared from here)")
+            return
+    print(f"{repl.ctx.entry_name} · session {repl.ctx.session_id}")
+
+
 def _on_unknown(repl: _Repl, payload: str) -> None:
     """A command word nobody claims: say so, never send it as a message."""
     hint = suggest_command(
@@ -257,6 +277,7 @@ def _on_unknown(repl: _Repl, payload: str) -> None:
 #: message, attachments and all.
 _COMMANDS: dict[str, Callable[[_Repl, str], Optional[Any]]] = {
     "new": sessions._on_new,
+    "cls": _on_cls,
     "session": sessions._on_session,
     "sessions": sessions._on_sessions,
     "resume": sessions._on_resume,

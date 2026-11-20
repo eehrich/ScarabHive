@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- agent-cli: `chat AGENT [TASK]` and `run AGENT [TASK]` -- a first word that names an agent of the config is read
+  as `--agent`; any other word is the message, as before. Two words: the first must be an agent, a typo is an error
+  instead of a message to the default agent. `-s` is short for `--session`, and a line that starts with run's
+  options and names no command is a `run` (`agent-cli -s ID "task"`).
+- `--session`, `/resume` and the session lookup of the API take the start of a session ID too, from four characters
+  on, when it fits exactly one session -- a title prefix and an ID prefix count together.
+- Chat: `/cls` clears the screen and keeps the session. The terminal clears the screen (with colour on, the
+  scrollback too), the browser empties its view. `/clear` stays `/new`.
 - Gemini 4 Neon (`gemini-4-neon`, above Argon) on every way to Gemini: `gemini-neon` (direct, also `-stream` and
   `-batch`), `or-gemini-neon` (OpenRouter, also `-unlimited`) and `agy-gemini-neon` (Antigravity); Gemini
   3.5 Flash-Lite directly as well (`gemini-flash-lite`, `-stream`, `-batch`). agy offers no Flash-Lite.

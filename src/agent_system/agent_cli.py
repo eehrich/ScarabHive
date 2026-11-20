@@ -24,7 +24,9 @@ from .cli_utils.cli_parser import (
     main_parser_args,
     parse_llm_params_args,
     preliminary_parser,
+    take_agent_word,
 )
+from .cli_utils.session_defaults import config_defines_agent
 from .cli_utils.commands.hooks import run_hooks_command
 from .cli_utils.commands.mcp import run_mcp_command
 from .cli_utils.commands.plugins import run_plugins_command
@@ -177,6 +179,11 @@ def _main() -> None:
     cfg_arg = str(user_path(args.config)) if args.config else None
     vprint(f"[cli] loading config: {cfg_arg or os.environ.get('AGENT_CONFIG_PATH') or 'config/config.yaml'}")
     config = load_settings(cfg_arg)
+    # `chat coder` names the agent: which word is one, only the config knows.
+    if args.subcommand in ("run", "chat"):
+        problem = take_agent_word(args, lambda name: config_defines_agent(config, name))
+        if problem:
+            parser.error(problem)
     # A mistyped --llm needs only the config to be recognised -- behind the
     # bootstrap it cost the whole plugin start before the error. Not for the
     # commands that only read or move the session store: they need no profile
