@@ -41,6 +41,30 @@ logger = logging.getLogger(__name__)
 
 # Unicode word characters: an ASCII class cut "Straße" into "stra" and "e".
 _WORD_RE = re.compile(r"\w+")
+#: How _render_context_block marks a retired concept after its header.
+_RETIRED_MARK = "  [DEPRECATED — retired, do not treat as current]"
+#: A header that starts a part of the block: at its start or after a blank line.
+_HEADER_RE = re.compile(r"(?:\A|\n\n)## ([^\n]*)")
+
+
+def _held(text: Any, paths: Any) -> set:
+    """Which of ``paths`` an injected context block holds, each with whether it was marked retired: ``(path,
+    retired)``. Each known path is looked for whole, as the end of a header that starts a part (after a blank line):
+    a path with a space reads right, and a heading in a concept's body counts only if it ends in a concept's path."""
+    if not isinstance(text, str):
+        return set()
+    found = set()
+    for header in _HEADER_RE.findall(text):  # one pass over the headers, not one per known concept
+        retired = header.endswith(_RETIRED_MARK)
+        if retired:
+            header = header[:-len(_RETIRED_MARK)]
+        at = header.find(" — ")
+        while at >= 0:  # the path is what follows a separator; the title before it may hold one too
+            if header[at + 3:] in paths:
+                found.add((header[at + 3:], retired))
+                break
+            at = header.find(" — ", at + 1)
+    return found
 
 
 def _tokens(text: str) -> List[str]:
@@ -1049,7 +1073,14 @@ class OkfServer(SchemaBasedToolServer):
             previous = next(
                 (m for m in reversed(messages)
                  if getattr(m, "injected_by", None) == "okf"), None)
-            if previous is not None and previous.content == injection:
+            # A block again only for another selection, or a concept retired
+            # since: a concept rewritten (by the agent itself, as a rule)
+            # changes the text, not what is known -- a second, near-identical
+            # block cost a turn of tokens and showed twice in the chat. A
+            # retirement must reach the model, whoever made it.
+            selected = {(p, bundle.concepts[p].lifecycle_status == "deprecated")
+                        for p in paths if bundle.concepts.get(p)}
+            if previous is not None and _held(previous.content, bundle.concepts) == selected:
                 return HookResult(success=True, modified=False, context=context)
 
             messages.append(ChatMessage(
@@ -1064,6 +1095,8 @@ class OkfServer(SchemaBasedToolServer):
 
     @staticmethod
     def _render_context_block(bundle: core.Bundle, paths: List[str]) -> str:
+        """The block a turn carries; each concept under a header that ends in
+        its path and its retired mark (_held reads them back)."""
         parts = ["[OKF knowledge context — relevant curated concepts]"]
         for p in paths:
             c = bundle.concepts.get(p)
@@ -1076,7 +1109,7 @@ class OkfServer(SchemaBasedToolServer):
             # links and history", but a model given it unmarked quotes it as
             # current.
             if c.lifecycle_status == "deprecated":
-                header += "  [DEPRECATED — retired, do not treat as current]"
+                header += _RETIRED_MARK
             body = c.body.strip()
             if len(body) > 1500:
                 body = body[:1500].rstrip() + "\n…[truncated]"

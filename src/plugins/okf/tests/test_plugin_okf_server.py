@@ -739,6 +739,74 @@ class TestContextHook:
         assert second.modified is False, "an unchanged block is not written again"
 
     @pytest.mark.asyncio
+    async def test_a_concept_rewritten_meanwhile_appends_no_second_block(
+        self, mock_system_config, tmp_path, bundle,
+    ):
+        """An agent that writes a concept the block holds changed its text, not the selection: a second block of the
+        same concepts showed twice in the chat and cost a turn of tokens."""
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        ctx = SimpleNamespace(
+            messages=[SimpleNamespace(role="user", content="customers", injected_by=None)],
+            session_id="s1", hook_config={})
+        await srv.on_pre_llm_call(ctx)
+        first = self._injected(ctx)
+        assert first is not None and "id, name." in first, "fixture: nothing was injected"
+        (bundle / "tables" / "customers.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Customers\n"
+            "description: One row per customer.\n---\n\n# Schema\nid, name, city.\n", encoding="utf-8")
+
+        again = await srv.on_pre_llm_call(ctx)
+
+        blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == "okf"]
+        assert len(blocks) == 1 and again.modified is False, [b.content for b in blocks]
+
+    @pytest.mark.asyncio
+    async def test_a_concept_retired_meanwhile_reaches_the_model_marked(
+        self, mock_system_config, tmp_path, bundle,
+    ):
+        """Retired by anyone -- another session, a person: a model given it unmarked quotes it as current."""
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        ctx = SimpleNamespace(
+            messages=[SimpleNamespace(role="user", content="customers", injected_by=None)],
+            session_id="s1", hook_config={})
+        await srv.on_pre_llm_call(ctx)
+        (bundle / "tables" / "customers.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Customers\nstatus: deprecated\n"
+            "description: One row per customer.\n---\n\n# Schema\nid, name.\n", encoding="utf-8")
+
+        again = await srv.on_pre_llm_call(ctx)
+        then = await srv.on_pre_llm_call(ctx)  # the marked block is read back as marked: no block every step
+
+        blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == "okf"]
+        assert again.modified is True and len(blocks) == 2, [b.content for b in blocks]
+        assert "DEPRECATED" in blocks[-1].content and "DEPRECATED" not in blocks[0].content
+        assert then.modified is False, "the retired concept's block is appended again on every step"
+
+    @pytest.mark.asyncio
+    async def test_a_heading_in_a_body_or_a_path_with_a_space_stacks_no_blocks(
+        self, mock_system_config, tmp_path, bundle,
+    ):
+        """The block's concepts are read back from its text: a body heading like a concept's header, a title with the
+        header's separator, or a path the reader could not take whole, made every step append the same block again
+        -- and a body line in a header's form, naming a concept not selected, would read as that concept."""
+        (bundle / "tables" / "my warehouses.md").write_text(
+            "---\ntype: BigQuery Table\ntitle: Warehouses — EU\ndescription: One row per warehouse.\n---\n\n"
+            "## History — 2024\n\nid, city.\n## Moved — /tables/customers.md\n", encoding="utf-8")
+        srv = self._server_with_hook(mock_system_config, tmp_path, bundle)
+        ctx = SimpleNamespace(
+            messages=[SimpleNamespace(role="user", content="warehouses", injected_by=None)],
+            session_id="s1", hook_config={})
+        await srv.on_pre_llm_call(ctx)
+        first = self._injected(ctx)
+        assert first is not None and "/tables/my warehouses.md" in first and "History — 2024" in first, first
+
+        await srv.on_pre_llm_call(ctx)
+        again = await srv.on_pre_llm_call(ctx)
+
+        blocks = [m for m in ctx.messages if getattr(m, "injected_by", None) == "okf"]
+        assert len(blocks) == 1 and again.modified is False, len(blocks)
+
+    @pytest.mark.asyncio
     async def test_another_question_appends_the_concepts_it_selects(
         self, mock_system_config, tmp_path, bundle,
     ):
