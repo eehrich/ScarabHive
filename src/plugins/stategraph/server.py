@@ -288,16 +288,15 @@ class StateGraphServer(SchemaBasedToolServer):
         auth = getattr(self.system_config, "auth", None)
         return auth is not None and bool(getattr(auth, "enabled", False))
 
-    @staticmethod
-    def _is_admin(user_id: Any) -> bool:
+    def _is_admin(self, user_id: Any) -> bool:
+        """The core's role gate (agent_access): an active admin account -- and in agent-cli or agent-run the local
+        operator (cli_user), whom no account holds, as an agent with ``min_role: admin`` runs there too."""
         if not user_id:
             return False
         try:
-            from agent_system.auth.database import get_user_by_username
-            from agent_system.auth.models import UserRole
+            from agent_system.auth.agent_access import agent_run_denial
 
-            user = get_user_by_username(str(user_id))
-            return user is not None and user.is_active and user.role == UserRole.ADMIN
+            return agent_run_denial("admin", str(user_id), getattr(self.system_config, "auth", None)) is None
         except Exception:
             logger.debug("stategraph: role lookup for %r failed", user_id, exc_info=True)
             return False

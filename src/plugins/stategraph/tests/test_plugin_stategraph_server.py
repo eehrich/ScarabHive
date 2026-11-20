@@ -880,7 +880,8 @@ def _enable_auth(server, monkeypatch, role_of: dict):
         role = role_of.get(username)
         return None if role is None else SimpleNamespace(is_active=True, role=getattr(UserRole, role))
 
-    monkeypatch.setattr("agent_system.auth.database.get_user_by_username", lookup)
+    # the user store the core's role gate reads (agent_access), as the app sets it up
+    monkeypatch.setattr("agent_system.auth.database._db", SimpleNamespace(get_user_by_username=lookup))
     return looked_up
 
 
