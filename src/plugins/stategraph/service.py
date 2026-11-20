@@ -314,6 +314,30 @@ class StateGraphService:
                 "problems": self._problems(tree), "graph": self._graph(tree), "layout": self.store.layout(machine_id),
                 "agents": agents, "offer": offer, **self._runner(machine_id)}
 
+    def machine_of_run(self, run_id: str, *, user_id: Optional[str] = None) -> dict[str, Any]:
+        """The machine a run runs, shaped as get_machine answers but read from the run's snapshot and never
+        writable: a dynamic workflow has no saved file to open. ``from_run`` names the run it came from."""
+        row = self._run(run_id, user_id)
+        try:
+            tree = load_snapshot(row.get("definition") or {}, execute_python=False)
+        except Exception as exc:
+            raise ServiceError(409, f"run {run_id}: its definition does not load ({exc})") from None
+        # checked as get_machine checks a saved one, by the run's runner and a workflow's author
+        tree = validate_tree(tree, self.config_check(row.get("runner"),
+                                                     caller=(row.get("workflow") or {}).get("caller")))
+        files: dict[str, str] = {}
+        for path, loaded in tree.files.items():
+            if loaded.local_of is not None:
+                continue  # a machine inside the file: its text is the file's
+            files[path] = loaded.text
+            if loaded.python_path and loaded.python_text is not None:
+                files[loaded.python_path] = loaded.python_text
+        machine_id = row.get("machine_id") or ""
+        return {"id": machine_id, "file": tree.root, "writable": False, "from_run": run_id,
+                "root_file": tree.root, "files": files, "versions": {path: version_of(text) for path, text in files.items()},
+                "problems": self._problems(tree), "graph": self._graph(tree), "layout": {}, "agents": [], "offer": None,
+                "runner": row.get("runner") or self.server.runner_agent}
+
     def _runner(self, machine_id: str) -> dict[str, Any]:
         """The runner a run of the machine gets: its name, and why it is not the folder's when two claim it."""
         name, problem = self.server.runner_for(machine_id)

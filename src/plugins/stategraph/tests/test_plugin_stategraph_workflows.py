@@ -1069,3 +1069,44 @@ async def test_a_workflows_caller_stops_it_and_nothing_else(server):
 
     stopped = await server.stop_workflow({"run_id": run_id, "_user_id": "ann", "_agent_name": "lead"})
     assert stopped["stopped"] is True and stopped["run_status"] == "cancelled", stopped
+
+
+# ------------------------------------------------------------------ the panel: a workflow's machine from its run
+
+async def test_a_workflows_machine_is_read_from_its_runs_snapshot_never_writable(server):
+    """A workflow is never saved: the panel opens its run on the machine its snapshot holds, terms written in."""
+    fake_backends(server, {"find": "a bug", "verify/0": "stands"})
+    started = await server.service.start_workflow(REVIEW, user_id="ann", caller="lead", max_output_tokens=1000)
+    await settled(server, started["run_id"])
+    assert server.machines.find("quick_review") is None, "fixture: the workflow must have no saved machine"
+
+    machine = server.service.machine_of_run(started["run_id"], user_id="ann")
+
+    assert machine["id"] == "quick_review" and machine["from_run"] == started["run_id"]
+    assert machine["writable"] is False
+    assert "max_output_tokens: 1000" in machine["files"][machine["root_file"]]
+    assert machine["versions"].keys() == machine["files"].keys()
+    assert [s["name"] for s in machine["graph"]["states"]] == ["find", "verify", "done"]
+
+
+async def test_a_runs_machine_is_shown_only_to_who_may_see_the_run(server, monkeypatch):
+    fake_backends(server, {"find": "a bug", "verify/0": "stands"})
+    started = await server.service.start_workflow(REVIEW, user_id="ann", caller="lead")
+    await settled(server, started["run_id"])
+    monkeypatch.setattr(server, "sees_run", lambda user, owner: user == owner)
+
+    with pytest.raises(ServiceError) as hidden:
+        server.service.machine_of_run(started["run_id"], user_id="bob")
+    assert hidden.value.status == 404
+    assert server.service.machine_of_run(started["run_id"], user_id="ann")["from_run"] == started["run_id"]
+
+
+async def test_a_runs_machine_carries_the_problems_validation_finds_not_only_the_loaders(server):
+    orphaned = REVIEW.replace("  done: {type: final", "  orphan: {type: final}\n  done: {type: final")
+    fake_backends(server, {"find": "a bug", "verify/0": "stands"})
+    started = await server.service.start_workflow(orphaned, user_id="ann", caller="lead", wake=False)
+    await settled(server, started["run_id"])
+
+    machine = server.service.machine_of_run(started["run_id"], user_id="ann")
+
+    assert any(p["code"] == "SG101" and "orphan" in p["message"] for p in machine["problems"]), machine["problems"]

@@ -259,11 +259,13 @@ async function openFrame(machine, prefix, trail = null) {
     : S.frameTrail);
   S.frameTrail = ours;
   S.framePrefix = prefix || null;
-  if (machine === S.machine?.id) {
+  // the run's own machine when nobody saved it (a dynamic workflow, a deleted machine): from the run's snapshot
+  const fromRun = machine === S.run?.machine_id && !S.machines.some((m) => m.id === machine) ? S.runId : null;
+  if (machine === S.machine?.id && (S.machine.from_run || null) === fromRun) {
     drawRun();
     return;
   }
-  await openMachine(machine, { keepRun: true });
+  await openMachine(machine, { keepRun: true, fromRun });
   // not opened (the author kept the drafts, or it failed) -- unless a later pick or another run changed it meanwhile
   if (S.machine?.id !== machine) {
     if (S.framePrefix === (prefix || null)) S.framePrefix = before.prefix;
@@ -573,11 +575,13 @@ async function openRun(id) {
     return;
   }
   if (!S.machines.some((m) => m.id === run.machine_id)) {
-    toast(`${id} is a run of ${run.machine_id}, which has no graph of its own here`, { kind: 'warn' });
-    return;
+    // no saved machine (a dynamic workflow): its graph from the run's own snapshot, read-only
+    if (S.machine?.from_run !== id) await openMachine(run.machine_id, { keepRun: true, fromRun: id });
+    if (S.machine?.from_run !== id) return;  // refused (toasted), or the author kept unsaved changes
+  } else {
+    if (S.machine?.id !== run.machine_id || S.machine?.from_run) await openMachine(run.machine_id);
+    if (S.machine?.id !== run.machine_id) return;  // the author kept the machine with unsaved changes
   }
-  if (S.machine?.id !== run.machine_id) await openMachine(run.machine_id);
-  if (S.machine?.id !== run.machine_id) return;  // the author kept the machine with unsaved changes
   selectTab($('mainTabs'), 'runs');
   onTab('runs');
   selectRun(id);
@@ -609,7 +613,7 @@ function opening(id) {
   };
 }
 
-async function openMachine(id, { keepRun = false, discard = false } = {}) {
+async function openMachine(id, { keepRun = false, discard = false, fromRun = null } = {}) {
   const where = savable() ? 'The machine has unsaved changes' : 'The inspector has changes that are not applied';
   if (unsaved() && !discard && !await confirm(id === S.machine?.id
     ? `${where}. Reload the machine and discard them?`
@@ -620,13 +624,15 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
   let machine;
   const opened = opening(id);
   try {
-    machine = await api(`${API}/machines/${enc(id)}`, { latest: 'machine' });
+    // fromRun: the machine as that run runs it, from its snapshot -- a dynamic workflow has no saved file
+    machine = await api(fromRun ? `${API}/runs/${enc(fromRun)}/machine` : `${API}/machines/${enc(id)}`, { latest: 'machine' });
   } catch (error) {
     return;  // toasted
   } finally {
     opened();
   }
-  const switched = machine.id !== S.machine?.id;
+  // two workflows may share an id with different texts: another run's snapshot is another machine
+  const switched = machine.id !== S.machine?.id || (machine.from_run || null) !== (S.machine?.from_run || null);
   S.drafts = {};
   S.layoutDirty = false;
   if (!S.autosave) S.undo = S.redo = [];  // steps of the drafts just dropped
@@ -739,7 +745,8 @@ function drawHead() {
     ${errors || warnings ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost sg-head-problems" data-act="show-problems" title="Show every problem in the inspector">
       ${errors ? badge(counted(errors, 'error'), 'danger') : ''}${warnings ? badge(counted(warnings, 'warning'), 'warn') : ''}</button>`
     : badge('valid', 'ok')}
-    ${m.writable ? '' : html`<span class="pk-badge" title="Not in a writable machine root: shown, run and debugged, not edited">read-only</span>`}
+    ${m.from_run ? html`<span class="pk-badge pk-badge--info" title="Not saved (a dynamic workflow): its text as run ${m.from_run} runs it -- shown and debugged, not edited or started">run snapshot</span>`
+    : m.writable ? '' : html`<span class="pk-badge" title="Not in a writable machine root: shown, run and debugged, not edited">read-only</span>`}
     ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm${savable() ? ' pk-btn--primary' : ''}" data-act="save" title="Save the changes (Ctrl+S)" ${savable() ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Save</button>
     <label class="pk-switch" title="Write every graph edit and move at once, not by Save"><input type="checkbox" role="switch" data-act="autosave" ${S.autosave ? 'checked' : ''}> Auto-save</label>` : ''}
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" popovertarget="machineMenu" title="More" aria-label="More">${icon('ellipsis', { size: 'sm' })}</button>
@@ -1617,6 +1624,7 @@ ${note.text}</textarea>
 /** The machine agents that run this machine (a SAM, the chat, agent-cli --agent reach it through them), and the
  * agent: block that offers it as one -- no config entry: every process declares it as it starts. */
 function agentSection(m) {
+  if (m.from_run) return html`<p class="pk-help">Not saved: no agent: block can offer it. Duplicate it to keep it as a machine.</p>`;
   const agents = m.agents || [];
   const offer = m.offer;
   const listed = agents.length ? html`<ul class="sg-plain-list">${agents.map((a) => html`<li class="sg-watch">
@@ -2492,6 +2500,8 @@ function paramHelp(text, id) {
 }
 
 function drawStartForm() {
+  // a run's snapshot is no machine a new run can name
+  $('startBox').hidden = Boolean(S.machine.from_run);
   const g = S.machine.graph;
   const params = Object.entries(g.params || {});
   const fields = $('paramFields');
@@ -2726,7 +2736,7 @@ function runTable(runs, { every, status, none }) {
 $('runList').addEventListener('rowselect', (event) => {
   const run = S.runs.find((r) => r.id === event.detail.id);
   if (everyMachine() && run && run.machine_id !== S.machine?.id) openRun(run.id);
-  else selectRun(event.detail.id);
+  else pickRun(event.detail.id);
 });
 
 /** Runs of every machine while none is open (FEAT-7): what runs or stopped anywhere, newest first, by status and
@@ -2815,6 +2825,14 @@ function keepJournal(id, rows) {
   return journalKept.rows;
 }
 
+/** A run of the machine shown picked. Shown from a run's snapshot, another run of that id may have run another text
+ * (a dynamic workflow's id is its author's choice): it opens on its own snapshot. */
+function pickRun(id) {
+  if (id && S.machine?.from_run && id !== S.machine.from_run) return openRun(id);
+  selectRun(id);
+  return null;
+}
+
 function selectRun(id) {
   S.runId = id || null;
   S.run = null;
@@ -2829,7 +2847,9 @@ function selectRun(id) {
   S.history = { older: [], more: true, state: '', stateRows: null, row: null };
   poller.stop();
   followRuns();
-  if (S.machine) setQuery(S.runId ? { machine: S.machine.id, run: S.runId } : { machine: S.machine.id });
+  // a snapshot is reached only through its run: the URL keeps naming it, or a reload opens nothing
+  const runShown = S.runId || S.machine?.from_run;
+  if (S.machine) setQuery(runShown ? { machine: S.machine.id, run: runShown } : { machine: S.machine.id });
   drawRunList();
   drawResult();  // the run left takes its result along at once: a read of the next one may fail
   if (!S.runId) {
@@ -3016,7 +3036,7 @@ function drawDebugBar() {
     ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="${`${run.status === 'failed' ? 'Resume the run where it stopped: the activity it stopped on runs again, everything finished is replayed, not repeated' : 'Resume the interrupted run: finished activities are replayed, not repeated'} -- with the machine as the run started it, not as saved now (Fork with saved machine runs a fix)`}">${icon('play', { size: 'sm' })} Resume</button>` : ''}
     ${can.close ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate" title="Close the run for good: it is not to go on, so no resume runs it (it ends as cancelled)">${icon('square', { size: 'sm' })} Close</button>` : ''}
     <button type="button" class="pk-btn pk-btn--sm" data-control="fork" data-definition="snapshot" title="A new run from a top-level step of this one, or from a pass through the state selected on the graph, with the machine as this run had it">${icon('git-branch', { size: 'sm' })} Fork…</button>
-    <button type="button" class="pk-btn pk-btn--sm" data-control="fork" data-definition="current" title="A new run from a step of this one with the machine as it is saved now -- a fix made since the run started runs from there">${icon('git-branch', { size: 'sm' })} Fork with saved machine…</button>
+    ${S.machine?.from_run ? '' : html`<button type="button" class="pk-btn pk-btn--sm" data-control="fork" data-definition="current" title="A new run from a step of this one with the machine as it is saved now -- a fix made since the run started runs from there">${icon('git-branch', { size: 'sm' })} Fork with saved machine…</button>`}
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
 
@@ -3123,7 +3143,7 @@ $('debugBar').addEventListener('click', async (event) => {
   }
   const pick = event.target.closest('[data-pick-run]');
   if (pick) {
-    if (pick.dataset.pickRun !== S.runId) selectRun(pick.dataset.pickRun);
+    if (pick.dataset.pickRun !== S.runId) await pickRun(pick.dataset.pickRun);
     return;
   }
   const answer = event.target.closest('[data-send-event]');
@@ -3256,7 +3276,7 @@ async function control(action, extra = {}) {
     if (action === 'fork' && answer.run_id) {
       toast(`Forked as ${answer.run_id}`, { kind: 'ok' });
       await loadRuns();
-      selectRun(answer.run_id);
+      await pickRun(answer.run_id);
       return answer;
     }
     if (action === 'evaluate' || action === 'set') return answer;
@@ -3833,7 +3853,7 @@ function drawResult() {
       ${budgetView(run)}
       ${outputTokensView(run)}
       <span class="pk-grow"></span>
-      ${run.machine_id === S.machine?.id ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
+      ${run.machine_id === S.machine?.id && !S.machine.from_run ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="rerun"
         title="A new run with this run's params and mocks (they go into the start form too); a param that had its default then takes the machine's default now">${icon('rotate-cw', { size: 'sm' })} Run again</button>` : ''}
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
         title="The run's session in the chat: what it was asked, each agent call with that agent's run under it, how it ended">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
@@ -4248,7 +4268,7 @@ $('canvas').addEventListener('keydown', (event) => {
 document.addEventListener('refresh', async (event) => {
   if (!S.kinds.length) loadKinds();
   await loadMachines({ checks: !event.detail?.auto });  // the timer's: not every machine checked on each tick
-  if (S.machine && !unsaved()) {
+  if (S.machine && !S.machine.from_run && !unsaved()) {  // a run's snapshot never changes
     const asked = S.machine;
     try {
       // a name of its own: under openMachine's, this reload of the open machine would abort a click on another one
@@ -4294,8 +4314,9 @@ async function start() {
     S.runId = query.get('run') || null;
     await openMachine(wanted, { keepRun: true });
     if (S.runId) selectRun(S.runId);
-  } else if (!wanted && query.get('run')) {
-    await openRun(query.get('run'));  // ?run= alone: the run names its machine
+  } else if (query.get('run')) {
+    // ?run= alone: the run names its machine; with a machine not saved (a dynamic workflow) it comes from the run
+    await openRun(query.get('run'));
   }
   if (!S.machine) loadEveryRun();
   loadMachineChecks();

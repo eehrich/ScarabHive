@@ -340,6 +340,9 @@ def test_the_panel_runs_every_main_path_against_a_fake_kit_and_dom(tmp_path):
 
 
 PANEL_CASES = [
+    "a_run_without_a_saved_machine_opens_read_only_from_its_snapshot",
+    "a_snapshot_keeps_its_run_in_the_url_offers_no_saved_machine_and_a_live_run_picked_opens_its_own",
+    "back_from_a_frame_returns_to_the_snapshot_of_a_run_whose_machine_nobody_saved",
     "without_auto_save_an_edit_and_a_move_wait_for_save",
     "without_auto_save_undo_and_redo_move_the_draft_and_write_nothing",
     "turning_auto_save_on_saves_the_drafts_first_and_is_kept",

@@ -35,7 +35,7 @@ const JOURNAL2 = [
   { seq: 8, kind: 'trace', key: 's3:final:verdict', state: 'verdict', status: 'final', data: { frame: 's2/m/', machine: 'critique', status: 'failed' } },
   { seq: 9, kind: 'trace', key: 's4:final:done', state: 'done', status: 'final', data: { frame: '', status: 'succeeded' } },
 ];
-let journalOf = { r1: RUN.journal, r2: JOURNAL2, r3: [] };
+let journalOf = { r1: RUN.journal, r2: JOURNAL2, r3: [], w1: RUN.journal, w2: JOURNAL2 };
 // a third run of the machine, running beside r1
 const RUN3 = { ...RUN, id: 'r3', status: 'running', debug: { ...RUN.debug, paused: null } };
 const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scene' }], tools: [{ name: 'store_put', description: 'Store a value' }],
@@ -50,6 +50,7 @@ let reviewAnswer = MACHINE;  // GET of the review machine
 const WITH_NOTE = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'why', text: 'Because the review\nneeds a second look.\n' }] } };  // a | block: a line break at the end
 let layoutsKept = false;  // a layout PUT to review changes what its GET answers, as the server's does
 let runAnswer = RUN;
+let workflowRun = {};  // what w1's answer has beyond r1's
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
 let catalogDown = null;  // (path) -> true: the catalog answers 503
@@ -87,6 +88,11 @@ globalThis.SERVER = (method, path, json) => {
     if (layoutsKept && p === '/machines/review/layout') reviewAnswer = { ...reviewAnswer, layout: json.layout };
     return {};
   }
+  // w1 and w2: runs of a dynamic workflow -- no saved machine, each its own snapshot
+  const snapshot = p.match(/^\/runs\/(w\d)\/machine$/);
+  if (snapshot) return { ...MACHINE, id: 'quick_wf', writable: false, from_run: snapshot[1], layout: {} };
+  if (p.startsWith('/runs/w1?')) return { ...RUN, id: 'w1', machine_id: 'quick_wf', ...workflowRun };
+  if (p.startsWith('/runs/w2?')) return { ...RUN2, id: 'w2', machine_id: 'quick_wf' };
   if (p.startsWith('/runs?')) return runsAnswer ? runsAnswer(new URLSearchParams(p.split('?')[1]))
     : [...RUNS, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
   if (p === '/runs/r1/events') return { accepted: true, frame: '' };
@@ -95,7 +101,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p === '/runs/r1/control') return controlAnswer || runAnswer;
   if (p.startsWith('/runs/r2?')) return RUN2;
   if (p.startsWith('/runs/r3?')) return RUN3;
-  const journal = p.match(/^\/runs\/(r\d)\/journal\?(.*)$/);
+  const journal = p.match(/^\/runs\/([rw]\d)\/journal\?(.*)$/);
   if (journal) {
     const query = new URLSearchParams(journal[2]);
     const kinds = (query.get('kinds') || '').split(',');
@@ -278,6 +284,76 @@ const CASES = {
     await submit($('watchForm'), { expr: 'len(ctx.draft)' });
     const watch = CALLS.filter(([, path]) => path.endsWith('/control')).pop();
     check(watch[2].action === 'set_watchpoints' && watch[2].watchpoints.at(-1).machine === 'review', JSON.stringify(watch[2]));
+  },
+
+  async a_run_without_a_saved_machine_opens_read_only_from_its_snapshot() {
+    const workflowRuns = [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' },
+      { ...RUNS[0], id: 'w2', machine_id: 'quick_wf', status: 'succeeded', final_state: 'done' }];
+    runsAnswer = (query) => (query.get('machine_id') === 'quick_wf' ? workflowRuns : RUNS);
+    const asked = (tail) => CALLS.some(([, path]) => path.split('?')[0].endsWith(tail));
+    await boot('?run=w1');
+    check(asked('/runs/w1/machine'), 'the snapshot was not asked for');
+    check(!TOASTS.some(([, text]) => text.includes('no graph')), `refused: ${JSON.stringify(TOASTS)}`);
+    check($('machineHead').innerHTML.includes('run snapshot') && !$('machineHead').innerHTML.includes('data-act="save"'),
+      'not shown as a run snapshot, or offered to save');
+    check($('startBox').hidden, 'a new run of a machine nobody saved is offered');
+    await Promise.all(DOC_LISTENERS.refresh.map((fn) => fn({ detail: { auto: true } })));
+    await release();
+    await settle();
+    check(!asked('/machines/quick_wf'), 'a saved machine of that id was asked for');
+    // another run of the same id ran its own text: its own snapshot
+    await $('runList').fire('rowselect', { detail: { id: 'w2' } });
+    await settle();
+    await release();
+    await settle();
+    check(asked('/runs/w2/machine'), 'the second run is shown on the first one\'s snapshot');
+    clickMachine('review');
+    await settle();
+    await release();
+    await settle();
+    check(headName() !== undefined && !$('machineHead').innerHTML.includes('run snapshot') && !$('startBox').hidden,
+      'a saved machine opened after it is still shown as a snapshot');
+  },
+
+  async a_snapshot_keeps_its_run_in_the_url_offers_no_saved_machine_and_a_live_run_picked_opens_its_own() {
+    runsAnswer = (query) => (query.get('machine_id') === 'quick_wf' ? [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' },
+      { ...RUNS[0], id: 'w2', machine_id: 'quick_wf', status: 'running' }] : RUNS);
+    await boot('?run=w1');
+    const bar = () => $('debugBar').innerHTML;
+    check(bar().includes('data-control="fork"') && bar().includes('data-pick-run="w2"'), `fixture: ${bar()}`);
+    check(!bar().includes('data-definition="current"'), 'a fork onto a saved machine nobody saved is offered');
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'close' }) });
+    await settle();
+    check(new URLSearchParams(QUERY).get('run') === 'w1', `the URL lost the run its snapshot needs: ${QUERY}`);
+    await $('runList').fire('rowselect', { detail: { id: 'w1' } });
+    await settle();
+    await release();
+    await settle();
+    await $('debugBar').fire('click', { target: element('button', { 'data-pick-run': 'w2' }) });
+    await settle();
+    await release();
+    await settle();
+    check(CALLS.some(([, path]) => path.endsWith('/runs/w2/machine')), 'w2 is shown on w1\'s snapshot');
+  },
+
+  async back_from_a_frame_returns_to_the_snapshot_of_a_run_whose_machine_nobody_saved() {
+    const live = { machine: 'other', prefix: 's3/m/', path: 'read', step: 2, state: 'write', config: ['write'],
+      visits: { write: 1 }, ctx: { draft: 'd' }, params: {}, accepts: [] };
+    workflowRun = { view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }] };
+    runsAnswer = (query) => (query.get('machine_id') === 'quick_wf' ? [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' }] : RUNS);
+    await boot('?run=w1');
+    const click = async (target) => {
+      await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target })));
+      await $('debugBar').fire('click', { target });
+      await release();
+      await settle();
+    };
+    await click(element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' }));
+    check(headName() === 'other' && $('debugBar').innerHTML.includes('data-frame-back'), `fixture: ${headName()}`);
+    await click(element('button', { 'data-frame-back': '' }));
+    check($('machineHead').innerHTML.includes('run snapshot') && !CALLS.some(([, path]) => path.endsWith('/machines/quick_wf')),
+      `back asked for a saved machine: ${headName()} ${JSON.stringify(TOASTS)}`);
   },
 
   async the_inspector_offers_only_hooks_that_can_stop() {

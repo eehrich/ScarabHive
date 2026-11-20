@@ -178,6 +178,11 @@ class StateGraphWebEndpoints:
         await self._user(request)
         return await self._call("get_machine", machine_id, off_loop=True)  # loads and validates: seconds (API-2)
 
+    async def api_run_machine(self, request: Request, run_id: str):
+        """The machine a run runs, from its snapshot, read-only -- a dynamic workflow has no saved file."""
+        user = await self._user(request)
+        return await self._call("machine_of_run", run_id, user_id=user, off_loop=True)
+
     async def api_save_machine(self, request: Request, machine_id: str):
         await self._user(request)
         body = await self._body(request)

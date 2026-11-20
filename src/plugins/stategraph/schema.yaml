@@ -256,5 +256,6 @@ web_ui:
     - {path: "/api/runs", method: POST, handler: api_start_run, response_type: json}
     - {path: "/api/runs/{run_id}", method: GET, handler: api_get_run, response_type: json}
     - {path: "/api/runs/{run_id}/journal", method: GET, handler: api_run_journal, response_type: json}
+    - {path: "/api/runs/{run_id}/machine", method: GET, handler: api_run_machine, response_type: json}
     - {path: "/api/runs/{run_id}/control", method: POST, handler: api_control_run, response_type: json}
     - {path: "/api/runs/{run_id}/events", method: POST, handler: api_send_event, response_type: json}
