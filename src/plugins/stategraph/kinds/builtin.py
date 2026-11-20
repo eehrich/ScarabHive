@@ -191,17 +191,31 @@ async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[st
             return value
         if round_ == retries or not instance:
             kind = "check_failed" if problem.startswith(_CHECK) else "parse_failed" if parser else "schema_invalid"
-            raise ActivityError(kind, f"{agent}: {problem}", data={"text": text[:4000], "instance_id": instance})
+            answers = f" (after {round_ + 1} answers)" if round_ else ""
+            raise ActivityError(kind, f"{agent}: {problem}{answers}", data={"text": text[:4000], "instance_id": instance})
         act.meta["feedback_rounds"] = round_ + 1
         text = await act.backend.agent_continue(
             act, agent=agent, instance_id=instance, advanced=advanced, vars=variables,
-            message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.",
+            message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this."
+                    # the form only where the answer missed it: a check's refusal is about its content
+                    + (_form(schema) if schema is not None and parser is None and not problem.startswith(_CHECK)
+                       else ""),
             **(tuned or {}))
     raise AssertionError("unreachable")
 
 
 #: How a check's refusal begins, in the feedback and the error.
 _CHECK = "the check did not take it: "
+#: The most of an activity's schema a feedback round quotes.
+FORM_CHARS = 3000
+
+
+def _form(schema: dict[str, Any]) -> str:
+    """The answer's form for a feedback round: the agent never saw the schema -- only its task."""
+    text = json.dumps(schema, ensure_ascii=False, default=str)  # YAML gives a date as a date
+    if len(text) > FORM_CHARS:
+        text = text[:FORM_CHARS] + " ..."
+    return f"\nAnswer with one JSON object and nothing else, valid against this JSON schema:\n{text}"
 
 
 async def checked(act: "ActivityRun", checker: Any, value: Any, round_: int = 0) -> Optional[str]:

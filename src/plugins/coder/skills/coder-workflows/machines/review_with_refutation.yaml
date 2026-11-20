@@ -35,7 +35,8 @@ states:
           The change: {{ params.change }}
           Files: {{ params.files }}
           Report only findings that name a failing case -- the file, the line, the claim and the input or state
-          that breaks it. None found: an empty list.
+          that breaks it. None found: an empty list. Answer with one JSON object and nothing else:
+          {"findings": [{"file": "<path>", "line": <number>, "claim": "<what breaks, and with which input>"}]}
         schema:
           type: object
           required: [findings]
@@ -73,7 +74,8 @@ states:
           task: |
             Try to refute this finding against the code: a guard before it, a caller that rules the input out,
             a branch no entry point reaches. Read the places. Answer refuted=true when you cannot show the
-            failing case yourself.
+            failing case yourself. Answer with one JSON object and nothing else:
+            {"refuted": true|false, "reason": "<why>"}
 
             {{ finding }}
           schema:

@@ -36,7 +36,8 @@ states:
 
         You are the builder of a workflow. After you, a tester runs `{{ params.tests }}`, and once they pass,
         reviewers read your change. Do not start a coder_reviewer yourself and do not commit. Make the change,
-        run what is quick to run, and answer with what you changed and the files you touched.
+        run what is quick to run, and answer with what you changed and the files you touched -- one JSON object
+        and nothing else: {"summary": "<what you changed>", "files": ["<path>", ...]}
         {{ ctx.notes }}
       schema:
         type: object
@@ -60,7 +61,8 @@ states:
       agent: coder_tester
       task: |
         Run `{{ params.tests }}` in the workspace and say whether every test passed. Change no file. In `output`,
-        the failing tests with their errors, cut to what a fix needs; empty when all passed.
+        the failing tests with their errors, cut to what a fix needs; empty when all passed. Answer with one JSON
+        object and nothing else: {"passed": true|false, "output": "<the failures, or empty>"}
       schema:
         type: object
         required: [passed, output]
@@ -96,7 +98,8 @@ states:
           What the builder says it did: {{ ctx.summary }}
           Files: {{ ctx.files }}
           Report only findings that name a failing case -- the file, the line, the claim and the input or state
-          that breaks it. None found: an empty list.
+          that breaks it. None found: an empty list. Answer with one JSON object and nothing else:
+          {"findings": [{"file": "<path>", "line": <number>, "claim": "<what breaks, and with which input>"}]}
         schema:
           type: object
           required: [findings]
@@ -134,7 +137,8 @@ states:
           task: |
             Try to refute this finding against the code: a guard before it, a caller that rules the input out,
             a branch no entry point reaches. Read the places. Answer refuted=true when you cannot show the
-            failing case yourself.
+            failing case yourself. Answer with one JSON object and nothing else:
+            {"refuted": true|false, "reason": "<why>"}
 
             {{ finding }}
           schema:

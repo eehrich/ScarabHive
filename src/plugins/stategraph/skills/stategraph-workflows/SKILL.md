@@ -69,17 +69,22 @@ states:
 
 | Activity | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task` (template), `schema` (JSON schema: the answer is parsed and validated, a bad one goes back to the agent), `llm_profile`, `parse_retries` | text, or the parsed value with `schema` |
+| `agent: <name>` | `task` (template), `schema` (JSON schema the answer is checked against -- the agent does not see it, see below), `llm_profile`, `parse_retries` (feedback rounds, default 1) | text, or the parsed value with `schema` |
 | `map: <python list>` | `each` (an activity), `as` (item name), `concurrency`, `fail: fast\|collect`, `until` | list in item order |
 | `parallel: {branch: activity}` | `fail: fast\|collect`, or `join: first\|{count: n}` | `{branch: out}` |
 | `machine: <local name>` | `params` | the submachine's final `output` |
 | `decide: noul` | `question`, `input` | `{value: probability of yes, ...}` -- a cheap yes/no judge |
-| `emit: <text>` | -- | a status line for the caller |
+| `emit: <text>` | -- | a line in the run's journal and session, shown in the State Graph panel -- not in your chat: your turn has ended |
 
 - **A `map` without `concurrency` runs its items one after another.** Set it on every map whose
   items may run at once -- the outer one of a pipeline too, or it is no pipeline.
+- **`schema` is checked after the answer, not shown with the task.** Write the form into the `task`
+  itself -- `Answer with one JSON object and nothing else: {"answer": "<...>"}` -- or the agent answers
+  in prose and every feedback round costs a call. A feedback round quotes the schema; types are strict
+  (`0` is no `boolean`).
 - With `fail: collect` each result is `{"status": "succeeded", "out": ...}` or
-  `{"status": "failed", "error": {...}}`. Nothing is raised; you decide in the effect.
+  `{"status": "failed", "error": {...}}`. Nothing is raised; you decide in the effect -- and the run
+  still ends `succeeded`: only your output's `lost` shows what failed.
 - **Code fields** (`guard`, `effect`, `map`, `until`) are plain Python, without braces:
   `len(out["findings"]) > 0`. **Templates** (`task`, `params`, `output`) are text with
   `{{ expr }}`; a value that is exactly `"{{ expr }}"` keeps its type.
@@ -126,7 +131,8 @@ majority of "not refuted". A skeptic that fails is no vote.
         fail: collect
         each:
           agent: <reviewer>
-          task: "Try to refute this finding. Default to refuted=true if unsure.\n\n{{ finding }}"
+          task: "Try to refute this finding. Default to refuted=true if unsure. Answer with one JSON object
+            and nothing else: {\"refuted\": true|false, \"reason\": \"<why>\"}\n\n{{ finding }}"
           schema: {type: object, required: [refuted], properties: {refuted: {type: boolean}, reason: {type: string}}}
     transitions:
       - target: done
@@ -164,5 +170,6 @@ scoring them with a `schema`, then the winner in the output.
 - Prefer the pipeline to a barrier.
 - Say what was dropped. A `fail: collect` that lost items, or an `until` that stopped early, goes
   into the output (`lost: [...]`), never silently away.
-- Every agent answer you compute with has a `schema`. No parsing of prose in guards.
+- Every agent answer you compute with has a `schema`, and its `task` names that form. No parsing of
+  prose in guards.
 - The output is what you will read: keep it to what the caller needs, not every intermediate result.

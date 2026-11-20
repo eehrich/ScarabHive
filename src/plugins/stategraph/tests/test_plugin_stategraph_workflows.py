@@ -8,6 +8,7 @@ end wakes only the caller that asked, and its result reaches that caller's next 
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -1099,6 +1100,68 @@ async def test_a_runs_machine_is_shown_only_to_who_may_see_the_run(server, monke
         server.service.machine_of_run(started["run_id"], user_id="bob")
     assert hidden.value.status == 404
     assert server.service.machine_of_run(started["run_id"], user_id="ann")["from_run"] == started["run_id"]
+
+
+ASK = """\
+stategraph: 1
+id: ask_one
+title: one answer in a form
+initial: ask
+states:
+  ask:
+    do:
+      agent: finder
+      parse_retries: %d
+      task: "Where is the entry point?"
+      schema: {type: object, required: [answer], properties: {answer: {type: string}}}
+    transitions:
+      - {target: done, effect: ctx.answer = out}
+      - {trigger: error, target: failed, effect: ctx.problem = error.message}
+  done: {type: final, output: {answer: "{{ ctx.answer }}"}}
+  failed: {type: final, status: failed, output: {problem: "{{ ctx.problem }}"}}
+"""
+
+ANSWER_SCHEMA = {"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}}
+
+
+async def test_a_feedback_round_tells_the_agent_the_form_its_task_never_named(server):
+    """The schema is checked after the answer, never shown with the task: a feedback round without it got the same
+    prose back, round after round. With the form in it, the agent can answer in it."""
+    made = fake_backends(server, {"ask": lambda call: "It is in server.py." if call["kind"] == "agent_create"
+                                  else json.dumps({"answer": "server.py"})})
+    started = await server.service.start_workflow(ASK % 1, user_id="ann", caller="lead", wake=False)
+
+    row = await settled(server, started["run_id"])
+
+    assert row["status"] == "succeeded", row.get("error")
+    [create, feedback] = made[0].calls
+    assert feedback["kind"] == "agent_continue", "fixture: no feedback round"
+    quoted = feedback["message"][feedback["message"].index("{"):]
+    assert json.loads(quoted) == ANSWER_SCHEMA, feedback["message"]
+
+
+async def test_an_answer_still_unusable_says_how_many_answers_it_got(server):
+    fake_backends(server, {"ask": "It is in server.py."})
+    started = await server.service.start_workflow(ASK % 2, user_id="ann", caller="lead", wake=False)
+
+    row = await settled(server, started["run_id"])
+
+    assert row["status"] == "failed" and row["output"]["problem"].startswith("finder: "), row
+    assert "after 3 answers" in row["output"]["problem"], row["output"]
+
+
+async def test_a_schema_holding_a_date_still_gets_its_feedback_round(server):
+    """YAML reads 2026-01-01 as a date: quoting such a schema must not fail the activity instead of asking again."""
+    dated = (ASK % 1).replace("properties: {answer: {type: string}}",
+                              "properties: {answer: {type: string, default: 2026-01-01}}")
+    made = fake_backends(server, {"ask": lambda call: "prose" if call["kind"] == "agent_create"
+                                  else json.dumps({"answer": "server.py"})})
+    started = await server.service.start_workflow(dated, user_id="ann", caller="lead", wake=False)
+
+    row = await settled(server, started["run_id"])
+
+    assert row["status"] == "succeeded", row.get("error") or row.get("output")
+    assert "2026-01-01" in made[0].calls[1]["message"], made[0].calls[1]["message"]
 
 
 async def test_a_runs_machine_carries_the_problems_validation_finds_not_only_the_loaders(server):
