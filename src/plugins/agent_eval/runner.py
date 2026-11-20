@@ -814,6 +814,10 @@ def export_run(run_id: str, out: Path, data: Optional[Path] = None, include: Seq
     # Who ran it and where it hung in a session: an import sets its own, and an export next to a suite may be
     # published with it. Params, outputs and the definition stay -- the fork replays them.
     exported["run"].update(dict.fromkeys(_UNEXPORTED))
+    # a dynamic workflow keeps the chat that asked for it in its terms as well
+    terms = json.loads(exported["run"].get("workflow") or "null")
+    if isinstance(terms, dict) and {"session", "request"} & terms.keys():
+        exported["run"]["workflow"] = json.dumps({**terms, "session": None, "request": None}, ensure_ascii=False)
     out.mkdir(parents=True, exist_ok=True)
     try:
         for path in dict.fromkeys(paths):
@@ -832,4 +836,4 @@ def export_run(run_id: str, out: Path, data: Optional[Path] = None, include: Seq
 
 #: The columns of a source's row an export leaves empty (runs.db's).
 _UNEXPORTED = ("user_id", "session_id", "run_key", "owner", "lease_until", "nesting", "control", "control_answer",
-               "caller_run", "caller_request")
+               "caller_run", "caller_request", "caller_session")

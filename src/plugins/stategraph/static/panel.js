@@ -4,7 +4,7 @@
 // once. Runs are polled while they are alive.
 import {
   abandon, api, autoRefresh, confirm, copyText, dialog, emptyState, errorText, html, icon, isAborted, jsonView,
-  localTime, navigate, notice, openSession, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast,
+  localTime, navigate, notice, openSession, pluginBase, prompt, render, selectTab, session, setDirty, setQuery, setTitle, toast,
   trusted, update, withBusy, yamlCode, keepInSight, scrollerOf,
 } from '/static/kit/panel-kit.js';
 import {
@@ -78,6 +78,12 @@ const transitionOf = (id) => S.machine?.graph?.transitions?.find((t) => t.id ===
 const noteOf = (name) => S.machine?.graph?.notes?.find((note) => note.name === name) || null;
 const hasDrafts = () => Object.keys(S.drafts).length > 0;
 const unsaved = () => hasDrafts() || S.layoutDirty || S.inspectorDrafts.size > 0;
+/** The side tab shown (Inspector, Debug): a state picked on the graph keeps Debug while one debugs. */
+let sideTab = 'inspect';
+function showSide(name) {
+  sideTab = name;
+  selectTab($('sideTabs'), name);
+}
 const savable = () => hasDrafts() || S.layoutDirty;
 /** The root file as the panel holds it: its draft, else as saved. */
 const rootText = () => yamlText(S.machine.root_file);
@@ -119,7 +125,7 @@ function recall(key, fallback) {
 // ------------------------------------------------------------------ canvas
 
 const canvas = new Canvas($('canvas'), {
-  onSelect: (selection) => choose(selection),
+  onSelect: (selection) => choose(selection, { picked: true }),
   onConnect: (source, target) => connect(source, target),
   onMove: (spots) => savePositions(spots),
   onOpen: (target) => (target.kind === 'state' ? renameState(target.id) : target.kind === 'note' ? openNote(target.id) : choose(target)),
@@ -664,7 +670,8 @@ async function openMachine(id, { keepRun = false, discard = false, fromRun = nul
   showMachine(machine);
   if (switched && S.run) drawRun();  // the run kept: its bar, frames and breakpoints as this machine sees them
   setTitle(`State Graph · ${machine.id}`);
-  setQuery(S.runId ? { machine: machine.id, run: S.runId } : { machine: machine.id });
+  setQuery({ ...callerQuery(), machine: machine.id, ...S.runId ? { run: S.runId } : {} });
+  $('home').disabled = false;
   loadRuns();
 }
 
@@ -1310,8 +1317,9 @@ async function removeTransition(id) {
 // ------------------------------------------------------------------ selection and inspector
 
 /** Select on the canvas and show in the inspector. `zoom` (Find, a problem, a result's state): the state, or a
- * transition's source, is brought into a readable view (Canvas.reveal). */
-async function choose(selection, { zoom = false } = {}) {
+ * transition's source, is brought into a readable view (Canvas.reveal). `picked`: a click on the graph, which keeps
+ * the Debug tab while one debugs; anything else that selects shows the Inspector. */
+async function choose(selection, { zoom = false, picked = false } = {}) {
   const same = sameSelection(selection, S.selection);
   const shown = selection?.kind === 'state' ? selection.id
     : zoom && selection?.kind === 'transition' ? transitionOf(selection.id)?.source : null;
@@ -1329,7 +1337,7 @@ async function choose(selection, { zoom = false } = {}) {
   canvas.select(selection);
   if (shown && zoom) fitPending = false;  // the graph tab opened for this state: a fit afterwards would leave it
   if (shown) canvas.reveal(shown, { zoom });
-  if (selection) selectTab($('sideTabs'), 'inspect');
+  if (selection && !(picked && sideTab === 'debug')) showSide('inspect');
   drawInspector();
 }
 
@@ -2596,7 +2604,7 @@ async function startRun(params, mocks, mockOnly) {
     });
     await loadRuns();
     selectRun(started.run_id);
-    selectTab($('sideTabs'), 'debug');
+    showSide('debug');
   } catch (failure) {
     if (!isAborted(failure)) startProblem(errorText(failure));
   }
@@ -2750,7 +2758,17 @@ async function loadEveryRun({ older = false, tick = false } = {}) {
   const limit = older ? RUN_PAGE : Math.min(500, Math.max(RUN_PAGE, everyRuns.length));
   const status = $('everyRunStatus').value;
   const tags = $('everyRunTags').value.trim();
-  const query = `limit=${limit}${status ? `&status=${enc(status)}` : ''}${tags ? `&tags=${enc(tags)}` : ''}`
+  everyFor = everyKey();
+  if (everyFor === NO_SESSION) {
+    abandon('every-runs');  // a load out for the scope before would draw over this
+    everyRuns = [];
+    $('everyOlderRuns').hidden = true;
+    update($('everyRunList'), emptyState('message-square', 'No session open',
+      'Open a session in the chat, or show all sessions.'));
+    return;
+  }
+  const caller = Object.entries(everyCaller()).map(([name, value]) => `&${name}=${enc(value)}`).join('');
+  const query = `limit=${limit}${status ? `&status=${enc(status)}` : ''}${tags ? `&tags=${enc(tags)}` : ''}${caller}`
     + (older && last ? `&before=${enc(last.id)}` : '');
   let page;
   everyRequests += 1;
@@ -2768,7 +2786,39 @@ async function loadEveryRun({ older = false, tick = false } = {}) {
   update($('everyRunList'), runTable(everyRuns, { every: true, status, none: 'Open a machine to start one.' }));
 }
 
-for (const id of ['everyRunStatus', 'everyRunTags']) {
+/** Whose runs the list shows: an answer's alone -- with the runs under it that agents with sessions of their own
+ * started -- else the session <pk-session> picks (the chat's, or the one a link pinned), or every session's. */
+function everyCaller() {
+  const request = $('everyRunRequest').value.trim();
+  return request ? { request_id: request } : session.shown ? { session_id: session.shown } : {};
+}
+const NO_SESSION = 'no session';
+/** everyCaller() with the scope that reads an empty one: this session, none open -- or every session. */
+const everyKey = () => {
+  const caller = everyCaller();
+  return Object.keys(caller).length ? JSON.stringify(caller) : session.scope === 'session' ? NO_SESSION : 'every';
+};
+let everyFor = null;  // everyKey() of the last load
+
+/** What the URL keeps of how the panel was opened, under every view: the session a link pinned it to (<pk-session>
+ * reads the pin from there -- a query without it would drop the pin), a tab's start on all sessions, and the answer
+ * whose runs it lists. */
+function callerQuery() {
+  const request = $('everyRunRequest').value.trim();
+  const scope = new URLSearchParams(location.search).get('session_scope');  // the kit drops it once picked anew
+  return { ...session.pinned ? { session_id: session.pinned } : {}, ...scope ? { session_scope: scope } : {},
+    ...request ? { request_id: request } : {} };
+}
+
+$('everyRunRequest').addEventListener('change', () => { if (!S.machine) setQuery(callerQuery()); });  // kept on reload
+// another session, all of them, or the pin released: <pk-session> says when -- a list of the same runs is not loaded
+// anew (the shell's first word at start, under an answer's list: that load would abort the one start() waits on)
+document.addEventListener('sessionscope', () => {
+  if (everyKey() === everyFor) return;
+  everyRuns = [];
+  loadEveryRun();
+});
+for (const id of ['everyRunStatus', 'everyRunTags', 'everyRunRequest']) {
   $(id).addEventListener('change', () => {
     everyRuns = [];
     loadEveryRun();
@@ -2849,7 +2899,7 @@ function selectRun(id) {
   followRuns();
   // a snapshot is reached only through its run: the URL keeps naming it, or a reload opens nothing
   const runShown = S.runId || S.machine?.from_run;
-  if (S.machine) setQuery(runShown ? { machine: S.machine.id, run: runShown } : { machine: S.machine.id });
+  if (S.machine) setQuery({ ...callerQuery(), machine: S.machine.id, ...runShown ? { run: runShown } : {} });
   drawRunList();
   drawResult();  // the run left takes its result along at once: a read of the next one may fail
   if (!S.runId) {
@@ -3151,7 +3201,7 @@ $('debugBar').addEventListener('click', async (event) => {
     const name = answer.dataset.sendEvent;
     const frames = acceptedEvents(S.run).find((e) => e.name === name)?.frames || [];
     if (S.machine?.graph?.events?.[name]?.data || frames.length > 1) {  // data to give, or a frame to pick: the form
-      selectTab($('sideTabs'), 'debug');
+      showSide('debug');
       drawDebugPane();
       $('eventForm').elements.name.value = name;
       drawEventHelp();
@@ -4067,7 +4117,10 @@ function onTab(tab) {
 }
 
 $('mainTabs').addEventListener('tabchange', (event) => onTab(event.detail.tab));
-$('sideTabs').addEventListener('tabchange', (event) => { if (event.detail.tab === 'debug') drawDebugPane(); });
+$('sideTabs').addEventListener('tabchange', (event) => {
+  sideTab = event.detail.tab;
+  if (event.detail.tab === 'debug') drawDebugPane();
+});
 
 $('machineList').addEventListener('click', (event) => {
   const run = event.target.closest('[data-open-run]');
@@ -4110,7 +4163,7 @@ $('machineHead').addEventListener('click', (event) => {
   if (event.target.closest('[data-act="copy-id"]')) copyText(S.machine.id);
   if (event.target.closest('[data-act="duplicate-machine"]')) duplicateMachine(S.machine);
   if (event.target.closest('[data-act="show-problems"]')) {
-    selectTab($('sideTabs'), 'inspect');
+    showSide('inspect');
     choose(null);  // the overview lists them all
   }
   if (event.target.closest('[data-act="delete-machine"]')) deleteMachine(S.machine);
@@ -4172,6 +4225,32 @@ async function duplicateMachine(m) {
   await openMachine(id);
 }
 
+$('home').addEventListener('click', () => closeMachine());
+
+/** Back to the start: no machine open, the runs of every machine. Unsaved changes are asked about first. */
+async function closeMachine() {
+  if (unsaved() && !await confirm('The machine has unsaved changes. Leave it and discard them?',
+    { danger: true, confirmLabel: 'Discard' })) return;
+  abandon('machine-refresh');  // a refresh in flight would draw the machine left
+  S.drafts = {};
+  S.layoutDirty = false;
+  S.inspectorDrafts.clear();
+  setDirty(false);
+  S.machine = null;
+  S.selection = null;
+  S.undo = S.redo = [];  // steps of the machine left
+  drawUndo();
+  selectRun(null);
+  drawInspector();
+  $('machineView').hidden = true;
+  $('placeholder').hidden = false;
+  setTitle('State Graph');
+  $('home').disabled = true;
+  setQuery(callerQuery());  // back to the runs it was opened on
+  drawMachineList();
+  loadEveryRun();
+}
+
 /** Delete the open machine (the version shown): its runs stay, the panel shows no machine afterwards. */
 async function deleteMachine(m) {
   if (!await confirm(`Delete the machine ${m.id}? Its file and layout go, and its Python module unless another machine `
@@ -4197,7 +4276,8 @@ async function deleteMachine(m) {
   $('machineView').hidden = true;
   $('placeholder').hidden = false;
   setTitle('State Graph');
-  setQuery({});
+  $('home').disabled = true;
+  setQuery(callerQuery());
   await loadMachines();
   loadEveryRun();
 }
@@ -4309,6 +4389,8 @@ async function start() {
   // load every machine, the viewer waits for the one
   await loadMachines({ checks: false });
   const query = new URLSearchParams(location.search);
+  // opened from an answer ("Open in"): the runs it started; a session's link pins <pk-session> instead
+  $('everyRunRequest').value = query.get('request_id') || '';
   const wanted = query.get('machine');
   if (wanted && S.machines.some((m) => m.id === wanted)) {
     S.runId = query.get('run') || null;
@@ -4318,7 +4400,13 @@ async function start() {
     // ?run= alone: the run names its machine; with a machine not saved (a dynamic workflow) it comes from the run
     await openRun(query.get('run'));
   }
-  if (!S.machine) loadEveryRun();
+  if (!S.machine) {
+    await loadEveryRun();
+    // a chat session or answer that started one run: that run, as a click on it would open it
+    // (only one a link named: a panel that follows the chat starts on its list, not inside its one run)
+    const caller = (session.pinned && session.shown) || $('everyRunRequest').value;  // pinned, and not on all
+    if (caller && !S.machine && everyRuns.length === 1) await openRun(everyRuns[0].id);
+  }
   loadMachineChecks();
   navigate();
 }

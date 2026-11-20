@@ -235,6 +235,10 @@ web_ui:
     category: agents
     keywords: [state machine, statechart, workflow, uml, debugger, breakpoints, watchpoints]
     window: {width: 1320, height: 880}
+    # the runs a chat session or answer started -- machines and dynamic workflows alike (has_session_data)
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
+      request: "/plugins/{{ name }}/?request_id={request_id}"
   endpoints:
     - {path: "/", method: GET, handler: render_panel, response_type: html, description: "The State Graph panel"}
     - {path: "/api/machines", method: GET, handler: api_list_machines, response_type: json}

@@ -3,8 +3,11 @@
 {% block title %}State Graph{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
 {% block toolbar %}
+{#- back to the start from an open machine or run: the runs, of this session or of all (panel.js closeMachine) #}
+<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" id="home" title="Back to the start: the runs of every machine" aria-label="Back to the start" disabled>{{ icon('house', size='sm') }}</button>
 <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-pk-sidebar-toggle aria-controls="machinesPane" aria-expanded="true" title="Show or hide the machines">{{ icon('panel-left', size='sm') }}</button>
 <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-pk-sidebar-toggle aria-controls="inspectorPane" aria-expanded="true" title="Show or hide the inspector">{{ icon('panel-right', size='sm') }}</button>
+<pk-session all></pk-session>
 <pk-refresh interval="10" auto></pk-refresh>
 {% endblock %}
 {% block content %}
@@ -25,6 +28,9 @@
       <section class="pk-stack" aria-label="Runs of every machine">
         <h3 class="pk-section-title">Runs of every machine</h3>
         <div class="pk-filters">
+          {#- the session is <pk-session>'s, in the toolbar; the answer comes from ?request_id= (the chat's "Open in"):
+              emptied, the runs of every answer show again #}
+          <input id="everyRunRequest" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Request ID" aria-label="Only runs this answer started" title="Only the runs this request (a chat answer) started, with the calls under it" autocomplete="off">
           <input id="everyRunTags" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="tags: book:95,path:main" aria-label="Only runs with these tags" title="name:value,name:value -- only runs started with all of these tags" autocomplete="off">
           <select id="everyRunStatus" class="pk-select pk-select--sm" aria-label="Runs of this status">
             <option value="">every status</option>{% for status in ['running', 'paused', 'waiting', 'interrupted', 'succeeded', 'failed', 'cancelled'] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}

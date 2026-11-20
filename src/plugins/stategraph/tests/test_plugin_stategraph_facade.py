@@ -746,3 +746,10 @@ async def test_a_machine_that_broke_ends_its_run_failed(env, told, monkeypatch):
         await env.ask("Nachtzug|a thriller")
     run = _settled(told)
     assert run["state"] == "failed" and "the store is gone" in told.events("sess1")[-1]["payload"]["reason"]
+
+
+async def test_a_machine_agents_run_is_listed_under_the_chat_session_and_request_that_asked(env):
+    answer = final_of(await env.ask("Nachtzug|a thriller", request_id="req7", session_id="chat-7"))
+
+    assert [r["id"] for r in env.server.service.list_runs(session="chat-7")] == [answer["run_id"]]
+    assert [r["id"] for r in env.server.service.list_runs(request="req7")] == [answer["run_id"]]

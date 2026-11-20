@@ -485,3 +485,17 @@ async def test_a_terminate_that_fails_is_an_error_of_the_run_not_a_crash(tmp_pat
                                   {"source": str(source), "stategraph": "stategraph", "at_step": 1, "until": None,
                                    "definition": "current"}, "ev-1", "u")
     assert result["errors"] == ["the fork was not terminated: RuntimeError: lease lost"], result
+
+
+def test_an_export_carries_no_chat_session_or_request_that_started_the_run(source, tmp_path):
+    """An export may be published with a suite: who asked for the run in a chat stays at home."""
+    data, run_id, harness = source
+    # a dynamic workflow (run_workflow) keeps them in its terms too
+    harness.store.update_run(run_id, caller_session="chat-session-1", caller_request="chat-request-1",
+                             workflow={"caller": "lead", "session": "chat-session-1", "request": "chat-request-1"})
+
+    out = runner.export_run(run_id, tmp_path / "export", data=data)
+    text = (out / "source.json").read_text(encoding="utf-8")
+
+    assert "chat-session-1" not in text and "chat-request-1" not in text
+    assert json.loads(json.loads(text)["run"]["workflow"])["caller"] == "lead", "the workflow's terms went too"

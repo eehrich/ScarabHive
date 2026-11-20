@@ -1355,8 +1355,11 @@ class RunManager:
                     fork_resources: Optional[dict[str, Any]] = None,
                     nesting: Optional[dict[str, Any]] = None, strict_points: bool = True,
                     runner: Optional[str] = None, live: Optional[dict[str, Any]] = None,
-                    workflow: Optional[dict[str, Any]] = None) -> str:
-        """``live``: the caller's objects for call functions (``sg.live``), not journaled.
+                    workflow: Optional[dict[str, Any]] = None, caller_session: Optional[str] = None,
+                    caller_request: Optional[str] = None) -> str:
+        """``caller_session``, ``caller_request``: the chat session and request that started it (a fork keeps its
+        source's).
+        ``live``: the caller's objects for call functions (``sg.live``), not journaled.
         ``workflow``: a dynamic workflow's terms (journal.create_run), kept with the run for its backend.
         ``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
@@ -1393,7 +1396,9 @@ class RunManager:
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
                               fork_step=fork_step, run_key=run_key, owner=self.owner, lease_until=_utc(LEASE_SECONDS),
-                              journal_format=journal_format, nesting=nesting, runner=runner, workflow=workflow)
+                              journal_format=journal_format, nesting=nesting, runner=runner, workflow=workflow,
+                              caller_session=caller_session or (source or {}).get("caller_session"),
+                              caller_request=caller_request or (source or {}).get("caller_request"))
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did

@@ -287,12 +287,14 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
 
     async def api_list_runs(self, request: Request, machine_id: Optional[str] = None,
                             limit: int = Query(50, ge=1, le=500), status: Optional[str] = None,
-                            before: Optional[str] = None, nested: bool = False, tags: Optional[str] = None):
+                            before: Optional[str] = None, nested: bool = False, tags: Optional[str] = None,
+                            session_id: Optional[str] = None, request_id: Optional[str] = None):
         """``tags``: ``name:value,name:value`` -- only runs with all of them (FEAT-7); without machine_id, the runs of
-        every machine."""
+        every machine; ``session_id``, ``request_id``: only the runs that chat session or answer started."""
         await self._user(request)
         return await self._call("list_runs", machine_id=machine_id, limit=limit, status=status or None,
                                 before=before or None, nested=nested, off_loop=True,
+                                session=session_id or None, request=request_id or None,
                                 **({"tags": _tags(tags)} if tags else {}))
 
     async def api_start_run(self, request: Request):

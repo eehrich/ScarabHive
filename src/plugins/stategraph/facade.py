@@ -406,7 +406,7 @@ class MachineAgent(Agent):
             try:
                 started = await server.service.start_run(self.machine_id, params=params, user_id=user_id,
                                                          run_key=run_key, run_id=f"{request_id}_sg{short_id(6)}",
-                                                         caller_session=session_id)
+                                                         caller_session=session_id, caller_request=request_id)
             except Exception as exc:  # ServiceError (unknown machine, invalid params, config, key of another user)
                 takes = self._takes(server) if getattr(exc, "status", None) == 422 else ""  # the request's fault
                 raise _Refused(f"the machine {self.machine_id} did not start: {exc}{takes}") from exc

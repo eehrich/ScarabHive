@@ -308,6 +308,12 @@ class StateGraphServer(SchemaBasedToolServer):
         process's own code (run_to_end, schedules). Without auth the app has one user (API-3)."""
         return not self._auth_enabled() or owner == user_id or self._is_admin(user_id)
 
+    def has_session_data(self, session_id: str, user_id: str) -> bool:
+        """Whether the panel opened on ``session_id`` lists a run: one that chat session started and the viewer may
+        see (sees_run). The chat's "Open in" menu offers the panel only then."""
+        everyone = not self._auth_enabled() or self._is_admin(user_id)
+        return self.run_store.has_session_runs(session_id, user_id, all_users=everyone)
+
     def _admin_reader(self, params: dict[str, Any]) -> bool:
         """Whether a read-only tool's caller may see server paths and tracebacks: whoever may save and run machines
         (an admin, an allowed user; without auth the one user) -- anyone else reads machines and their own runs
@@ -557,7 +563,8 @@ class StateGraphServer(SchemaBasedToolServer):
                 mock_only=_flag(params, "mock_only"), pause_at_start=_flag(params, "pause_at_start"),
                 breakpoints=params.get("breakpoints") or (),
                 watchpoints=params.get("watchpoints") or (), user_id=params.get("_user_id"),
-                run_key=params.get("run_key"), caller_session=params.get("_session_id"), tags=_object(params, "tags"))
+                run_key=params.get("run_key"), caller_session=params.get("_session_id"),
+                caller_request=params.get("_request_id"), tags=_object(params, "tags"))
             run_id = started["run_id"]
             if wait == "background" or started.get("attached") is False:
                 # background -- or a run another process owns: nothing here to wait on, report its row

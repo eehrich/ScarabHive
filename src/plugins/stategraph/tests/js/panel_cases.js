@@ -336,6 +336,138 @@ const CASES = {
     check(CALLS.some(([, path]) => path.endsWith('/runs/w2/machine')), 'w2 is shown on w1\'s snapshot');
   },
 
+  async opened_from_a_chat_session_the_panel_lists_its_runs_and_all_sessions_lists_every_run() {
+    const theirs = [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' }, { ...RUNS[0], id: 'w2', machine_id: 'quick_wf' }];
+    runsAnswer = (query) => (query.get('session_id') === 'chat-1' ? theirs : RUNS);
+    const lists = () => CALLS.filter(([, path]) => path.includes('/api/runs?')).map(([, path]) => new URLSearchParams(path.split('?')[1]));
+    globalThis.SCOPE = 'session';  // where <pk-session all> starts
+    await boot('?session_id=chat-1');
+    check(lists().at(-1).get('session_id') === 'chat-1', `not filtered: ${lists().map(String)}`);
+    check($('everyRunList').innerHTML.includes('w1') && $('everyRunList').innerHTML.includes('w2')
+      && !CALLS.some(([, path]) => path.endsWith('/machine')), 'two runs, and one of them opened');
+    globalThis.SCOPE = 'all';  // the viewer picks All sessions
+    await Promise.all(DOC_LISTENERS.sessionscope.map((fn) => fn({ detail: { scope: 'all' } })));
+    await settle();
+    await release();
+    await settle();
+    check(!lists().at(-1).has('session_id'), `still filtered: ${lists().at(-1)}`);
+    // a machine opened keeps the pin in the address, where <pk-session> reads it: home is that session's list again
+    await $('everyRunList').fire('rowselect', { detail: { id: 'w1' } });
+    await settle();
+    await release();
+    await settle();
+    check(new URLSearchParams(QUERY).get('session_id') === 'chat-1' && !$('home').disabled,
+      `the pin went with the machine opened: ${QUERY}`);
+  },
+
+  async following_the_chat_the_panel_lists_its_sessions_runs_and_with_none_open_says_so() {
+    const lists = () => CALLS.filter(([, path]) => path.includes('/api/runs?')).map(([, path]) => new URLSearchParams(path.split('?')[1]));
+    runsAnswer = (query) => (query.get('session_id') === 'chat-2' ? [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' }] : RUNS);
+    globalThis.SCOPE = 'session';
+    globalThis.CHAT_SESSION = 'chat-2';
+    await boot('');
+    check(lists().at(-1)?.get('session_id') === 'chat-2' && $('everyRunList').innerHTML.includes('w1'),
+      `not the chat's runs: ${lists().map(String)}`);
+    check(!CALLS.some(([, path]) => path.endsWith('/machine')), 'the chat\'s one run opened by itself');
+    const before = lists().length;
+    globalThis.CHAT_SESSION = null;  // the chat closes it
+    await Promise.all(DOC_LISTENERS.sessionscope.map((fn) => fn({ detail: { id: null } })));
+    await settle();
+    await release();
+    await settle();
+    check(lists().length === before && $('everyRunList').innerHTML.includes('No session open'),
+      `listed without a session: ${lists().map(String)}`);
+  },
+
+  async opened_from_an_answer_that_started_one_run_the_panel_opens_that_run() {
+    runsAnswer = (query) => (query.get('request_id') === 'req-1' && !query.has('session_id')
+      ? [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' }] : RUNS);
+    const lists = () => CALLS.filter(([, path]) => path.includes('/api/runs?')).map(([, path]) => new URLSearchParams(path.split('?')[1]));
+    // in the shell: the panel follows the chat's session -- the answer's runs are those an agent with a session of its
+    // own started under it too, so its list asks for the answer alone
+    globalThis.SCOPE = 'session';
+    globalThis.CHAT_SESSION = 'chat-9';
+    globalThis.HOLD = (method, path) => path.includes('/api/runs?');
+    location.search = '?request_id=req-1';
+    await import('./panel_copy.js');
+    await settle();
+    // the shell's first word arrives while start's list is out: the same runs, not a load that aborts it
+    await Promise.all(DOC_LISTENERS.sessionscope.map((fn) => fn({ detail: { id: 'chat-9' } })));
+    HOLD = () => false;
+    await release();
+    await settle();
+    const every = lists().filter((query) => !query.has('machine_id'));  // not the opened machine's own runs
+    check(every.length === 1 && !every[0].has('session_id'), `the answer's list: ${every.map(String)}`);
+    check(CALLS.some(([, path]) => path.endsWith('/runs/w1/machine')) && $('machineHead').innerHTML.includes('run snapshot'),
+      'the one run the answer started is not opened');
+  },
+
+  async a_list_out_when_no_session_is_left_draws_no_runs_over_no_session_open() {
+    await boot('');
+    HOLD = (method, path) => path.includes('/api/runs?');
+    $('everyRunStatus').value = 'failed';
+    await $('everyRunStatus').fire('change', {});  // every session's runs, out
+    await settle();
+    globalThis.SCOPE = 'session';  // the viewer picks this session; the chat has none
+    await Promise.all(DOC_LISTENERS.sessionscope.map((fn) => fn({ detail: { scope: 'session' } })));
+    HOLD = () => false;
+    await release();
+    await settle();
+    check($('everyRunList').innerHTML.includes('No session open'), `every session's runs drawn: ${$('everyRunList').innerHTML.slice(0, 200)}`);
+  },
+
+  async a_tab_pinned_on_all_sessions_keeps_all_and_opens_no_run_by_itself() {
+    runsAnswer = () => [{ ...RUNS[0], id: 'w1', machine_id: 'quick_wf' }];  // the installation's only run
+    globalThis.SCOPE = 'all';  // ?session_scope=all: the kit starts on all sessions
+    await boot('?session_id=chat-1&session_scope=all');
+    check(!CALLS.some(([, path]) => path.endsWith('/machine')), 'a run no link named opened by itself');
+    await $('everyRunList').fire('rowselect', { detail: { id: 'w1' } });
+    await settle();
+    await release();
+    await settle();
+    const query = new URLSearchParams(QUERY);
+    check(query.get('session_scope') === 'all' && query.get('session_id') === 'chat-1',
+      `a reload starts elsewhere: ${QUERY}`);
+  },
+
+  async a_state_picked_while_debugging_keeps_the_debug_tab_and_otherwise_opens_the_inspector() {
+    await boot('?machine=review&run=r1');
+    TABS.sideTabs = 'inspect';
+    await choose('write');
+    check(TABS.sideTabs === 'inspect', `fixture: ${TABS.sideTabs}`);
+    TABS.sideTabs = 'debug';  // the viewer's click on Debug
+    await $('sideTabs').fire('tabchange', { detail: { tab: 'debug' } });
+    await choose('read');
+    await settle();
+    check(TABS.sideTabs === 'debug', `the pick went back to ${TABS.sideTabs}`);
+    $('stateSearch').value = 'write';  // Find selects too -- and shows what it found in the Inspector
+    await $('stateSearch').fire('change', {});
+    await settle();
+    check(TABS.sideTabs === 'inspect', `Find left the Inspector hidden: ${TABS.sideTabs}`);
+    TABS.sideTabs = 'debug';
+    await $('sideTabs').fire('tabchange', { detail: { tab: 'debug' } });
+    TABS.sideTabs = 'inspect';
+    await $('sideTabs').fire('tabchange', { detail: { tab: 'inspect' } });
+    TABS.sideTabs = 'graph-of-nothing';  // a pick from the Inspector selects it again
+    await choose('write');
+    check(TABS.sideTabs === 'inspect', `left the Inspector: ${TABS.sideTabs}`);
+  },
+
+  async home_leaves_the_machine_for_the_runs_of_every_machine() {
+    await boot('?machine=review&run=r1');
+    check(!$('machineView').hidden, 'fixture: no machine open');
+    const before = CALLS.length;
+    check(!$('home').disabled, 'fixture: home is disabled with a machine open');
+    await $('home').fire('click', {});
+    await settle();
+    await release();
+    await settle();
+    check($('machineView').hidden && !$('placeholder').hidden && QUERY === '', `still on the machine: ${QUERY}`);
+    check($('home').disabled, 'home is offered at home');
+    check(CALLS.slice(before).some(([, path]) => path.includes('/api/runs?') && !path.includes('machine_id')),
+      'the runs of every machine are not listed');
+  },
+
   async back_from_a_frame_returns_to_the_snapshot_of_a_run_whose_machine_nobody_saved() {
     const live = { machine: 'other', prefix: 's3/m/', path: 'read', step: 2, state: 'write', config: ['write'],
       visits: { write: 1 }, ctx: { draft: 'd' }, params: {}, accepts: [] };

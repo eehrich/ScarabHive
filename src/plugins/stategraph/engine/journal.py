@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS runs (
     control_answer TEXT,
     runner TEXT,
     caller_run TEXT,
-    caller_request TEXT
+    caller_request TEXT,
+    caller_session TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_key ON runs(run_key);
 CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine_id, created_at);
@@ -179,7 +180,7 @@ _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "de
                  "control_answer", "workflow")
 #: Columns a runs.db from before them lacks: added when it is opened.
 _ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT", "control_answer": "TEXT",
-                  "caller_run": "TEXT", "caller_request": "TEXT", "workflow": "TEXT"}
+                  "caller_run": "TEXT", "caller_request": "TEXT", "workflow": "TEXT", "caller_session": "TEXT"}
 #: What a run list shows of each run (list_runs): small columns only -- the covering indexes below hold them, so a
 #: list never reads a run's definition or view (they precede these columns in the row: SQLite walks their pages).
 _LISTED = ("id, machine_id, status, created_at, updated_at, finished_at, final_state, error, user_id, parent_run,"
@@ -259,6 +260,17 @@ class RunStore:
                     except sqlite3.OperationalError as exc:  # another process added it meanwhile
                         if "duplicate column" not in str(exc):
                             raise
+            if "caller_session" not in present:
+                try:  # the runs from before it: a dynamic workflow kept its caller in its terms
+                    conn.execute("UPDATE runs SET caller_session = json_extract(workflow, '$.session'),"
+                                 " caller_request = COALESCE(caller_request, json_extract(workflow, '$.request'))"
+                                 " WHERE workflow IS NOT NULL AND caller_session IS NULL")
+                except sqlite3.Error:
+                    logger.warning("stategraph: callers of the runs before %s not filled in", self.path, exc_info=True)
+            # the panel's runs of a chat session or answer (list_runs session, request)
+            conn.execute("CREATE INDEX IF NOT EXISTS runs_session ON runs(caller_session, created_at)"
+                         " WHERE caller_session IS NOT NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS runs_request ON runs(caller_request) WHERE caller_request IS NOT NULL")
             # the owners' poll for control requests (request_control) reads this, not the rows: it holds only
             # the few runs with a request open, and control lies behind the payloads of the rows
             conn.execute("CREATE INDEX IF NOT EXISTS runs_control ON runs(owner) WHERE control IS NOT NULL")
@@ -303,12 +315,14 @@ class RunStore:
                    session_id: Optional[str] = None, parent_run: Optional[str] = None,
                    fork_step: Optional[int] = None, run_key: Optional[str] = None, owner: Optional[str] = None,
                    lease_until: Optional[str] = None, journal_format: int = 1, status: str = "running",
-                   nesting: Any = None, runner: Optional[str] = None, workflow: Any = None) -> None:
+                   nesting: Any = None, runner: Optional[str] = None, workflow: Any = None,
+                   caller_session: Optional[str] = None, caller_request: Optional[str] = None) -> None:
         """A fork's row comes with its lifecycle row ``forked`` in one transaction: the row that tells a fork whose
         prefix copy broke off (no ``fork_resources`` trace row after it) from a whole one (RES-6).
 
         ``workflow``: a dynamic workflow's terms (service.start_workflow) -- the agent that wrote it, whom to wake at
-        the end; None for every other run."""
+        the end; None for every other run. ``caller_session``, ``caller_request``: the chat session and request that
+        started it, where one did (list_runs session, request)."""
         now = utc_now()
         with self._lock:
             db = self._db()
@@ -317,10 +331,11 @@ class RunStore:
                 db.execute(
                     "INSERT INTO runs (id, machine_id, status, created_at, updated_at, params, mocks, definition,"
                     " debug, user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format,"
-                    " nesting, runner, workflow) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " nesting, runner, workflow, caller_session, caller_request)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (run_id, machine_id, status, now, now, _dumps(params), _dumps(mocks), _dumps(definition),
                      _dumps(debug), user_id, session_id, parent_run, fork_step, run_key, owner, lease_until,
-                     journal_format, _dumps(nesting), runner, _dumps(workflow)))
+                     journal_format, _dumps(nesting), runner, _dumps(workflow), caller_session, caller_request))
                 if parent_run:
                     self._put_lifecycle(db, run_id, "forked", {"from": parent_run, "at_step": fork_step,
                                                                "user": user_id, "owner": owner})
@@ -421,8 +436,10 @@ class RunStore:
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
                   user_id: Optional[str] = None, all_users: bool = True,
                   before: Optional[str] = None, nested: bool = False,
-                  tags: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
-        """The newest runs; ``all_users=False``: only ``user_id``'s (None: the runs of nobody) -- what that user may
+                  tags: Optional[dict[str, Any]] = None, session: Optional[str] = None,
+                  request: Optional[str] = None) -> list[dict[str, Any]]:
+        """The newest runs; ``session``: only those a chat session started; ``request``: only those a request
+        started, or a call under it (``<request>_...``); ``all_users=False``: only ``user_id``'s (None: the runs of nobody) -- what that user may
         see; ``before``: a run id -- the runs listed after it (older, or as old and of a smaller id); ``nested``: with
         ``machine_id``, also the runs of other machines it ran in as a submachine; ``tags``: only runs with every
         one of these tags (FEAT-7). Each run comes with its ``tags``."""
@@ -441,6 +458,14 @@ class RunStore:
         if not all_users:  # a run of nobody is not every user's (API-3): only a caller without a user sees it
             where.append("user_id IS ?")
             args.append(user_id)
+        if session:
+            where.append("caller_session = ?")
+            args.append(session)
+        if request:  # a range over the index ('`' follows '_'), and the runs started under those (caller_run)
+            where.append("id IN (WITH RECURSIVE tree(id) AS (SELECT id FROM runs WHERE caller_request = ?"
+                         " OR (caller_request >= ? AND caller_request < ?)"
+                         " UNION SELECT runs.id FROM runs JOIN tree ON runs.caller_run = tree.id) SELECT id FROM tree)")
+            args += [request, request + "_", request + "`"]
         for name, value in (tags or {}).items():
             where.append("id IN (SELECT run_id FROM run_tags WHERE name = ? AND value = ?)")
             args += [name, tag_text(value)]
@@ -462,6 +487,12 @@ class RunStore:
         for run in runs:
             run["tags"] = tagged.get(run["id"], {})
         return runs
+
+    def has_session_runs(self, session_id: str, user_id: Optional[str] = None, *, all_users: bool = True) -> bool:
+        """Whether a chat session started a run (``all_users=False``: one of ``user_id``'s)."""
+        sql = "SELECT 1 FROM runs WHERE caller_session = ?" + ("" if all_users else " AND user_id IS ?") + " LIMIT 1"
+        with self._lock:
+            return self._db().execute(sql, (session_id,) if all_users else (session_id, user_id)).fetchone() is not None
 
     def set_tags(self, run_id: str, tags: dict[str, Any]) -> None:
         """A run's tags (FEAT-7), given at its start; a fork copies its source's."""

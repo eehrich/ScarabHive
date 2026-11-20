@@ -618,7 +618,8 @@ class StateGraphService:
         try:
             run_id = await self.runs.start(runnable, params=params or {}, backend_factory=self.backend_factory(),
                                            user_id=user_id, nesting=nesting, runner=self.server.runner_agent,
-                                           workflow=workflow)
+                                           workflow=workflow, caller_session=caller_session,
+                                           caller_request=caller_request)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         self._note(run_id, "started", who=user_id, why="start_workflow", machine=machine_id, caller=caller)
@@ -730,7 +731,7 @@ class StateGraphService:
                         mocks: Optional[dict[str, Any]] = None, mock_only: bool = False, breakpoints: Any = (),
                         watchpoints: Any = (), pause_at_start: bool = False, user_id: Optional[str] = None,
                         run_key: Optional[str] = None, run_id: Optional[str] = None,
-                        caller_session: Optional[str] = None,
+                        caller_session: Optional[str] = None, caller_request: Optional[str] = None,
                         live: Optional[dict[str, Any]] = None,
                         tags: Optional[dict[str, Any]] = None, detached: bool = False) -> dict[str, Any]:
         """Start a run of ``machine_id``. With ``run_key`` the same request gets the run of that key, if there is
@@ -741,7 +742,7 @@ class StateGraphService:
         ``run_id`` (the agent facade: ``<request id>_sg<n>``) keeps cancel, status and cost attribution under
         the caller's request id; it must be a session-id-safe word of at most 128 characters.
         ``caller_session``: the session of the agent that asks; the run's agent instances sit one level below it
-        in its sub-agent tree.
+        in its sub-agent tree. With ``caller_request`` it is kept with the run: the panel lists a session's runs.
         ``live``: objects of the caller in this process for its call functions (``sg.live``) -- never journaled,
         handed again when the key resumes an interrupted run here.
         ``tags``: a flat object of text or number values (``{book: 95}``) that list_runs filters on (FEAT-7).
@@ -758,8 +759,10 @@ class StateGraphService:
             raise ServiceError(422, f"run_id {run_id!r} must match {_RUN_ID.pattern}")
         _check_tags(tags)
         nesting = await self._nesting(user_id, caller_session)
+        asked = {"caller_session": caller_session, "caller_request": caller_request}
         if run_key:
-            found = await self._by_key(run_key, machine_id, params, mocks, mock_only, user_id, live, detached)
+            found = await self._by_key(run_key, machine_id, params, mocks, mock_only, user_id, live, detached,
+                                       asked=asked)
             if found is not None:
                 return found
         # loading and validating the tree takes seconds for a large machine: off the event loop (API-2)
@@ -769,7 +772,7 @@ class StateGraphService:
             # with one key never both start a run (a transiently failed run the first lookup could not resume
             # is not tried again)
             found = await self._by_key(run_key, machine_id, params, mocks, mock_only, user_id, live, detached,
-                                       go_on=False)
+                                       go_on=False, asked=asked)
             if found is not None:
                 return found
         try:
@@ -777,14 +780,19 @@ class StateGraphService:
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
                 backend_factory=None if mock_only else self.backend_factory(), user_id=user_id,
-                run_key=run_key, run_id=run_id, nesting=nesting, runner=self._runner_of(checked), live=live)
+                run_key=run_key, run_id=run_id, nesting=nesting, runner=self._runner_of(checked), live=live,
+                caller_session=caller_session, caller_request=caller_request)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         if tags:
             self._quietly(self.run_store.set_tags, run_id, tags)
         caller = None if detached else self._caller()
         if caller is not None and caller[0] != run_id:  # started from a call activity of a run here (FEAT-1)
-            self._quietly(self.run_store.update_run, run_id, caller_run=caller[0], caller_request=caller[1])
+            # under the chat session that started its caller -- not the session of an agent inside that run, which
+            # only places its agents in their tree (_nesting): the panel lists it with that session's runs
+            session = (self.run_store.get_run(caller[0]) or {}).get("caller_session")
+            self._quietly(self.run_store.update_run, run_id, caller_run=caller[0], caller_request=caller[1],
+                          caller_session=session)
         self._note(run_id, "started", who=user_id, why="start_run", machine=machine_id, run_key=run_key,
                    **({"caller_run": caller[0]} if caller is not None and caller[0] != run_id else {}))
         return {"run_id": run_id}
@@ -802,9 +810,10 @@ class StateGraphService:
     async def _by_key(self, run_key: str, machine_id: str, params: Optional[dict[str, Any]],
                       mocks: Optional[dict[str, Any]], mock_only: bool, user_id: Optional[str],
                       live: Optional[dict[str, Any]], detached: bool = False,
-                      go_on: bool = True) -> Optional[dict[str, Any]]:
+                      go_on: bool = True, asked: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
         """The answer of the run ``run_key`` names, if that run answers this request -- None when a new run starts.
-        Up to its answer nothing awaits but a resume of that run."""
+        Up to its answer nothing awaits but a resume of that run. ``asked``: the chat session and request of this
+        start (caller_session, caller_request) -- a resume from a chat is listed under them."""
         existing = self.run_store.latest_by_key(run_key)
         if existing is None:
             return None
@@ -833,9 +842,14 @@ class StateGraphService:
             caller = None if detached else self._caller()
             if caller is not None and caller[0] == existing["id"]:
                 caller = None
-            if (caller[0] if caller else None) != existing.get("caller_run"):
+            chat = {key: value for key, value in (asked or {}).items() if value} if caller is None else {}
+            if caller is not None:  # a call's child now: under its caller's chat session, as start_run puts one
+                session = (self.run_store.get_run(caller[0]) or {}).get("caller_session")
+                chat = {"caller_session": session} if session != existing.get("caller_session") else {}
+            if (caller[0] if caller else None) != existing.get("caller_run") or chat:
                 self._quietly(self.run_store.update_run, existing["id"], caller_run=caller[0] if caller else None,
-                              caller_request=caller[1] if caller else None)
+                              caller_request=caller[1] if caller else chat.get("caller_request"),
+                              **({"caller_session": chat["caller_session"]} if "caller_session" in chat else {}))
             try:
                 await self._resume(existing["id"], live=live, who=user_id, why="start_run with its run_key",
                                    transient=transient)
@@ -1289,15 +1303,17 @@ class StateGraphService:
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
                   user_id: Optional[str] = None, all_users: bool = True,
                   before: Optional[str] = None, nested: bool = False,
-                  tags: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+                  tags: Optional[dict[str, Any]] = None, session: Optional[str] = None,
+                  request: Optional[str] = None) -> list[dict[str, Any]]:
         """A page of the newest runs; ``before``: the last run id of the page before; ``nested``: also the runs the
-        machine ran in as a submachine; ``tags``: only runs with all of these tags (FEAT-7)."""
+        machine ran in as a submachine; ``tags``: only runs with all of these tags (FEAT-7); ``session``,
+        ``request``: only the runs a chat session or request started (with the calls under the request)."""
         if status is not None and status not in RUN_STATUSES:
             raise ServiceError(422, f"status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
         _check_tags(tags)
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)), status=status,
                                         user_id=user_id, all_users=all_users, before=before, nested=nested,
-                                        tags=tags)
+                                        tags=tags, session=session or None, request=request or None)
 
     def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None, after: Optional[int] = None,
                 kinds: Optional[list[str]] = None, state: Optional[str] = None,

@@ -19,7 +19,18 @@ export const pluginBase = () => '/plugins/stategraph';
 export const notice = (el, text) => { el.textContent = text || ''; el.hidden = !text; };
 export const setDirty = (v) => { globalThis.DIRTY = Boolean(v); };
 export const setTitle = (t) => { globalThis.TITLE = t; };
-export const setQuery = (q) => { globalThis.QUERY = new URLSearchParams(q).toString(); };
+// the address too, as the kit's: session.pinned reads it afresh
+export const setQuery = (q) => {
+  globalThis.QUERY = new URLSearchParams(q).toString();
+  location.search = QUERY ? `?${QUERY}` : '';
+};
+// as the kit's, over the page's address: SCOPE is what <pk-session all> is set to -- 'all' unless a case picks the
+// session (the kit starts on it; the cases about other things expect every run), CHAT_SESSION the chat's
+export const session = {
+  get pinned() { return new URLSearchParams(location.search).get('session_id') || null; },
+  get scope() { return globalThis.SCOPE || 'all'; },
+  get shown() { return this.scope === 'all' ? null : this.pinned || globalThis.CHAT_SESSION || null; },
+};
 export const navigate = () => {};
 export const openSession = (id) => { (globalThis.OPENED ||= []).push(id); return true; };
 export const selectTab = (list, name) => { globalThis.TABS[list.id] = name; return true; };
