@@ -1,7 +1,7 @@
 """Keeping machines in order: a machine the author made can be deleted again, and every machine has a folder.
 
 A saved machine lived forever: nothing removed it but a hand in the file system. And the list grew flat --
-examples, the writer's machines and the author's own side by side. Delete takes the version the author saw
+examples, a plugin's machines and the author's own side by side. Delete takes the version the author saw
 (no blind delete) and only what belongs to the machine alone; the folder is the machine's ``group`` or where
 it comes from.
 """
@@ -92,18 +92,18 @@ def with_python(machine_id: str, module: str) -> str:
 
 def test_the_list_names_each_machines_folder(tmp_path):
     service, _, _ = service_over(tmp_path, ("own", "mine.yaml", MACHINE.format(id="mine")),
-                                 ("own", "grouped.yaml", MACHINE.format(id="grouped") + "group: Writer/v6\n"),
+                                 ("own", "grouped.yaml", MACHINE.format(id="grouped") + "group: Team/v2\n"),
                                  ("shipped", "example.yaml", MACHINE.format(id="example")))
 
     groups = {m["id"]: m["group"] for m in service.list_machines()}
 
-    assert groups == {"mine": "My machines", "grouped": "Writer/v6", "example": "some_plugin"}
+    assert groups == {"mine": "My machines", "grouped": "Team/v2", "example": "some_plugin"}
 
 
 def test_the_list_reads_each_files_head_and_loads_no_machine(tmp_path):
     """Loading a machine with its imports and validating it costs a few dozen machines seconds: the panel's list
     must not wait for that, and needs only what the heads say."""
-    head = 'title: "The review"\ndescription: Reads it twice\ngroup: Writer/v6\n'
+    head = 'title: "The review"\ndescription: Reads it twice\ngroup: Team/v2\n'
     service, _, _ = service_over(tmp_path, ("own", "review.yaml", MACHINE.format(id="review") + head),
                                  ("own", "broken.yaml", "stategraph: 1\nid: [unclosed\n"),
                                  ("own", "odd.yaml", MACHINE.format(id="odd") + "title: [not, text]\n"))
@@ -115,7 +115,7 @@ def test_the_list_reads_each_files_head_and_loads_no_machine(tmp_path):
 
     listed = {m["id"]: (m["title"], m["description"], m["group"]) for m in service.list_machines()}
 
-    assert listed == {"review": ("The review", "Reads it twice", "Writer/v6"), "broken": ("", "", "My machines"),
+    assert listed == {"review": ("The review", "Reads it twice", "Team/v2"), "broken": ("", "", "My machines"),
                       "odd": ("", "", "My machines")}
     assert not any("valid" in m for m in service.list_machines()), "the cheap list claims a check it did not make"
 
@@ -279,7 +279,7 @@ def test_a_new_module_whose_name_a_file_has_already_is_named_not_called_a_change
     assert set(saved["versions"]) == {"m.yaml"} and "m.py" in service.get_machine("m")["files"]
 
 
-@pytest.mark.parametrize("group, folder", [("Writer / v6", "Writer/v6"), ("/a//b/", "a/b"), ("", "")])
+@pytest.mark.parametrize("group, folder", [("Team / v2", "Team/v2"), ("/a//b/", "a/b"), ("", "")])
 def test_a_machines_group_is_its_folder_path(group, folder):
     text = MACHINE.format(id="m") + f"group: {group!r}\n"
     tree = load_tree("/m/m.yaml", SnapshotSources({"/m/m.yaml": text}))

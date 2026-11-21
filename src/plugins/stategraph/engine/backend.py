@@ -652,7 +652,7 @@ def _control_tools() -> tuple[str, ...]:
 
 
 #: The meter of the call activity whose function runs now (CallKind): every LLM call made under it -- by the function,
-#: by the code it calls (the writer's pipeline), by a tool it runs -- adds to it (hooks.StateGraphHooks on
+#: by the code it calls (a caller's pipeline), by a tool it runs -- adds to it (hooks.StateGraphHooks on
 #: post_llm_response). The context var goes along into tasks the function starts and into its worker thread.
 CALL_SPEND: contextvars.ContextVar[Optional["_Spend"]] = contextvars.ContextVar("stategraph_call_spend",
                                                                                 default=None)

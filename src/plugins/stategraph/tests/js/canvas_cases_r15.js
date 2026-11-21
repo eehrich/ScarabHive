@@ -129,7 +129,7 @@ const CASES = {
   },
 
   async a_run_id_keeps_its_label_and_hash() {  // UI-3
-    check(G.runLabel('9e0tq7uhrt_009_ch795_3c2cac96') === '…_009_ch795_3c2cac96', G.runLabel('9e0tq7uhrt_009_ch795_3c2cac96'));
+    check(G.runLabel('9e0tq7uhrt_009_pt795_3c2cac96') === '…_009_pt795_3c2cac96', G.runLabel('9e0tq7uhrt_009_pt795_3c2cac96'));
     check(G.runLabel('so7cus2i2h_015_recheck_0_fa6fe105') === '…_015_recheck_0_fa6fe105', G.runLabel('so7cus2i2h_015_recheck_0_fa6fe105'));
     check(G.runLabel('r1') === 'r1', 'a short id is kept');
     const long = G.runLabel('a'.repeat(40));

@@ -72,7 +72,7 @@ from sg_r15_helper import answer_of
 
 @pytest.fixture
 def helper():
-    """A module the companion imports -- live code a restart may have changed (tracker_steps.answer_of)."""
+    """A module the companion imports -- live code a restart may have changed."""
     module = types.ModuleType("sg_r15_helper")
     module.answer_of = lambda data: "?"
     sys.modules["sg_r15_helper"] = module
@@ -84,7 +84,7 @@ async def gate_run_interrupted_after_a_comment(harness: Harness) -> str:
     manager = harness.manager()
     run_id = await manager.start(runnable({"m.yaml": GATE, "m.py": GATE_PY}))
     await until(lambda: harness.store.get_run(run_id)["status"] == "waiting", what="the gate waits")
-    assert manager.send_event(run_id, "comment", {"body": "{{/tracker go}}"})["accepted"]
+    assert manager.send_event(run_id, "comment", {"body": "{{/deploy go}}"})["accepted"]
     await until(lambda: harness.store.has_row(run_id, "trace", "s1:step"), what="the comment taken")
     await manager.shutdown()
     assert harness.store.get_run(run_id)["status"] == "interrupted"

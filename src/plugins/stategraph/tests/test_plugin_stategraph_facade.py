@@ -2,8 +2,8 @@
 
 The machines here use call activities and pure states only, so the StateGraphServer needs no
 runner agent; everything else is real -- the server, its service and RunManager, the
-MachineAgent's run_events, the SubAgentManagerServer and AgentCaller's checks, and v4's own
-story_id extraction on the answer text.
+MachineAgent's run_events, the SubAgentManagerServer and AgentCaller's checks, and a caller's own
+record_id extraction on the answer text.
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314, tool_conf
 
 pytestmark = pytest.mark.filterwarnings(FASTAPI_PY314)
 
-STORY = """\
+RECORD = """\
 stategraph: 1
 id: m
 python: m.py
 params: {task: {type: string, required: true}}
-context: {story: null}
+context: {record: null}
 finally: {call: note_end, args: {reason: "{{ ending.reason }}"}}
 initial: design
 states:
@@ -33,7 +33,7 @@ states:
     do: {call: design, args: {task: "{{ params.task }}"}}
     transitions:
       - target: gate
-        effect: ctx.story = out
+        effect: ctx.record = out
   gate:
     transitions:
       - {target: hold, guard: "'hold' in params.task"}
@@ -42,7 +42,7 @@ states:
   hold:
     transitions: [{trigger: go, target: done}]
   broken: {type: final, status: failed}
-  done: {type: final, output: "{{ ctx.story }}"}
+  done: {type: final, output: "{{ ctx.record }}"}
 events: {go: {}}
 """
 
@@ -51,7 +51,7 @@ ENDINGS = []
 
 
 def design(task):
-    return {"story_id": 812, "title": task.split("|")[0]}
+    return {"record_id": 812, "title": task.split("|")[0]}
 
 
 def note_end(reason):
@@ -70,12 +70,12 @@ class Env:
         from plugins.stategraph.server import StateGraphServer
 
         self.server = StateGraphServer("stategraph", AgentSystemConfig(), tool_config(tmp_path))
-        (tmp_path / "machines" / "m.yaml").write_text(STORY, encoding="utf-8")
+        (tmp_path / "machines" / "m.yaml").write_text(RECORD, encoding="utf-8")
         (tmp_path / "machines" / "m.py").write_text(COMPANION, encoding="utf-8")
         self.registry = ToolServerRegistry()
         self.registry.register("stategraph", self.server)
-        settings = {"machine": "m", "promote": ["story_id"], **config}
-        self.agent = MachineAgent("story_machine", AgentSystemConfig(), ToolServerConfig(
+        settings = {"machine": "m", "promote": ["record_id"], **config}
+        self.agent = MachineAgent("record_machine", AgentSystemConfig(), ToolServerConfig(
             type="stategraph_machine", enabled=True, agent_config=AgentConfig(llm_profile="normal"), **settings),
             self.registry)
 
@@ -90,8 +90,8 @@ class Env:
         from agent_system.config.models import AgentConfig, AgentSystemConfig, ToolServerConfig
         from plugins.stategraph.facade import MachineAgent
 
-        settings = {"machine": "m", "promote": ["story_id"], **config}
-        return MachineAgent("story_machine", AgentSystemConfig(), ToolServerConfig(
+        settings = {"machine": "m", "promote": ["record_id"], **config}
+        return MachineAgent("record_machine", AgentSystemConfig(), ToolServerConfig(
             type="stategraph_machine", enabled=True, agent_config=AgentConfig(llm_profile="normal"), **settings),
             self.registry)
 
@@ -112,14 +112,14 @@ def final_of(events: list[dict[str, Any]]) -> dict[str, Any]:
     return events[[e["type"] for e in events].index(kinds[-2])]
 
 
-# ------------------------------------------------------------------ the answer and v4's contract
+# ------------------------------------------------------------------ the answer and a caller's contract
 
-async def test_the_answer_is_the_output_as_json_and_v4_finds_the_story_id(env):
-    answer = final_of(await env.ask("Nachtzug|a thriller"))
+async def test_the_answer_is_the_output_as_json_and_a_caller_finds_the_record_id(env):
+    answer = final_of(await env.ask("Quarterly|a report"))
 
     assert answer["type"] == "final", answer
-    assert json.loads(answer["summary"]) == {"story_id": 812, "title": "Nachtzug"}
-    assert answer["story_id"] == 812, "promoted onto the final event for writer_jobs"
+    assert json.loads(answer["summary"]) == {"record_id": 812, "title": "Quarterly"}
+    assert answer["record_id"] == 812, "promoted onto the final event for a job queue"
     assert answer["run_id"].startswith("req1_sg"), "cost, status and cancel stay under the caller's request id"
 
 
@@ -131,16 +131,16 @@ async def test_a_failed_run_is_an_error_event_never_a_final(env):
 
 
 async def test_the_same_request_again_answers_the_succeeded_run_without_a_second_one(env):
-    first = final_of(await env.ask("Nachtzug", request_id="job-7", session_id="s1"))
-    again = final_of(await env.ask("Nachtzug", request_id="job-7", session_id="s2"))
+    first = final_of(await env.ask("Quarterly", request_id="job-7", session_id="s1"))
+    again = final_of(await env.ask("Quarterly", request_id="job-7", session_id="s2"))
 
     assert again["summary"] == first["summary"] and again["run_id"] == first["run_id"]
     assert len(env.runs()) == 1
 
 
 async def test_a_continue_answers_the_stored_output_and_starts_nothing(env):
-    first = final_of(await env.ask("Nachtzug", request_id="r1", session_id="s1"))
-    follow = final_of(await env.ask("Wie lautet die story_id? Antworte NUR mit: story_id=<ZAHL>",
+    first = final_of(await env.ask("Quarterly", request_id="r1", session_id="s1"))
+    follow = final_of(await env.ask("Wie lautet die record_id? Antworte NUR mit: record_id=<ZAHL>",
                                     request_id="r2", session_id="s1"))
 
     assert follow["summary"] == first["summary"], follow
@@ -172,11 +172,11 @@ async def test_a_continue_of_an_interrupted_run_resumes_it(env):
 async def test_a_cancel_of_the_request_terminates_the_run_and_its_finally_runs(env):
     from agent_system.core.cancellation import get_cancellation_manager
 
-    task = asyncio.ensure_future(env.ask("hold on", request_id="book-9_sub_ab12", session_id="s1"))
+    task = asyncio.ensure_future(env.ask("hold on", request_id="job-9_sub_ab12", session_id="s1"))
     await until(lambda: any(r["status"] == "waiting" for r in env.runs()), what="the run waits")
     run_id = env.runs()[0]["id"]
 
-    get_cancellation_manager().cancel_request("book-9")  # the book above the designer is cancelled
+    get_cancellation_manager().cancel_request("job-9")  # the job above the machine is cancelled
     answer = final_of(await asyncio.wait_for(task, 10))
 
     assert answer["type"] == "cancelled", answer
@@ -204,12 +204,12 @@ async def test_a_bare_task_cancel_leaves_the_run_running(env):
 async def test_json_input_is_the_params_object(tmp_path):
     made = Env(tmp_path, input="json")
     try:
-        answer = final_of(await made.ask(json.dumps({"task": "Nachtzug"})))
+        answer = final_of(await made.ask(json.dumps({"task": "Quarterly"})))
         refused = final_of(await made.ask("[1, 2]", request_id="req2", session_id="sess2"))
     finally:
         await made.close()
 
-    assert json.loads(answer["summary"])["title"] == "Nachtzug"
+    assert json.loads(answer["summary"])["title"] == "Quarterly"
     assert refused["type"] == "error" and "JSON object of params" in refused["message"], refused
 
 
@@ -253,18 +253,18 @@ async def test_a_sam_spawn_gets_the_json_answer(env):
 
     config = Mock(spec=ToolServerConfig)
     config.max_sub_agents_per_session, config.max_nesting_depth, config.max_sub_agents_per_type = 10, 5, 3
-    config.allowed_agents, config.blocked_agents = ["story_machine"], []
-    sam = SubAgentManagerServer(name="v4_sam", system_config=Mock(), server_config=config)
+    config.allowed_agents, config.blocked_agents = ["record_machine"], []
+    sam = SubAgentManagerServer(name="some_sam", system_config=Mock(), server_config=config)
     session_service = Mock(save_session=AsyncMock(), session_manager=Mock())
 
     async def load_session(user_id, session_id, *args, **kwargs):
         if session_id == "parent1":
             return {"agent_name": "coordinator", "context_vars": {}}
-        return {"agent_name": "story_machine", "parent_session": {"session_id": "parent1"}, "context_vars": {}}
+        return {"agent_name": "record_machine", "parent_session": {"session_id": "parent1"}, "context_vars": {}}
 
     session_service.session_manager.load_session = AsyncMock(side_effect=load_session)
     manager = Mock(_extract_user_id=Mock(return_value="u1"), _session_service=session_service,
-                   create_sub_session=AsyncMock(return_value="sub_story_machine_1"),
+                   create_sub_session=AsyncMock(return_value="sub_record_machine_1"),
                    update_sub_session_metadata=AsyncMock(), refresh_sub_context_vars=AsyncMock(return_value={}),
                    update_sub_agent_activity=AsyncMock())
     manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, manager)
@@ -273,15 +273,15 @@ async def test_a_sam_spawn_gets_the_json_answer(env):
     sam._extract_session_service = Mock(return_value=session_service)
     sam._get_manager = Mock(return_value=manager)
 
-    result = await sam.manage_sub_agent({"operation": "create", "agent_type": "story_machine",
-                                          "task": "Nachtzug", "blocking": True, "_session_id": "parent1",
-                                          "_agent": Mock(), "_request_id": "v4book"})
+    result = await sam.manage_sub_agent({"operation": "create", "agent_type": "record_machine",
+                                          "task": "Quarterly", "blocking": True, "_session_id": "parent1",
+                                          "_agent": Mock(), "_request_id": "jobreq"})
 
     assert result["status"] == "completed", result
     text = result["result"]
     assert isinstance(text, str) and not text.startswith(("Error: ", "Cancelled: ")), text  # AgentCaller's checks
-    assert json.loads(text)["story_id"] == 812
-    assert env.runs()[0]["id"].startswith("v4book_sub_"), "the run sits under the v4 request's prefix"
+    assert json.loads(text)["record_id"] == 812
+    assert env.runs()[0]["id"].startswith("jobreq_sub_"), "the run sits under the caller request's prefix"
 
 
 # ------------------------------------------------------------------ review of the facade (findings B2-B9)
@@ -293,7 +293,7 @@ async def ask_agent(agent: Any, task: str, request_id: str, session_id: str) -> 
 async def test_a_continue_in_a_fresh_process_finds_the_failed_run_and_starts_none(env):
     """B2: the session's run is in runs.db, not only in this process's memory."""
     first = final_of(await env.ask("fail please", request_id="r1", session_id="s1"))
-    follow = await ask_agent(env.fresh_agent(), "Wie lautet die story_id?", "r2", "s1")
+    follow = await ask_agent(env.fresh_agent(), "Wie lautet die record_id?", "r2", "s1")
 
     assert first["type"] == "error" and follow["type"] == "error", follow
     assert "does not start a new run" in follow["message"]
@@ -320,13 +320,13 @@ async def test_a_continue_in_a_fresh_process_resumes_the_interrupted_run(env):
 
 async def test_as_another_agent_s_tool_every_call_is_a_run_of_its_own(env):
     """B3: two different tasks from one caller session get two answers."""
-    first = await env.agent.call("story_machine", {"task": "Nachtzug", "_session_id": "caller",
+    first = await env.agent.call("record_machine", {"task": "Quarterly", "_session_id": "caller",
                                                    "_request_id": "parent"})
-    second = await env.agent.call("story_machine", {"task": "Morgenrot", "_session_id": "caller",
+    second = await env.agent.call("record_machine", {"task": "Morgenrot", "_session_id": "caller",
                                                     "_request_id": "parent"})
 
     titles = {env.server.run_store.get_run(r["id"])["output"]["title"] for r in env.runs()}
-    assert titles == {"Nachtzug", "Morgenrot"}, (first, second)
+    assert titles == {"Quarterly", "Morgenrot"}, (first, second)
     assert all(r["id"].startswith("parent_") for r in env.runs()), "still under the caller's prefix"
 
 
@@ -334,7 +334,7 @@ async def test_a_request_cancelled_before_its_run_starts_starts_none(env):
     """B4: the SAM's early cancel reaches the facade before the start."""
     from agent_system.core.cancellation import get_cancellation_manager
 
-    agen = env.agent.run_events("Nachtzug", request_id="late", session_id="s9")
+    agen = env.agent.run_events("Quarterly", request_id="late", session_id="s9")
     started = await agen.__anext__()
     assert started["type"] == "start"
     get_cancellation_manager().cancel_request("late")
@@ -347,9 +347,9 @@ async def test_a_request_cancelled_before_its_run_starts_starts_none(env):
 async def test_another_user_s_request_id_gets_nothing_of_the_run(env):
     """B5: a known request id is no key to someone else's run."""
     env.agent._session_tracker.set_session_metadata("alice_s", {"user_id": "alice"})
-    await env.ask("Nachtzug", request_id="shared", session_id="alice_s")
+    await env.ask("Quarterly", request_id="shared", session_id="alice_s")
     env.agent._session_tracker.set_session_metadata("bob_s", {"user_id": "bob"})
-    answer = final_of(await env.ask("Nachtzug", request_id="shared", session_id="bob_s"))
+    answer = final_of(await env.ask("Quarterly", request_id="shared", session_id="bob_s"))
 
     assert answer["type"] == "error" and "another user" in answer["message"], answer
     assert len(env.runs()) == 1
@@ -394,7 +394,7 @@ async def test_a_sweep_of_the_live_run_is_not_taken_for_its_end(env):
     assert answer["type"] == "final", answer
 
 
-@pytest.mark.parametrize("config", [{"params": ["a", "b"]}, {"promote": "story_id"}])
+@pytest.mark.parametrize("config", [{"params": ["a", "b"]}, {"promote": "record_id"}])
 async def test_a_config_of_the_wrong_type_is_the_answer_not_a_crash(tmp_path, config):
     """B9: the lazy build succeeds; every request is told what is wrong."""
     made = Env(tmp_path, **config)
@@ -424,7 +424,7 @@ async def test_a_call_as_another_agent_s_tool_runs_under_the_caller_s_user(env):
 
     register_request_user("parent_007", "alice")
     try:
-        result = await env.agent.call("story_machine", {"task": "Nachtzug", "_request_id": "parent_007"})
+        result = await env.agent.call("record_machine", {"task": "Quarterly", "_request_id": "parent_007"})
     finally:
         release_request_user_tree("parent_007")
 
@@ -438,11 +438,11 @@ async def test_a_cancelled_request_whose_run_no_process_runs_ends_it_with_its_fi
     from agent_system.core.cancellation import get_cancellation_manager
     from plugins.stategraph.tests.stategraph_testkit import runnable, utc_at
 
-    tree = runnable({"m.yaml": STORY, "m.py": COMPANION})
+    tree = runnable({"m.yaml": RECORD, "m.py": COMPANION})
     env.server.run_store.create_run("r9_sgdead1", "m", tree.snapshot(), params={"task": "hold on"}, mocks={},
-                                    owner="gone:1:abc", lease_until=utc_at(-5), run_key="story_machine:r9",
+                                    owner="gone:1:abc", lease_until=utc_at(-5), run_key="record_machine:r9",
                                     session_id="sg_r9_sgdead1")
-    env.server.run_store.set_caller("story_machine:s9", "r9_sgdead1")
+    env.server.run_store.set_caller("record_machine:s9", "r9_sgdead1")
     task = asyncio.ensure_future(env.ask("hold on", request_id="r9", session_id="s9"))
     await asyncio.sleep(0.2)
     get_cancellation_manager().cancel_request("r9")
@@ -472,13 +472,13 @@ async def test_a_gated_machine_refuses_a_plain_users_run_before_it_starts(env, t
     register_request_user("rq_bob", "bob")
     register_request_user("rq_root", "root")
     try:
-        refused = [event async for event in agent.run_events("Nachtzug", request_id="rq_bob", session_id="s_bob")]
+        refused = [event async for event in agent.run_events("Quarterly", request_id="rq_bob", session_id="s_bob")]
         assert [event["type"] for event in refused] == ["error", "end"], refused
         assert refused[0]["error_type"] == "agent_role_gate", refused
         assert env.runs() == [], "a refused request started a machine run"
         assert "rq_bob" not in agent._request_manager._active_requests, "the refused request stayed registered"
 
-        answer = final_of([event async for event in agent.run_events("Nachtzug", request_id="rq_root",
+        answer = final_of([event async for event in agent.run_events("Quarterly", request_id="rq_root",
                                                                       session_id="s_root")])
     finally:
         release_request_user_tree("rq_bob")
@@ -497,7 +497,7 @@ async def test_a_run_in_a_session_held_for_another_user_starts_no_machine_run(en
     agent._session_tracker.set_session_metadata("s_held", {"user_id": "alice", "agent_name": agent.name})
     register_request_user("rq_owner", "root")
     try:
-        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_owner", session_id="s_held")]
+        events = [event async for event in agent.run_events("Quarterly", request_id="rq_owner", session_id="s_held")]
     finally:
         release_request_user_tree("rq_owner")
 
@@ -512,7 +512,7 @@ async def test_a_run_refused_at_the_session_lock_says_so(env):
     agent = env.fresh_agent()
     assert await agent._session_tracker.acquire_session_lock("s_busy", "rq_other"), "fixture: no lock"
     try:
-        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_busy", session_id="s_busy")]
+        events = [event async for event in agent.run_events("Quarterly", request_id="rq_busy", session_id="s_busy")]
     finally:
         await agent._session_tracker.release_session_lock("s_busy", "rq_other")
 
@@ -529,7 +529,7 @@ async def test_a_registered_owners_run_in_a_session_held_for_anonymous_starts_no
     agent._session_tracker.set_session_metadata("s_unowned", {"user_id": "anonymous", "agent_name": agent.name})
     register_request_user("rq_unowned", "root")
     try:
-        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_unowned",
+        events = [event async for event in agent.run_events("Quarterly", request_id="rq_unowned",
                                                             session_id="s_unowned")]
     finally:
         release_request_user_tree("rq_unowned")
@@ -548,7 +548,7 @@ async def test_the_machine_run_stays_the_owners_when_the_sessions_metadata_is_re
     register_request_user("rq_run", "root")
     events = []
     try:
-        async for event in agent.run_events("Nachtzug", request_id="rq_run", session_id="s_run"):
+        async for event in agent.run_events("Quarterly", request_id="rq_run", session_id="s_run"):
             events.append(event)
             if event["type"] == "start":
                 agent._session_tracker.set_session_metadata("s_run", {"user_id": "alice", "agent_name": agent.name})
@@ -573,10 +573,10 @@ def told(tmp_path):
     store = RunEventStore(tmp_path / "run_events.db")
     run_events.use_run_events(store, RunEventBus())
     turn_runs.report_turns()
-    for request_id in ("req1", "req2", "book-9_sub_ab12"):
+    for request_id in ("req1", "req2", "job-9_sub_ab12"):
         set_run_attended(request_id, True)
     yield store
-    for request_id in ("req1", "req2", "book-9_sub_ab12"):
+    for request_id in ("req1", "req2", "job-9_sub_ab12"):
         release_run_attended(request_id)
     turn_runs.settle()
     turn_runs._ENDING.clear()
@@ -601,7 +601,7 @@ def _opened(env, tmp_path, session_id="sess1"):
     service.checkpoint_interval_seconds = 60  # never fires during a test
     env.agent._session_service = service
     env.agent._session_tracker.set_session_metadata(
-        session_id, {"user_id": "alice", "agent_name": "story_machine", "llm_profile": "normal"})
+        session_id, {"user_id": "alice", "agent_name": "record_machine", "llm_profile": "normal"})
 
     async def on_disk():
         session = await service.session_manager.load_session("alice", session_id)
@@ -615,9 +615,9 @@ async def test_a_machines_told_turn_is_written_as_it_begins(env, told, tmp_path)
     works now listed the turn, and its session could not be opened until the machine's outcome."""
     on_disk = _opened(env, tmp_path)
 
-    assert final_of(await env.ask("Nachtzug|a thriller"))["type"] == "final"
+    assert final_of(await env.ask("Quarterly|a report"))["type"] == "final"
     # nobody saved after the run here (its caller does): what is on disk is what the turn wrote as it began
-    assert await on_disk() == [("user", "Nachtzug|a thriller")]
+    assert await on_disk() == [("user", "Quarterly|a report")]
     held = env.agent._session_tracker.get_session_messages("sess1")
     assert [message.role for message in held] == ["user", "assistant"], "the question kept early stands twice"
 
@@ -638,11 +638,11 @@ async def test_a_machines_turn_in_a_session_it_creates_is_written_as_it_begins(e
     from agent_system.core.request_context import get_request_user
 
     _opened(env, tmp_path, session_id="another")   # the service; this turn's session is not opened by anybody
-    events = [event async for event in env.agent.run_events("Nachtzug|a thriller", request_id="req1")]
+    events = [event async for event in env.agent.run_events("Quarterly|a report", request_id="req1")]
     session_id = events[0]["session_id"]
     assert final_of(events)["type"] == "final" and session_id not in ("another", None)
     session = await env.agent._session_service.session_manager.load_session(get_request_user("req1"), session_id)
-    assert [(message["role"], message["content"]) for message in session["messages"]] == [("user", "Nachtzug|a thriller")]
+    assert [(message["role"], message["content"]) for message in session["messages"]] == [("user", "Quarterly|a report")]
 
 
 async def test_a_machines_turn_kept_early_in_another_process_keeps_what_is_stored(env, told, tmp_path):
@@ -651,7 +651,7 @@ async def test_a_machines_turn_kept_early_in_another_process_keeps_what_is_store
     from agent_system.core import turn_runs
 
     on_disk = _opened(env, tmp_path)
-    await env.ask("Nachtzug|a thriller")
+    await env.ask("Quarterly|a report")
     assert await env.agent._save_session_to_disk("sess1")  # the caller's save after the run
     assert [role for role, _ in await on_disk()] == ["user", "assistant"], "fixture: the exchange is not stored"
     turn_runs.settle()
@@ -662,7 +662,7 @@ async def test_a_machines_turn_kept_early_in_another_process_keeps_what_is_store
     assert not other._session_tracker.get_session_messages("sess1"), "fixture: the other process holds the session"
     [event async for event in other.run_events("and again", request_id="req2", session_id="sess1")]
     assert len(env.runs()) == 1, "fixture: the later turn started a run of its own"
-    assert await on_disk() == [("user", "Nachtzug|a thriller"), (await on_disk())[1], ("user", "and again")]
+    assert await on_disk() == [("user", "Quarterly|a report"), (await on_disk())[1], ("user", "and again")]
 
 
 async def test_a_machines_turn_nobody_is_told_of_is_left_to_its_caller(env, tmp_path):
@@ -671,7 +671,7 @@ async def test_a_machines_turn_nobody_is_told_of_is_left_to_its_caller(env, tmp_
 
     on_disk = _opened(env, tmp_path)
 
-    assert final_of(await env.ask("Nachtzug|a thriller"))["type"] == "final"
+    assert final_of(await env.ask("Quarterly|a report"))["type"] == "final"
     with pytest.raises(SessionNotFoundError):
         await on_disk()
 
@@ -681,18 +681,18 @@ async def test_a_machines_turn_is_a_run_with_its_states_as_its_steps(env, told):
     it stands, was told nowhere but in the machine's own panel."""
     from agent_system.core.cancellation import get_cancellation_manager
 
-    assert final_of(await env.ask("Nachtzug|a thriller"))["type"] == "final"
+    assert final_of(await env.ask("Quarterly|a report"))["type"] == "final"
     run = _settled(told)
-    assert (run["state"], run["agent"], run["source"]) == ("done", "story_machine", "chat")
-    assert run["title"] == "Nachtzug|a thriller" and run["parent_session"] == ""
+    assert (run["state"], run["agent"], run["source"]) == ("done", "record_machine", "chat")
+    assert run["title"] == "Quarterly|a report" and run["parent_session"] == ""
 
     def steps():
         return [e["step"]["label"] for e in told.events("s2") if e["type"] == "run.step"]
 
-    task = asyncio.ensure_future(env.ask("hold on", request_id="book-9_sub_ab12", session_id="s2"))
+    task = asyncio.ensure_future(env.ask("hold on", request_id="job-9_sub_ab12", session_id="s2"))
     await until(lambda: "m: hold" in steps(), what="the state it waits in is its step")
     assert told.run("s2")["state"] == "working"
-    get_cancellation_manager().cancel_request("book-9")
+    get_cancellation_manager().cancel_request("job-9")
     assert final_of(await asyncio.wait_for(task, 10))["type"] == "cancelled"
     assert _settled(told, "s2")["state"] == "cancelled"
 
@@ -709,10 +709,10 @@ async def test_what_a_machine_starts_knows_the_session_it_works_in(env, tmp_path
     from agent_system.core.request_context import current_run_session
 
     (tmp_path / "machines" / "m.py").write_text(COMPANION.replace(
-        'return {"story_id": 812, "title": task.split("|")[0]}',
+        'return {"record_id": 812, "title": task.split("|")[0]}',
         'from agent_system.core.request_context import current_run_session\n'
-        '    return {"story_id": 812, "title": current_run_session.get()}'), encoding="utf-8")
-    answer = final_of(await env.ask("Nachtzug|a thriller"))
+        '    return {"record_id": 812, "title": current_run_session.get()}'), encoding="utf-8")
+    answer = final_of(await env.ask("Quarterly|a report"))
     assert json.loads(answer["summary"])["title"] == "sess1", answer
     assert current_run_session.get() is None
 
@@ -722,10 +722,10 @@ async def test_a_machine_another_turn_called_runs_below_it(env, told):
     from agent_system.core.request_context import current_run_session
 
     above = await turn_runs.started(agent="coder", system_config=None, session_id="the-caller", user_id="alice",
-                                    task="design a story", parent="", attended=True)
+                                    task="draft a report", parent="", attended=True)
     current_run_session.set("the-caller")
     try:
-        final_of(await env.ask("Nachtzug|a thriller", request_id="tool-call-7"))   # no person's own request
+        final_of(await env.ask("Quarterly|a report", request_id="tool-call-7"))   # no person's own request
         assert current_run_session.get() == "the-caller"
     finally:
         current_run_session.set(None)
@@ -743,13 +743,13 @@ async def test_a_machine_that_broke_ends_its_run_failed(env, told, monkeypatch):
 
     monkeypatch.setattr(env.agent, "_drive", broken)
     with pytest.raises(RuntimeError):
-        await env.ask("Nachtzug|a thriller")
+        await env.ask("Quarterly|a report")
     run = _settled(told)
     assert run["state"] == "failed" and "the store is gone" in told.events("sess1")[-1]["payload"]["reason"]
 
 
 async def test_a_machine_agents_run_is_listed_under_the_chat_session_and_request_that_asked(env):
-    answer = final_of(await env.ask("Nachtzug|a thriller", request_id="req7", session_id="chat-7"))
+    answer = final_of(await env.ask("Quarterly|a report", request_id="req7", session_id="chat-7"))
 
     assert [r["id"] for r in env.server.service.list_runs(session="chat-7")] == [answer["run_id"]]
     assert [r["id"] for r in env.server.service.list_runs(request="req7")] == [answer["run_id"]]

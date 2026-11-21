@@ -271,7 +271,7 @@ def test_the_id_must_match_the_file_name():
 def test_vars_from_an_unconfigured_agent_is_sg007():
     typo = validate(machine("""\
         a: {type: final}
-        """, head="vars_from: v6_story_cordinator\n"), config_check=config_check())
+        """, head="vars_from: report_cordinator\n"), config_check=config_check())
     assert codes(typo, "SG007") == ["vars_from"]
     configured = validate(machine("a: {type: final}\n", head="vars_from: writer\n"), config_check=config_check())
     assert not errors(configured)
@@ -284,7 +284,7 @@ async def test_vars_from_an_unconfigured_agent_fails_as_config_at_run_time(harne
           do: {agent: writer, task: t}
           transitions: [{target: done}]
         done: {type: final}
-        """, head="vars_from: v6_story_cordinator\n"), backend_factory=backend_for(FakeRunner(), system_config()))
+        """, head="vars_from: report_cordinator\n"), backend_factory=backend_for(FakeRunner(), system_config()))
     assert row["status"] == "failed"
     assert row["error"]["type"] == "config", row["error"]
 
@@ -686,19 +686,19 @@ async def test_wait_on_a_foreign_run_does_not_spin_on_the_store(server, monkeypa
 SECRET = "s3cr3t-WRITE-KEY"
 ECHOING = """\
 a:
-  do: {tool: writer_content_story, args: {title: t}}
+  do: {tool: report_content_draft, args: {title: t}}
   transitions:
     - target: b
       effect: ctx.x = out
 b:
-  do: {tool: writer_content_check, args: {title: t}, error_if: "out['ok'] is False"}
+  do: {tool: report_content_check, args: {title: t}, error_if: "out['ok'] is False"}
   transitions:
     - target: done
     - trigger: error
       target: c
       effect: ctx.e1 = [error.message, error.data]
 c:
-  do: {tool: writer_content_save, args: {title: t}}
+  do: {tool: report_content_save, args: {title: t}}
   transitions:
     - target: done
     - trigger: error
@@ -712,12 +712,12 @@ async def test_an_echoed_secret_reaches_no_journal_row(harness):
     """S4: a tool that echoes its injected write_key -- in its result, in an error_if result, in its error
     text -- leaves the secret in none of out, error.message, error.data, the journal or the run row."""
     runner = FakeRunner(tools={
-        "writer_content_story": lambda args: {"echo": args},
-        "writer_content_check": lambda args: {"ok": False, "key": args["write_key"]},
-        "writer_content_save": lambda args: {"status": "error", "error": f"write refused for key {args['write_key']}"},
+        "report_content_draft": lambda args: {"echo": args},
+        "report_content_check": lambda args: {"ok": False, "key": args["write_key"]},
+        "report_content_save": lambda args: {"status": "error", "error": f"write refused for key {args['write_key']}"},
     })
     row = await harness.run(machine(ECHOING, head="context: {x: null, e1: null, e2: null}\n"),
-                            backend_factory=backend_for(runner, inject_params={"writer_content_*": {"write_key": SECRET}}))
+                            backend_factory=backend_for(runner, inject_params={"report_content_*": {"write_key": SECRET}}))
 
     assert [call["args"].get("write_key") for call in runner.tool_calls] == [SECRET] * 3, "fixture: injected"
     assert row["output"]["x"] == {"echo": {"title": "t", "write_key": "[redacted]"}}, row["output"]

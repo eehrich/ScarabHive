@@ -127,7 +127,7 @@ async def test_control_run_keeps_the_bound(server, monkeypatch):  # noqa: F811
 
         get_run = server.service.get_run
 
-        def long_run(*args, **kwargs):  # 200 rows of 1,900 characters: a book run's last steps
+        def long_run(*args, **kwargs):  # 200 rows of 1,900 characters: a long run's last steps
             row = get_run(*args, **kwargs)
             return {**row, "journal": [{"seq": seq, "kind": "activity", "data": {"out": "z" * 1900}}
                                        for seq in range(1, 201)]}
@@ -143,7 +143,7 @@ async def test_control_run_keeps_the_bound(server, monkeypatch):  # noqa: F811
 
 
 def test_the_panels_journal_pages_are_read_off_the_event_loop():
-    """T6: a history page (200 whole rows of a book run: MBs) was read and decoded on the API's event loop."""
+    """T6: a history page (200 whole rows of a long run: MBs) was read and decoded on the API's event loop."""
     test_client, service = client()
 
     def journal(*args, **kwargs):

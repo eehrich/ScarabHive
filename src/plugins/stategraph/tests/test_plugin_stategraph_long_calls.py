@@ -1,7 +1,7 @@
 """A call that holds the event loop longer than the lease keeps its run.
 
 The lease says the process lives (docs/stategraph_design.md §5.7). Renewed on the event loop, a synchronous call of
-minutes -- the writer's whole-book passes -- let it run out: a sweep marked the run interrupted, and a resume in
+minutes -- a pipeline's whole-document passes -- let it run out: a sweep marked the run interrupted, and a resume in
 another process could take it while it still worked here. The heartbeat runs on a thread of its own.
 """
 from __future__ import annotations

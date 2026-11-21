@@ -1,21 +1,21 @@
 """A machine as an agent -- the agent facade of docs/stategraph_design.md §10.
 
 ``type: stategraph_machine`` (the plugin folder ``src/plugins/stategraph_machine``) builds a
-``MachineAgent``. Everything that addresses agents -- a SAM spawn, AgentCaller, writer_jobs'
+``MachineAgent``. Everything that addresses agents -- a SAM spawn, AgentCaller, a job queue's
 ``/events`` -- keeps doing so; the agent runs ONE configured machine through the
 StateGraphServer instance and answers with the run's output as a JSON object.
 
 Config (flat keys next to ``type``; ``agent_config`` forbids unknown keys)::
 
-    v6_story_machine:
+    report_machine:
       type: stategraph_machine
       enabled: true
-      machine: v6_story          # the machine id -- never taken from the message
+      machine: report_flow       # the machine id -- never taken from the message
       stategraph: stategraph     # the StateGraphServer instance whose RunManager runs it
       input: text                # text: the message goes into params[task_param]; json: it IS the params
       task_param: task
       params: {}                 # literal params, under the ones from the message
-      promote: [story_id]        # output keys copied onto the final event (writer_jobs reads them there)
+      promote: [record_id]       # output keys copied onto the final event (a job queue reads them there)
       on_wait: block             # ask: a wait state asks in the conversation (as a tool it blocks); blocking,
                                  # the wait is put to the person who watches the request, if any (wait_questions)
 
@@ -71,7 +71,7 @@ class MachineAgent(Agent):
         self.input_mode = str(getattr(server_config, "input", None) or "text")
         self.task_param = str(getattr(server_config, "task_param", None) or "task")
         # ask: a run that waits for an event ends the turn with the question; the next message answers it.
-        # block (the default): the request waits until the run ends -- a caller such as writer_jobs takes any
+        # block (the default): the request waits until the run ends -- a caller such as a job queue takes any
         # answer for the result
         self.on_wait = str(getattr(server_config, "on_wait", None) or "block")
         params = getattr(server_config, "params", None)

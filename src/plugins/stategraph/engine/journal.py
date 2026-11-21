@@ -1180,7 +1180,7 @@ class RunStore:
         running them, counts nothing twice, and nothing has to be kept beside it. Rows a fork copied from its
         source are the source's spend. ``children=True``: with what the runs it started from its call activities spent
         (service.start_run; their spend stays their own too) -- under the state of the calling activity; off by
-        default, so a sum over a run and its children (a flow's report, tracker's cap) counts each once. A compacted run (retention) answers what it had spent. None while nothing
+        default, so a sum over a run and its children (a caller's report, a caller's cap) counts each once. A compacted run (retention) answers what it had spent. None while nothing
         reported any (mock-only, tools only)."""
         seen = (_seen or set()) | {run_id}
         sql = ("SELECT COUNT(json_extract(data, '$.meta.cost')), TOTAL(json_extract(data, '$.meta.cost')),"

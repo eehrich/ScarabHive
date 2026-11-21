@@ -220,7 +220,7 @@ id: sub
 initial: t
 states:
   t:
-    do: {tool: story_create, args: {key: "{{ run.id }}"}}
+    do: {tool: record_create, args: {key: "{{ run.id }}"}}
     transitions: [{target: end}]
   end: {type: final}
 """
@@ -269,7 +269,7 @@ states:
   s:
     do:
       parallel:
-        x: {tool: story_create, args: {key: "{{ run.id }}"}}
+        x: {tool: record_create, args: {key: "{{ run.id }}"}}
       retry: {attempts: 3, backoff: 0, errors: [interrupted]}
     transitions:
       - target: done
@@ -339,7 +339,7 @@ def test_sg110_warns_that_interrupted_is_never_retried():
 initial: a
 states:
   a:
-    do: {tool: story_create, retry: {attempts: 2, errors: [tool_failed, interrupted]}}
+    do: {tool: record_create, retry: {attempts: 2, errors: [tool_failed, interrupted]}}
     transitions: [{target: done}]
   done: {type: final}
 """))
@@ -510,7 +510,7 @@ id: sub
 initial: t
 states:
   t:
-    do: {tool: story_create, args: {key: "{{ run.id }}"}}
+    do: {tool: record_create, args: {key: "{{ run.id }}"}}
     transitions:
       - target: end
       - trigger: error
@@ -549,7 +549,7 @@ states:
     do:
       parallel:
         x: {agent: w, task: t}
-        y: {tool: story_create, args: {key: k}}
+        y: {tool: record_create, args: {key: k}}
       retry: {attempts: 2, backoff: 0}
     transitions:
       - target: done

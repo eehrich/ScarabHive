@@ -90,10 +90,10 @@ def test_the_run_list_is_read_off_the_event_loop():
         raise AssertionError("the run list was read on the event loop")
 
     service.list_runs = list_runs
-    answer = test_client.get("/plugins/stategraph/api/runs?tags=book:95,path:main")
+    answer = test_client.get("/plugins/stategraph/api/runs?tags=project:95,path:main")
 
     assert answer.status_code == 200, answer.text
-    assert answer.json() == [{"id": "r1", "tags": {"book": "95", "path": "main"}}]
+    assert answer.json() == [{"id": "r1", "tags": {"project": "95", "path": "main"}}]
 
 
 def test_an_empty_or_short_injected_value_garbles_no_text(caplog):

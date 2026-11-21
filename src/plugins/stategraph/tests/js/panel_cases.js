@@ -61,7 +61,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p === '/kinds') return KINDS;
   if (p.split('?')[0] === '/catalog') return catalogDown?.(p) ? new ApiError(503, 'restarting') : CATALOG;
   if (p === '/machines' && method === 'GET') {
-    const groups = { review: 'Writer/v6', other: 'Writer', ro: 'stategraph' };
+    const groups = { review: 'Team/v2', other: 'Team', ro: 'stategraph' };
     return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, writable: id !== 'ro',
       group: groups[id] || 'My machines' }));
   }
@@ -1756,7 +1756,7 @@ const CASES = {
   },
 
   async a_param_s_help_shows_its_first_sentence_and_unfolds_the_rest() {
-    // scarab_long's mode: a description of a page made the start form a wall of columns
+    // a mode param: a description of a page made the start form a wall of columns
     const mode = { type: 'string', description: 'recent: aktuelle Forschung (z. B. eine neue Arbeit) ist der Kern. evergreen: jedes Thema. klassiker: ein Klassiker.' };
     const area = { type: 'string', description: 'Ordner der Videos; data/... liegt im Datenverzeichnis' };
     const since = { type: 'string', description: 'Der Lauf beginnt am 3. Oktober, e.g. for a review. Danach nicht.' };
@@ -2363,23 +2363,23 @@ const CASES = {
     await boot('?machine=hooks');
     const list = () => $('machineList').innerHTML;
     const folder = (path) => new RegExp(`<details class="sg-folder" data-folder="${path}" ?(open)?>`).exec(list());
-    check(folder('Writer') && folder('Writer/v6') && folder('My machines') && folder('stategraph'), `folders: ${list()}`);
-    check(/data-folder="Writer\/v6"[\s\S]*data-machine="review"[\s\S]*<\/details>[\s\S]*data-machine="other"/.test(list()),
-      'review sits in Writer/v6, other in Writer after it');
-    check(list().indexOf('data-folder="Writer"') < list().indexOf('data-folder="Writer/v6"'), 'v6 is a folder inside Writer');
+    check(folder('Team') && folder('Team/v2') && folder('My machines') && folder('stategraph'), `folders: ${list()}`);
+    check(/data-folder="Team\/v2"[\s\S]*data-machine="review"[\s\S]*<\/details>[\s\S]*data-machine="other"/.test(list()),
+      'review sits in Team/v2, other in Team after it');
+    check(list().indexOf('data-folder="Team"') < list().indexOf('data-folder="Team/v2"'), 'v2 is a folder inside Team');
     const at = (path) => list().indexOf(`data-folder="${path}"`);
-    check(at('My machines') < at('stategraph') && at('stategraph') < at('Writer'),
-      'folders by name, not in the order the server listed their first machine (Writer came first)');
-    check(folder('Writer/v6')[1] === 'open', 'folders start open');
-    const closing = element('details', { 'data-folder': 'Writer/v6' });
+    check(at('My machines') < at('stategraph') && at('stategraph') < at('Team'),
+      'folders by name, not in the order the server listed their first machine (Team came first)');
+    check(folder('Team/v2')[1] === 'open', 'folders start open');
+    const closing = element('details', { 'data-folder': 'Team/v2' });
     closing.open = false;
     await $('machineList').fire('toggle', { target: closing });
-    check(localStorage.getItem('stategraph:closed-folders') === '["Writer/v6"]', `kept: ${localStorage.getItem('stategraph:closed-folders')}`);
+    check(localStorage.getItem('stategraph:closed-folders') === '["Team/v2"]', `kept: ${localStorage.getItem('stategraph:closed-folders')}`);
     await $('search').fire('input', {});
-    check(!folder('Writer/v6')[1], 'the closed folder opened again');
+    check(!folder('Team/v2')[1], 'the closed folder opened again');
     $('search').value = 'review';
     await $('search').fire('input', {});
-    check(folder('Writer/v6')[1] === 'open' && !list().includes('data-machine="hooks"'), 'a search opens what it finds, and only that');
+    check(folder('Team/v2')[1] === 'open' && !list().includes('data-machine="hooks"'), 'a search opens what it finds, and only that');
   },
 
   async the_list_and_the_machine_do_not_wait_for_every_machine_s_check_whose_badges_follow() {
@@ -2762,10 +2762,10 @@ const CASES = {
   async the_machine_settings_are_an_update_machine() {
     await boot('?machine=fields');
     const shown = $('side-inspect').innerHTML;
-    check(/name="group" data-shape="line" data-orig="Writer\/demo"/.test(shown) && /name="params" data-shape="yaml"/.test(shown),
+    check(/name="group" data-shape="line" data-orig="Reports\/demo"/.test(shown) && /name="params" data-shape="yaml"/.test(shown),
       'the machine settings are not shown');
     await $('side-inspect').fire('submit', { target: formOf('machine-fields', { title: ['line', 'Fields', 'Judge'],
-      group: ['line', 'Writer/demo', ''] }) });
+      group: ['line', 'Reports/demo', ''] }) });
     await settle();
     check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_machine', fields: { title: 'Judge', group: null } }),
       `sent: ${JSON.stringify(lastEdit())}`);
@@ -3505,10 +3505,10 @@ const CASES = {
       `sent: ${JSON.stringify(lastEdit())}`);
   },
   async the_overview_names_the_machine_s_runner_and_the_catalog_is_its() {
-    reviewAnswer = { ...MACHINE, runner: 'v6_machine_runner', runner_problem: 'runners a, b both claim /m in runs_machines_in' };
+    reviewAnswer = { ...MACHINE, runner: 'report_machine_runner', runner_problem: 'runners a, b both claim /m in runs_machines_in' };
     await boot('?machine=review');
     const shown = $('side-inspect').innerHTML;
-    check(/<dt>Runner<\/dt><dd[^>]*>v6_machine_runner<\/dd>/.test(shown), 'the runner is not shown');
+    check(/<dt>Runner<\/dt><dd[^>]*>report_machine_runner<\/dd>/.test(shown), 'the runner is not shown');
     check(shown.includes('both claim /m'), 'the runner problem is not shown');
     const asked = () => CALLS.filter(([, path]) => path.includes('/catalog')).map(([, path]) => path.split('/api')[1]);
     check(JSON.stringify(asked()) === JSON.stringify(['/catalog?machine_id=review']), `catalog asked: ${JSON.stringify(asked())}`);
@@ -3911,15 +3911,15 @@ const R15_CASES = {
     check($('mockOnly').checked && $('pauseAtStart').checked, 'review\'s test options are not back');
   },
 
-  async r15_writer_run_ids_keep_their_label_and_hash_and_the_list_is_not_sorted_here() {  // UI-3
-    const ids = ['9e0tq7uhrt_009_ch794_7ebb7fb0', '9e0tq7uhrt_009_ch795_3c2cac96'];
+  async r15_job_run_ids_keep_their_label_and_hash_and_the_list_is_not_sorted_here() {  // UI-3
+    const ids = ['9e0tq7uhrt_009_pt794_7ebb7fb0', '9e0tq7uhrt_009_pt795_3c2cac96'];
     runsAnswer = () => [...ids.map((id) => ({ ...RUNS[0], id, status: 'running' })), RUNS[0]];
     await boot('?machine=review&run=r1');
     const list = $('runList').innerHTML;
-    check(list.includes('…_009_ch794_7ebb7fb0') && list.includes(`title="${ids[1]}"`), list);
+    check(list.includes('…_009_pt794_7ebb7fb0') && list.includes(`title="${ids[1]}"`), list);
     check(!list.includes('data-pk-sort'), 'the server pages the list: it is not sorted here');
     const bar = $('debugBar').innerHTML;
-    check(bar.includes('…_009_ch795_3c2cac96</span>') && bar.includes('…_009_ch794_7ebb7fb0</span>'), bar);
+    check(bar.includes('…_009_pt795_3c2cac96</span>') && bar.includes('…_009_pt794_7ebb7fb0</span>'), bar);
   },
 
   async r15_fork_with_the_saved_machine_is_a_named_action() {  // UI-12
@@ -4275,16 +4275,16 @@ const UI4_CASES = {
     let listed = null;
     runsAnswer = (query) => {
       listed = query;
-      return [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'interrupted', tags: { book: '95' } }];
+      return [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'interrupted', tags: { project: '95' } }];
     };
     await boot('?machine=review');
     $('runScope').value = 'every';
-    $('runTags').value = 'book:95';
+    $('runTags').value = 'project:95';
     await $('runTags').fire('change', {});
     await settle();
     await release();
-    check(listed.get('machine_id') === null && listed.get('tags') === 'book:95', `the query: ${listed}`);
-    check($('runList').innerHTML.includes('<td class="pk-mono">other</td>') && $('runList').innerHTML.includes('book:95'), $('runList').innerHTML);
+    check(listed.get('machine_id') === null && listed.get('tags') === 'project:95', `the query: ${listed}`);
+    check($('runList').innerHTML.includes('<td class="pk-mono">other</td>') && $('runList').innerHTML.includes('project:95'), $('runList').innerHTML);
     let opened = null;
     serveOver((method, path) => (path.startsWith('/runs/x1?') ? (opened ||= path, { ...RUN, id: 'x1', machine_id: 'other' }) : undefined));
     await $('runList').fire('rowselect', { detail: { id: 'x1' } });
@@ -4310,10 +4310,10 @@ const UI4_CASES = {
   async ui4_a_slot_wait_and_the_cost_against_the_limit_are_shown() {  // FEAT-2, FEAT-6
     reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, yaml: { ...(MACHINE.graph.yaml || {}), limits: 'max_steps: 50\nmax_cost: 2\n' } } };
     runAnswer = { ...RUN, status: 'waiting', debug: { ...RUN.debug, paused: null }, spend: { cost: 1.9, activities: 3 },
-      view: { ...RUN.view, slot_waits: [{ semaphore: 'producers', sem_key: 'KAN-7', frame: '', since: '2026-10-15 01:00:00' }] } };
+      view: { ...RUN.view, slot_waits: [{ semaphore: 'producers', sem_key: 'TCK-7', frame: '', since: '2026-10-15 01:00:00' }] } };
     await boot('?machine=review&run=r1');
-    check($('debugBar').innerHTML.includes('waiting for a slot of <span class="pk-mono">producers [KAN-7]</span>'), $('debugBar').innerHTML);
-    check($('dbgFrames').innerHTML.includes('waits for a slot of semaphore <span class="pk-mono">producers [KAN-7]</span>'), $('dbgFrames').innerHTML);
+    check($('debugBar').innerHTML.includes('waiting for a slot of <span class="pk-mono">producers [TCK-7]</span>'), $('debugBar').innerHTML);
+    check($('dbgFrames').innerHTML.includes('waits for a slot of semaphore <span class="pk-mono">producers [TCK-7]</span>'), $('dbgFrames').innerHTML);
     check($('runResult').innerHTML.includes('<span class="pk-text--warn"') && $('runResult').innerHTML.includes('of $2 limit'), $('runResult').innerHTML);
   },
 
@@ -4331,12 +4331,12 @@ const P5_CASES = {
     const asked = [];
     runsAnswer = (query) => {
       asked.push(query);
-      return [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'interrupted', tags: { book: '95' } }];
+      return [{ ...RUNS[0], id: 'x1', machine_id: 'other', status: 'interrupted', tags: { project: '95' } }];
     };
     await boot('');
     check(asked.length === 1 && asked[0].get('machine_id') === null && !asked[0].has('status'), `the query: ${asked}`);
     const list = $('everyRunList').innerHTML;
-    check(list.includes('<th>Machine</th>') && list.includes('<td class="pk-mono">other</td>') && list.includes('book:95'), list);
+    check(list.includes('<th>Machine</th>') && list.includes('<td class="pk-mono">other</td>') && list.includes('project:95'), list);
     $('everyRunStatus').value = 'interrupted';
     await $('everyRunStatus').fire('change', {});
     await settle();
@@ -4359,17 +4359,17 @@ const P5_CASES = {
     await boot('');
     const asked = () => CALLS.filter(([, path]) => path.includes('/runs?'))
       .map(([, path]) => new URLSearchParams(path.split('?')[1]));
-    $('everyRunTags').value = 'book:95';
+    $('everyRunTags').value = 'project:95';
     await $('everyRunTags').fire('change', {});
     await settle();
     await release();
-    check(asked().at(-1).get('tags') === 'book:95' && asked().at(-1).get('machine_id') === null, `the tags query: ${asked().at(-1)}`);
+    check(asked().at(-1).get('tags') === 'project:95' && asked().at(-1).get('machine_id') === null, `the tags query: ${asked().at(-1)}`);
     check(!$('everyOlderRuns').hidden, 'a full page offers no older runs');
     HOLD = (method, path) => path.includes('/runs?') && path.includes('before=');
     $('everyOlderRuns').fire('click', {});  // held: not awaited
     await settle();
     const out = asked().length;
-    check(asked().at(-1).get('before') === 'n49' && asked().at(-1).get('tags') === 'book:95', `older: ${asked().at(-1)}`);
+    check(asked().at(-1).get('before') === 'n49' && asked().at(-1).get('tags') === 'project:95', `older: ${asked().at(-1)}`);
     DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
     await settle();
     check(asked().length === out && !ABORTED.some((path) => path.includes('/runs?')), `a tick while the older page was out: ${ABORTED}`);
@@ -4417,7 +4417,7 @@ const FINAL_CASES = {
     runsAnswer = (query) => (query.get('tags') || query.get('machine_id') === 'other' ? [] : [...RUNS]);
     await boot('?machine=review');
     check($('startBox').open === false, 'the start form is not folded with runs listed');
-    $('runTags').value = 'book:95';
+    $('runTags').value = 'project:95';
     await $('runTags').fire('change', {});
     await settle();
     await clickMachine('hooks');

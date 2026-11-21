@@ -75,7 +75,7 @@ vars_from: stategraph_example_agent        # that agent's configured template_va
 vars:                                      # ... and these, for every agent this machine spawns
   tone: "{{ params.tone }}"
   json_namespace: "{{ resources.store }}"  # a prompt or tool rule that renders {{ json_namespace }} gets this
-                                           # run's store (v6 agents do; the example agent has no tools)
+                                           # run's store (agents with a JSON tool do; the example agent has none)
 
 limits:
   max_steps: 200                           # dispatches per frame

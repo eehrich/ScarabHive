@@ -660,7 +660,7 @@ def _check_signature(fc: _FileContext, key: str, reference: str, args: Any, path
         return  # not a plain def the source shows: the run decides
     keys = list(args) if key == "call" and isinstance(args, dict) else []
     for problem, arg in call_problems(signature, key, keys):
-        # a decorated def's wrapper may take an arg its own parameters do not name (a flow's _additive)
+        # a decorated def's wrapper may take an arg its own parameters do not name (a decorator of a caller's)
         unsure = arg is not None and isinstance(signature, DecoratedSignature) and arg not in signature.parameters
         fc.problem("warning" if unsure else "error", "SG004",
                    f"{key}: {reference}{signature} -- {problem}" + (" (unless its decorator takes it)" if unsure else ""),

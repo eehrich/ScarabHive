@@ -54,7 +54,7 @@ tools:
         properties:
           machine_id: {type: string, description: "only runs of this machine"}
           status: {type: string, enum: ["running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled"], description: "only runs in this status"}
-          tags: {type: object, description: "only runs with all of these tags, e.g. {book: 95}"}
+          tags: {type: object, description: "only runs with all of these tags, e.g. {project: 95}"}
           limit: {type: integer, minimum: 1, maximum: 200, default: 20, description: "at most this many, newest first"}
         additionalProperties: false
 
@@ -118,7 +118,7 @@ tools:
           breakpoints: {type: array, items: {}, description: "state names, 'state@exit', or {state, at, condition}"}
           watchpoints: {type: array, items: {}, description: "Python expressions over the scope, or {expr, condition}"}
           run_key: {type: string, description: "the same request again: the run with this key instead of a second one -- attached to while it runs, resumed when interrupted, its outcome again once it ended (a transient failure: resumed where it failed)"}
-          tags: {type: object, description: "flat {name: text or number} that list_runs filters on, e.g. {book: 95}"}
+          tags: {type: object, description: "flat {name: text or number} that list_runs filters on, e.g. {project: 95}"}
           pause_at_start: {type: boolean, default: false, description: "hold the run at its first hook (then step or continue with control_run)"}
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
           wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits for an event (a timer it waits out); background: return at once"}

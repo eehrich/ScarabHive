@@ -338,7 +338,7 @@ def design(task):
     if not os.path.exists(MARK):
         open(MARK, "w").close()
         raise ActivityError("agent_failed", "provider hiccup")
-    return {"story_id": 812, "title": task}
+    return {"record_id": 812, "title": task}
 def note_end(reason):
     return reason
 """
@@ -350,7 +350,7 @@ async def test_a_known_session_id_does_not_hand_another_user_the_run(env, monkey
     monkeypatch.setattr(StateGraphServer, "_is_admin", staticmethod(lambda user_id: False))
     env.server.system_config = AgentSystemConfig(auth={"enabled": True})
     env.agent._session_tracker.set_session_metadata("alice_s", {"user_id": "alice"})
-    first = final_of(await env.ask("Nachtzug", request_id="r-alice", session_id="alice_s"))
+    first = final_of(await env.ask("Quarterly", request_id="r-alice", session_id="alice_s"))
     assert first["type"] == "final", first
     other = env.fresh_agent()
     other._session_tracker.set_session_metadata("alice_s", {"user_id": "bob"})
@@ -363,12 +363,12 @@ async def test_a_known_session_id_does_not_hand_another_user_the_run(env, monkey
 async def test_the_same_request_in_the_same_session_goes_on_after_a_transient_failure(env, tmp_path, monkeypatch):
     monkeypatch.setenv("SG_BACKLOG_MARK", str(tmp_path / "mark"))
     (tmp_path / "machines" / "m.py").write_text(FLAKY, encoding="utf-8")
-    first = final_of(await env.ask("Nachtzug", request_id="job-1", session_id="s1"))
+    first = final_of(await env.ask("Quarterly", request_id="job-1", session_id="s1"))
     assert first["type"] == "error" and "agent_failed" in first["message"], first
 
-    again = final_of(await env.ask("Nachtzug", request_id="job-1", session_id="s1"))
+    again = final_of(await env.ask("Quarterly", request_id="job-1", session_id="s1"))
 
-    assert (again["type"], again.get("story_id"), again["run_id"], len(env.runs())) == (
+    assert (again["type"], again.get("record_id"), again["run_id"], len(env.runs())) == (
         "final", 812, first["run_id"], 1), again
 
 
@@ -380,7 +380,7 @@ params: {task: {type: string, required: true}}
 resources:
   ns:
     open: {call: ns_open, args: {run: "{{ run.id }}"}}
-context: {prep: null, story: null}
+context: {prep: null, record: null}
 initial: prep
 states:
   prep:
@@ -392,8 +392,8 @@ states:
       as: part
       concurrency: 1
       each: {call: part, args: {name: "{{ part }}", ns: "{{ resources.ns }}"}}
-    transitions: [{target: done, effect: "ctx.story = {'story_id': 812, 'title': ctx.prep, 'parts': out}"}]
-  done: {type: final, output: "{{ ctx.story }}"}
+    transitions: [{target: done, effect: "ctx.record = {'record_id': 812, 'title': ctx.prep, 'parts': out}"}]
+  done: {type: final, output: "{{ ctx.record }}"}
 """
 
 STEPPED_PY = """\
@@ -444,7 +444,7 @@ async def test_a_transient_failure_goes_on_where_it_failed(env, tmp_path, monkey
 
     calls = log.read_text(encoding="utf-8").splitlines()
     ns = f"ns_{first['run_id']}"
-    assert (again["type"], again.get("story_id")) == ("final", 812), again
+    assert (again["type"], again.get("record_id")) == ("final", 812), again
     if case == "agent_failed":
         assert calls == ["open", "prep", f"a {ns}", f"b {ns}", f"b {ns}", f"c {ns}"], calls
         assert (again["run_id"], len(env.runs())) == (first["run_id"], 1)

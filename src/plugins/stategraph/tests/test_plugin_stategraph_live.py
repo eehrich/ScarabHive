@@ -1,7 +1,7 @@
 """A caller's live objects for call functions (``sg.live``) and ``service.run_to_end``.
 
-A Python caller that runs a machine as a step of its own work (the writer's
-chapter gate) hands it objects that cannot go through the journal -- its
+A Python caller that runs a machine as a step of its own work (a pipeline's
+quality gate) hands it objects that cannot go through the journal -- its
 pipeline instance. They reach call functions as ``sg.live``, never the journal,
 and a resume without them sees an empty mapping. ``run_to_end`` starts the run
 and waits for its end in this process; a cancelled caller terminates it.
@@ -325,7 +325,7 @@ async def test_run_to_end_on_an_interrupted_key_resumes_it_with_the_callers_live
     _machine(tmp_path, "waits", WAITS, WAITS_PY)
     second = None
     try:
-        started = await first.service.start_run("waits", params={}, run_key="chapter-1",
+        started = await first.service.start_run("waits", params={}, run_key="item-1",
                                                 live={"gate": asyncio.Event(), "counter": Counter()})
         run_id = started["run_id"]
         await until(lambda: run_id in first.service.runs.live, what="the run started")
@@ -336,7 +336,7 @@ async def test_run_to_end_on_an_interrupted_key_resumes_it_with_the_callers_live
         second = StateGraphServer("stategraph", AgentSystemConfig(), tool_config(tmp_path))
         gate, counter = asyncio.Event(), Counter()
         gate.set()
-        row = await second.service.run_to_end("waits", {}, run_key="chapter-1", live={"gate": gate, "counter": counter})
+        row = await second.service.run_to_end("waits", {}, run_key="item-1", live={"gate": gate, "counter": counter})
 
         assert row["id"] == run_id and row["status"] == "succeeded", row.get("error")
         assert row["output"] == 1 and counter.calls == 1

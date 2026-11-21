@@ -216,7 +216,7 @@ FIELDS_MACHINE = """\
 stategraph: 1
 id: fields
 title: Fields
-group: Writer/demo
+group: Reports/demo
 params:
   text: {type: string, required: true}
 context: {verdict: null}

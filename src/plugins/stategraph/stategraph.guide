@@ -227,7 +227,7 @@ the form, unfolded.
 
 @{h2}Watching a run
 
-Pick a run in the list (filter by status and by tags, @{tt}book:95,path:main@{utt}:
+Pick a run in the list (filter by status and by tags, @{tt}project:95,path:main@{utt}:
 only runs started with all of them; @{b}every machine@{ub} lists the runs of
 all machines, newest first, and one of another machine opens with its
 machine -- with no machine open the panel shows that list itself, with the
@@ -258,7 +258,7 @@ Fork... runs on with the machine as the run had it; @{b}Fork with saved
 machine...@{ub} asks the same and runs on with the machine as it is saved
 now: the way to try a fix from just before the failure. Run ids show their
 end -- the label and hash that tell the runs of one job apart
-(@{tt}…_009_ch795_3c2cac96@{utt}); the whole id is in their tooltip. A run waiting for an event has a button per
+(@{tt}…_009_pt795_3c2cac96@{utt}); the whole id is in their tooltip. A run waiting for an event has a button per
 event it takes; one waiting for a semaphore slot says which ("waiting for a
 slot of producers"). "in another process" marks a run another process runs --
 agent-cli, agent-run: you see its journal; its events, Pause, Continue,
@@ -672,7 +672,7 @@ by an agent's tool call sits below that agent's session.
 
 With auth on, a run belongs to the user who started it: others get it
 answered as missing, admins see every run, and a run of nobody (a schedule
-without a user, the writer's runs) is an admin's -- and the process's own
+without a user, a pipeline's runs) is an admin's -- and the process's own
 code's, which calls the service without a user (@{tt}run_to_end@{utt}, the
 schedules). The same holds for a @{tt}run_key@{utt}: one that names a run
 the caller may not see is refused (409). A reader who may not save and run
@@ -800,7 +800,7 @@ breakpoints | "state", "state\@exit", or {state, at, condition, machine}
 watchpoints | Python expressions, or {expr, condition, machine}
 pause_at_start | true: hold the run at its first hook
 run_key | the same request again (below)
-tags | a flat object of text or number values ({book: 95}) that list_runs filters on
+tags | a flat object of text or number values ({project: 95}) that list_runs filters on
 wait | finish (default): return when the run ends, pauses or waits for an event; background: return at once
 max_wait | 0 to 3600 seconds; default the server's default_max_wait (600)
 full_output | true: the output in full; else texts over 20,000 characters are cut
@@ -882,7 +882,7 @@ The newest runs the caller may see, newest first.
 Parameter | Meaning
 machine_id | only runs of this machine
 status | only runs in this status
-tags | only runs with all of these tags ({book: 95}; a number matches its text too)
+tags | only runs with all of these tags ({project: 95}; a number matches its text too)
 limit | 1 to 200, default 20
 @{body}
 

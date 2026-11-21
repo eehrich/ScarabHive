@@ -1,4 +1,4 @@
-"""Second pre-commit review, consumers lens: what the diff's contracts do to their callers (tracker, scarab, writer),
+"""Second pre-commit review, consumers lens: what the diff's contracts do to their callers (the plugins that call it),
 through the real StateGraphServer and RunStore under tmp_path. Each test names the finding it holds."""
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ states:
   done: {type: final}
 """
 
-# a hand-off, as tracker's intake hands a ticket to its workflow: started from the call, not a step of it
+# a hand-off, as a ticket workflow's intake hands a ticket to its workflow: started from the call, not a step of it
 PARENT_PY = """\
 import asyncio
 import os

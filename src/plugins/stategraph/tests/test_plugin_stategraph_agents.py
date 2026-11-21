@@ -222,7 +222,7 @@ async def test_parallel_agents_each_see_exactly_their_own_vars(harness, tmp_path
         a:
           do:
             parallel:
-              one: {agent: writer, task: one, vars: {phase: synopsis}}
+              one: {agent: writer, task: one, vars: {phase: brief}}
               two: {agent: writer, task: two, vars: {phase: outline, extra: 1}}
           transitions: [{target: done}]
         done: {type: final}
@@ -230,7 +230,7 @@ async def test_parallel_agents_each_see_exactly_their_own_vars(harness, tmp_path
 
     assert row["status"] == "succeeded", row["error"]
     seen = {call["task"]: call["vars"] for call in host.calls()}
-    assert seen == {"one": {"genre": "thriller", "phase": "synopsis"},
+    assert seen == {"one": {"genre": "thriller", "phase": "brief"},
                     "two": {"genre": "thriller", "phase": "outline", "extra": 1}}
 
 
@@ -426,11 +426,11 @@ async def test_a_finally_activity_runs_its_agent_after_the_run_was_cancelled(tmp
 async def test_what_is_not_a_registered_agent_is_a_config_error(tmp_path, case):
     host = AgentHost(tmp_path / "s")
     if case == "not an agent":
-        host.agents["writer_json"] = SimpleNamespace(name="writer_json")  # a tool server under that name
+        host.agents["notes_json"] = SimpleNamespace(name="notes_json")  # a tool server under that name
     backend = ScarabHiveBackend(runner=host, system_config=None, session_id="sg_r1", user_id="ann")
 
     with pytest.raises(ActivityError) as refused:
-        await backend.agent_create(activity(), agent="writer_json", task="t", advanced=False, vars={})
+        await backend.agent_create(activity(), agent="notes_json", task="t", advanced=False, vars={})
     assert refused.value.type == "config"
     assert "not configured, not enabled, or not an agent" in str(refused.value)
 
@@ -615,7 +615,7 @@ async def test_a_calls_tool_bindings_hold_its_runs_with_the_values_rendered(harn
     _, row = await run(harness, host, machine("""\
         a:
           do: {agent: writer, task: rate it, schema: {type: object},
-               tool_bindings: {"store/*": {namespace: "story_{{ params.n }}"}}}
+               tool_bindings: {"store/*": {namespace: "record_{{ params.n }}"}}}
           transitions: [{target: b}]
         b:
           do: {agent: writer, task: plain}
@@ -623,7 +623,7 @@ async def test_a_calls_tool_bindings_hold_its_runs_with_the_values_rendered(harn
         done: {type: final}
         """, head="params: {n: {type: string, default: '7'}}\n"))
     assert row["status"] == "succeeded", row["error"]
-    bound = {"store/*": {"namespace": "story_7"}}
+    bound = {"store/*": {"namespace": "record_7"}}
     assert [call["tool_bindings"] for call in writer.calls] == [bound, bound, None]
 
     host = AgentHost(tmp_path / "other", FakeAgent("writer"))
@@ -767,10 +767,10 @@ CATALOG_SERVERS = {
     "stategraph": {"type": "stategraph", "enabled": True},
     "stategraph_runner": {"type": "basic_agent", "enabled": True, "description": "hosts runs"},
     "writer": {"type": "basic_agent", "enabled": True, "description": "writes"},
-    "v6_critic": {"type": "basic_agent", "enabled": True, "description": "criticises"},
+    "v2_critic": {"type": "basic_agent", "enabled": True, "description": "criticises"},
     "author": {"type": "basic_agent", "enabled": True,
                "agent_config": {"tools": {"allowed": ["stategraph/stategraph_save_machine"]}}},
-    "story_machine": {"type": "stategraph_machine", "enabled": True, "machine": "m"},
+    "record_machine": {"type": "stategraph_machine", "enabled": True, "machine": "m"},
     "notes": {"type": "json_store", "enabled": True},
     "lazy_one": {"type": "basic_agent", "enabled": True},
     "lazy_built": {"type": "basic_agent", "enabled": True},
@@ -785,8 +785,8 @@ class CatalogRegistry:
 
         self.bound = bound
         agent = Agent.__new__(Agent)  # an Agent for isinstance; nothing of it runs here
-        self.servers = {"stategraph_runner": agent, "writer": agent, "v6_critic": agent, "author": agent,
-                        "story_machine": agent, "notes": object()}
+        self.servers = {"stategraph_runner": agent, "writer": agent, "v2_critic": agent, "author": agent,
+                        "record_machine": agent, "notes": object()}
 
     def list(self) -> list[str]:
         return list(self.servers)
@@ -820,15 +820,15 @@ async def test_the_catalog_lists_the_agents_a_machine_may_run(tmp_path, bound):
     server.use_registry(CatalogRegistry(bound))
     try:
         every = {agent["name"]: agent["description"] for agent in server._catalog()["agents"]}
-        narrowed = [agent["name"] for agent in server._catalog("v6_*")["agents"]]
+        narrowed = [agent["name"] for agent in server._catalog("v2_*")["agents"]]
     finally:
         await server.stop_plugin()
 
-    expected = {"writer": "writes", "v6_critic": "criticises"}
+    expected = {"writer": "writes", "v2_critic": "criticises"}
     if bound:
         expected["lazy_built"] = ""  # from its declaration; lazy_one's build failed: not listed
     assert every == expected, "not the runner, a facade, an agent that controls machines or a tool server"
-    assert narrowed == ["v6_critic"]
+    assert narrowed == ["v2_critic"]
 
 
 @pytest.mark.parametrize("block", ['agent: {category: "Video"}\n', ""])

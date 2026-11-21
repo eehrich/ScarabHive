@@ -541,7 +541,7 @@ async def test_called_as_a_tool_a_wait_asks_the_person_who_watches_the_caller(tm
         called = asyncio.ensure_future(env.agent.call(env.agent.name, {"task": "the draft", "request_id": "c1"}))
         await until(lambda: env.server.wait_questions.pending(), what="the question")
         question = env.server.wait_questions.pending()[0]
-        assert question.request_id.startswith("c1_") and question.agent_name == "story_machine", question
+        assert question.request_id.startswith("c1_") and question.agent_name == "record_machine", question
 
         answer_question(question.id, ["approve"], "", answered_by="u")
 

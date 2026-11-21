@@ -1,7 +1,7 @@
 """Submachines two levels deep, each in its own file: a caller's live objects (``sg.live``) reach the deepest call,
 and a run stopped inside it resumes there from its journal -- the steps before it are not run again.
 
-The writer's book end is built so (a parent that only sequences, a file per phase): these are the guarantees it
+A pipeline can be built so (a parent that only sequences, a file per phase): these are the guarantees it
 stands on.
 """
 from __future__ import annotations
@@ -136,7 +136,7 @@ async def test_a_restart_inside_a_nested_submachine_resumes_it_there(tmp_path):
 
 
 async def test_a_non_idempotent_call_cut_off_in_a_nested_submachine_is_not_started_again(tmp_path):
-    """A call that writes (the writer's fix) and was cut off is left half done: a resume must not run it twice.
+    """A call that writes (a pipeline's fix) and was cut off is left half done: a resume must not run it twice.
     Inside a submachine two levels down it fails as ``interrupted`` like at the top, and the steps before it stay
     replayed."""
     files = {**FILES, "leaf.yaml": LEAF.replace("do: {call: wait, args: {}}",

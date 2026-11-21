@@ -136,10 +136,10 @@ async def test_a_paused_out_is_cut_and_said_once(server):
 
 async def test_get_run_names_the_run_and_leaves_bookkeeping_rows_out(server):
     started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "run_key": "k1",
-                                                                   "tags": {"book": 95}})
+                                                                   "tags": {"project": 95}})
     got, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
 
-    assert (got["machine_id"], got["run_key"], got["tags"]) == ("hello", "k1", {"book": 95}), got
+    assert (got["machine_id"], got["run_key"], got["tags"]) == ("hello", "k1", {"project": 95}), got
     assert got["created_at"] and got["finished_at"], got
     assert not [row for row in got["journal"] if row.get("status") == "step"], "step rows by default"
     traced, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "kinds": ["trace"]})
@@ -292,14 +292,14 @@ async def test_a_fork_of_an_ended_callback_run_takes_its_url(server):
 # ------------------------------------------------------------------ tags (FEAT-7)
 
 async def test_tags_find_runs_across_machines(server):
-    await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "tags": {"book": 95, "path": "main"}})
-    await run_tool(server, "stategraph_run_machine", {"machine_id": "fails", "tags": {"book": 95}})
-    await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "tags": {"book": 96}})
+    await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "tags": {"project": 95, "path": "main"}})
+    await run_tool(server, "stategraph_run_machine", {"machine_id": "fails", "tags": {"project": 95}})
+    await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "tags": {"project": 96}})
 
-    listed, _ = await run_tool(server, "stategraph_list_runs", {"tags": {"book": 95}})
+    listed, _ = await run_tool(server, "stategraph_list_runs", {"tags": {"project": 95}})
     assert sorted(run["machine_id"] for run in listed["runs"]) == ["fails", "hello"], listed
-    narrow, _ = await run_tool(server, "stategraph_list_runs", {"tags": {"book": "95", "path": "main"}})
-    assert [run["tags"] for run in narrow["runs"]] == [{"book": 95, "path": "main"}], narrow
+    narrow, _ = await run_tool(server, "stategraph_list_runs", {"tags": {"project": "95", "path": "main"}})
+    assert [run["tags"] for run in narrow["runs"]] == [{"project": 95, "path": "main"}], narrow
     refused, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "tags": {"a": [1]}})
     assert refused["error_type"] == "http_422", refused
 
@@ -362,7 +362,7 @@ stategraph: 1
 id: fileout
 initial: done
 states:
-  done: {type: final, output: {file: "reports/2026/book_95.md", traceback: "kept by the machine"}}
+  done: {type: final, output: {file: "reports/2026/project_95.md", traceback: "kept by the machine"}}
 """
 
 
@@ -374,7 +374,7 @@ async def test_a_reader_gets_the_machines_own_file_and_traceback_keys(server, mo
 
     got, _ = await run_tool(server, "stategraph_get_run", {"run_id": row["id"], "_user_id": "alice"})
 
-    assert got["output"] == {"file": "reports/2026/book_95.md", "traceback": "kept by the machine"}, got["output"]
+    assert got["output"] == {"file": "reports/2026/project_95.md", "traceback": "kept by the machine"}, got["output"]
 
 
 async def test_an_unchanged_file_the_tree_no_longer_imports_is_left_alone(server, tmp_path):

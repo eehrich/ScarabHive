@@ -120,7 +120,7 @@ states:
     do: {agent: w, task: first}
     transitions: [{target: t}]
   t:
-    do: {tool: story_create, args: {key: "{{ run.id }}"}}
+    do: {tool: record_create, args: {key: "{{ run.id }}"}}
     transitions:
       - target: done
       - trigger: error
@@ -147,7 +147,7 @@ async def test_in_flight_tool_is_not_started_again(harness):
 async def test_interrupted_error_data_is_the_rendered_inputs(harness):
     run_id, _ = await crash_in(harness, {"m.yaml": TOOL_MACHINE}, "t", {"a": "A1"})
     row = await resume(harness, run_id, FakeBackend({"t": {"id": 7}}))
-    assert row["output"]["data"] == {"tool": "story_create", "args": {"key": run_id}}, row["output"]
+    assert row["output"]["data"] == {"tool": "record_create", "args": {"key": run_id}}, row["output"]
 
 
 BRANCH = """\

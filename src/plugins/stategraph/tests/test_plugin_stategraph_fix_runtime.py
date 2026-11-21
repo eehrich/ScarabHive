@@ -83,7 +83,7 @@ from plugins.stategraph.server import StateGraphServer
 from plugins.stategraph.service import ServiceError
 from plugins.stategraph.tests.stategraph_testkit import (FASTAPI_PY314, AgentHost, FakeAgent, FakeBackend, Harness,
                                                          held, runnable, settle, tool_config, until, utc_at)
-from plugins.stategraph.tests.test_plugin_stategraph_facade import COMPANION, STORY, Env, final_of
+from plugins.stategraph.tests.test_plugin_stategraph_facade import COMPANION, RECORD, Env, final_of
 
 pytestmark = pytest.mark.filterwarnings(FASTAPI_PY314)
 
@@ -165,14 +165,14 @@ async def test_a_request_waiting_on_another_process_s_run_gets_its_answer_once_i
     """H2: B waits while process A runs the request; A's run succeeds -- B answers it instead of a second run."""
     store = env.server.run_store
     tree = env.server.machines.load("m")
-    store.create_run("rX_sgother", "m", tree.snapshot(), params={"task": "Nachtzug"}, mocks={},
-                     owner="otherhost:1:aa", lease_until=utc_at(120), status="running", run_key="story_machine:rX",
+    store.create_run("rX_sgother", "m", tree.snapshot(), params={"task": "Quarterly"}, mocks={},
+                     owner="otherhost:1:aa", lease_until=utc_at(120), status="running", run_key="record_machine:rX",
                      session_id="sg_rX_sgother")
-    task = asyncio.ensure_future(env.ask("Nachtzug", request_id="rX", session_id="sY"))
+    task = asyncio.ensure_future(env.ask("Quarterly", request_id="rX", session_id="sY"))
     await asyncio.sleep(1.0)
     assert not task.done(), "fixture: the request waits for the other process's run"
 
-    store.update_run("rX_sgother", status="succeeded", output={"story_id": 1, "title": "Nachtzug"},
+    store.update_run("rX_sgother", status="succeeded", output={"record_id": 1, "title": "Quarterly"},
                      lease_until=utc_at(-1))
     answer = final_of(await asyncio.wait_for(task, 20))
 
@@ -300,7 +300,7 @@ async def test_a_resume_someone_else_triggers_runs_as_the_run_s_user(tmp_path):
     {"breakpoints": "design"},
     {"breakpoints": [{"state": "design", "enabled": "no"}]},
     {"watchpoints": [{"expr": 5}]},
-    {"watchpoints": [{"expr": "ctx.story", "machine": 3}]},
+    {"watchpoints": [{"expr": "ctx.record", "machine": 3}]},
 ], ids=["condition_bool", "a_string", "enabled_str", "expr_int", "machine_int"])
 async def test_malformed_points_are_refused_before_anything_runs(env, points):
     with pytest.raises(ServiceError) as refused:
@@ -337,10 +337,10 @@ async def test_evaluate_answers_any_value_as_json_data(env):
 
 
 async def test_a_watchpoint_on_a_module_does_not_end_the_run(env):
-    answer = final_of(await env.ask("Nachtzug"))  # fixture: the machine succeeds without the watchpoint
+    answer = final_of(await env.ask("Quarterly"))  # fixture: the machine succeeds without the watchpoint
     assert answer["type"] == "final"
 
-    run_id = (await env.server.service.start_run("m", params={"task": "Nachtzug"},
+    run_id = (await env.server.service.start_run("m", params={"task": "Quarterly"},
                                                  watchpoints=["__import__('json')"]))["run_id"]
     row = await settle(env.server.run_manager, run_id)
 
@@ -461,7 +461,7 @@ async def test_a_plugin_started_again_runs_machines_again(env):
     await env.server.stop_plugin()
     await env.server.start_plugin()
 
-    answer = final_of(await env.ask("Nachtzug"))
+    answer = final_of(await env.ask("Quarterly"))
 
     assert answer["type"] == "final", answer
 
@@ -578,7 +578,7 @@ async def test_a_fork_after_an_internal_transition_of_a_wait_gets_a_fresh_deadli
 async def test_a_user_sees_and_controls_only_their_own_runs(tmp_path, monkeypatch):
     from agent_system.config.models import AgentSystemConfig, AuthConfig
 
-    server = sg_server(tmp_path, machines={"m.yaml": STORY, "m.py": COMPANION}, allowed_users=["alice", "bob"],
+    server = sg_server(tmp_path, machines={"m.yaml": RECORD, "m.py": COMPANION}, allowed_users=["alice", "bob"],
                        system_config=AgentSystemConfig(auth=AuthConfig(enabled=True)))
     monkeypatch.setattr(server, "_is_admin", lambda user: user == "root")
     try:
@@ -615,9 +615,9 @@ async def test_a_run_runs_the_tree_it_validated(env, tmp_path, monkeypatch):
         return tree
 
     monkeypatch.setattr(machines, "load", load_then_save)
-    answer = final_of(await env.ask("Nachtzug"))
+    answer = final_of(await env.ask("Quarterly"))
 
-    assert json.loads(answer["summary"])["title"] == "Nachtzug", answer
+    assert json.loads(answer["summary"])["title"] == "Quarterly", answer
 
 
 # ------------------------------------------------------------------ control answers carry the asked history
@@ -701,21 +701,21 @@ states:
   a:
     do: {agent: writer, task: "{{ params.task }}"}
     transitions: [{target: done}]
-  done: {type: final, output: {story_id: 1}}
+  done: {type: final, output: {record_id: 1}}
 """
 
 
 async def test_a_machine_agent_s_instances_sit_one_level_below_its_session(env, tmp_path, monkeypatch):
-    """The v4 path: a SAM made the facade's session; the machine's agents are the next level of that tree."""
+    """A pipeline's path: a SAM made the facade's session; the machine's agents are the next level of that tree."""
     host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
     monkeypatch.setattr(env.server, "resolve_runner", lambda name=None: host)
     (tmp_path / "machines" / "m.yaml").write_text(FACADE_NESTED, encoding="utf-8")
-    session = await host.sessions.create_session(user_id="ann", session_id="sub_story_1", agent_name="story_machine")
+    session = await host.sessions.create_session(user_id="ann", session_id="sub_record_1", agent_name="record_machine")
     session["depth"], session["depth_budget"] = 2, 3
     await host.sessions.save_session(session)
-    env.agent._session_tracker.set_session_metadata("sub_story_1", {"user_id": "ann"})
+    env.agent._session_tracker.set_session_metadata("sub_record_1", {"user_id": "ann"})
 
-    answer = final_of(await env.ask("Nachtzug", session_id="sub_story_1"))
+    answer = final_of(await env.ask("Quarterly", session_id="sub_record_1"))
 
     assert answer["type"] == "final", answer
     [call] = host.calls()

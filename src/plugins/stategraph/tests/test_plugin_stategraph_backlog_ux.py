@@ -51,8 +51,8 @@ def test_the_catalog_route_offers_agents_tools_and_decision_profiles():
     assert answer.status_code == 200 and answer.json() == {
         "agents": [{"name": "scene_writer", "description": "Writes"}], "profiles": ["fast"],
         "tools": [{"name": "store_put", "description": "Store a value"}]}, answer.text
-    web(server).get("/plugins/stategraph/api/catalog?machine_id=v6_story")
-    assert asked == [None, "v6_story"], "the open machine's runner names the tools"
+    web(server).get("/plugins/stategraph/api/catalog?machine_id=report_flow")
+    assert asked == [None, "report_flow"], "the open machine's runner names the tools"
 
 
 # ------------------------------------------------------------------ U5: runs page by page, by status
@@ -65,7 +65,8 @@ def test_the_runs_route_passes_the_status_and_the_page_it_continues():
     web(server).get("/plugins/stategraph/api/runs?machine_id=m&nested=true")
 
     assert service.calls[-2] == ("list_runs", (), {"machine_id": "m", "limit": 20, "status": "failed",
-                                                   "before": "r7", "nested": False})
+                                                   "before": "r7", "nested": False, "session": None,
+                                                   "request": None})
     assert service.calls[-1][2]["nested"] is True, "a submachine's list: the runs it ran in too"
 
 

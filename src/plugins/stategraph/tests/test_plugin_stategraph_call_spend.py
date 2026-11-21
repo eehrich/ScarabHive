@@ -1,6 +1,6 @@
 """What the LLM calls inside a call activity cost: counted into the activity, through the real hook dispatch.
 
-The writer's book end runs its phases as call functions over the v4 pipeline: their LLM calls reach no run's
+A pipeline can run its phases as call functions over its own Python code: their LLM calls reach no run's
 events, so without this a run's spend -- and the panel's cost per state -- would leave out everything they cost.
 """
 from __future__ import annotations
@@ -149,7 +149,7 @@ async def test_a_second_stategraph_instance_does_not_count_a_call_again(hooked, 
 
 
 def test_a_read_only_store_reads_the_spend_and_writes_nothing(tmp_path):
-    # a report on a server's runs.db (a report): it must never migrate, write or create the file
+    # a report on a server's runs.db (a caller's report): it must never migrate, write or create the file
     import sqlite3
 
     from plugins.stategraph.engine.journal import RunStore

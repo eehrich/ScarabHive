@@ -5,7 +5,7 @@ called as another agent's tool -- has its wait put to the person watching that c
 client draws: the events the run takes now as choices, the data to send along as text. The answer sends the
 event at once (``WaitBroker.take``), so a refusal of the run -- data of the wrong type, the run gone -- is
 said to whoever answered, and they can answer again. An event sent elsewhere meanwhile -- the panel, a callback
-URL, a tool -- moves the run on, and the question ends. Nobody watches (agent-run, a writer job, a schedule):
+URL, a tool -- moves the run on, and the question ends. Nobody watches (agent-run, a job queue, a schedule):
 nothing is asked, and the run waits as before.
 """
 

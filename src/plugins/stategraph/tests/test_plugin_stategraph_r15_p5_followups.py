@@ -80,21 +80,21 @@ def working(store, run_id: str):
 async def test_feat2_a_keyed_semaphore_counts_its_capacity_per_key(harness):
     manager = keyed(harness.manager())
     gate = asyncio.Event()
-    first = await manager.start(runnable({"m.yaml": KEYED}), params={"ticket": "KAN-1"},
+    first = await manager.start(runnable({"m.yaml": KEYED}), params={"ticket": "TCK-1"},
                                 backend=FakeBackend({"work": held(gate)}))
-    await until(working(harness.store, first), what="KAN-1 holds the only slot of its key")
+    await until(working(harness.store, first), what="TCK-1 holds the only slot of its key")
 
-    other = await manager.start(runnable({"m.yaml": KEYED}), params={"ticket": "KAN-2"},
+    other = await manager.start(runnable({"m.yaml": KEYED}), params={"ticket": "TCK-2"},
                                 backend=FakeBackend({"work": "done"}))
     row = await settle(manager, other)  # another ticket: a slot of its own key
     assert row["status"] == "succeeded" and row["output"] == 0, row["error"]
 
-    same = await manager.start(runnable({"m.yaml": KEYED}), params={"ticket": "KAN-1"},
+    same = await manager.start(runnable({"m.yaml": KEYED}), params={"ticket": "TCK-1"},
                                backend=FakeBackend({"work": "done"}))
-    await until(lambda: manager.live[same].ctx.status == "waiting", what="a second run of KAN-1 waits")
+    await until(lambda: manager.live[same].ctx.status == "waiting", what="a second run of TCK-1 waits")
     waits = harness.store.get_run(same)["view"]["slot_waits"]
-    assert [(w["semaphore"], w.get("sem_key")) for w in waits] == [("t", "KAN-1")], waits
-    assert [(h["run_id"], h["sem_key"]) for h in harness.store.semaphore_holders("t")] == [(first, "KAN-1")]
+    assert [(w["semaphore"], w.get("sem_key")) for w in waits] == [("t", "TCK-1")], waits
+    assert [(h["run_id"], h["sem_key"]) for h in harness.store.semaphore_holders("t")] == [(first, "TCK-1")]
 
     gate.set()
     assert (await settle(manager, first))["status"] == "succeeded"
@@ -118,29 +118,29 @@ async def test_feat2_a_keyed_release_gives_back_only_that_keys_slot(harness):
 
 async def test_feat2_a_resumed_keyed_holder_waits_for_its_keys_slot_another_run_took(harness):
     crashed = keyed(harness.manager())
-    holder = await crashed.start(runnable({"m.yaml": KEYED}), params={"ticket": "KAN-1"},
+    holder = await crashed.start(runnable({"m.yaml": KEYED}), params={"ticket": "TCK-1"},
                                  backend=FakeBackend({"work": held(asyncio.Event())}))
     await until(working(harness.store, holder), what="the holder works with its slot")
     await crashed.shutdown()
 
-    other = keyed(harness.manager(), hold=0)  # its hold has run out: another run of KAN-1 takes the slot
+    other = keyed(harness.manager(), hold=0)  # its hold has run out: another run of TCK-1 takes the slot
     gate = asyncio.Event()
-    taker = await other.start(runnable({"m.yaml": KEYED}), params={"ticket": "KAN-1"},
+    taker = await other.start(runnable({"m.yaml": KEYED}), params={"ticket": "TCK-1"},
                               backend=FakeBackend({"work": held(gate)}))
-    await until(working(harness.store, taker), timeout=3, what="the other run takes KAN-1's slot")
+    await until(working(harness.store, taker), timeout=3, what="the other run takes TCK-1's slot")
 
     back = keyed(harness.manager(), hold=0)
     await back.resume(holder, backend=FakeBackend({"work": "done"}))
     await until(lambda: back.live[holder].ctx.status == "waiting", what="the resumed holder waits for its slot")
     waits = harness.store.get_run(holder)["view"]["slot_waits"]
-    assert [(w["semaphore"], w.get("sem_key"), w["slot"]) for w in waits] == [("t", "KAN-1", 0)], waits
+    assert [(w["semaphore"], w.get("sem_key"), w["slot"]) for w in waits] == [("t", "TCK-1", 0)], waits
     gate.set()
 
     assert (await settle(other, taker))["status"] == "succeeded"
     row = await settle(back, holder)
     assert row["status"] == "succeeded" and row["output"] == 0, row["error"]
     slots = [r["data"] for r in harness.store.rows(holder) if r["kind"] == "lifecycle" and r["status"] == "slots"]
-    assert [[(h["name"], h.get("sem_key")) for h in r["held"]] for r in slots] == [[("t", "KAN-1")]], slots
+    assert [[(h["name"], h.get("sem_key")) for h in r["held"]] for r in slots] == [[("t", "TCK-1")]], slots
 
 
 def test_feat2_a_holders_table_from_before_the_key_gets_it_when_opened(tmp_path):
@@ -158,13 +158,13 @@ def test_feat2_a_holders_table_from_before_the_key_gets_it_when_opened(tmp_path)
     try:
         before = store.semaphore_holders("t")
         store.create_run("r2", "m", {}, owner="o", lease_until=utc_at(60))
-        slot = store.acquire_slot("t", 1, "r2", "s0", "", cutoff=utc_at(-300), sem_key="KAN-1")
+        slot = store.acquire_slot("t", 1, "r2", "s0", "", cutoff=utc_at(-300), sem_key="TCK-1")
         after = store.semaphore_holders("t")
     finally:
         store.close()
     assert [(h["run_id"], h["sem_key"]) for h in before] == [("r", "")], before
     assert slot == 0  # (the row of the run that is gone held nothing: dropped by the acquire)
-    assert [(h["run_id"], h["sem_key"]) for h in after] == [("r2", "KAN-1")], after
+    assert [(h["run_id"], h["sem_key"]) for h in after] == [("r2", "TCK-1")], after
 
 
 # ------------------------------------------------------------------ FEAT-1: a parent's pause, continue and end
@@ -335,10 +335,10 @@ async def test_feat1_a_child_resumed_by_key_under_another_parent_survives_the_fi
     # a restart left a child of the first parent interrupted; its key is what its caller resumes it by
     server.run_store.create_run("kept", "child", server.run_store.get_run(first_child)["definition"], params={},
                                 mocks={}, owner="gone:1:x", lease_until=utc_at(-1), status="interrupted",
-                                run_key="chapter-7")
+                                run_key="item-7")
     server.run_store.update_run("kept", caller_run=first, caller_request=f"{first}_009")
 
-    second = (await server.service.start_run("parent", live={"service": server.service, "key": "chapter-7"}))["run_id"]
+    second = (await server.service.start_run("parent", live={"service": server.service, "key": "item-7"}))["run_id"]
     await until(lambda: "kept" in server.run_manager.live, what="the second parent resumed it")
     assert server.run_store.get_run("kept")["caller_run"] == second
 

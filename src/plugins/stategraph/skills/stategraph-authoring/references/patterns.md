@@ -9,7 +9,7 @@ are the same patterns, runnable.
 
 Contents: 1 Review loop with a decision model · 2 Retry with feedback to the same instance ·
 3 Tool error → repair state · 4 Fan-out and join · 5 Map over data · 6 Human
-approval · 7 Submachine reuse · 8 Shared error handling · 9 The v6 ritual ·
+approval · 7 Submachine reuse · 8 Shared error handling · 9 The step ritual ·
 10 Small ones: initial router, counter loop, reading the outside
 
 ---
@@ -517,15 +517,15 @@ again (e.g. from a retry state) resets the visit counts of everything inside.
 
 ---
 
-## 9. One step, called many times: the v6 ritual
+## 9. One step, called many times: the step ritual
 
-The writer v6 story design repeats one ritual for every step: a panel of agents works, its
-delta is merged into the story document, keys are dropped, the step is recorded. As a machine
-it is one submachine called once per step with parameters: `v6_ritual.yaml`, called by
-`v6_story.yaml` (both in a plugin package outside this repository). Its moves:
+A multi-agent pipeline that builds one shared document step by step repeats one ritual for
+every step: a panel of agents works, its delta is merged into the shared document, keys are
+dropped, the step is recorded. As a machine it is one submachine called once per step with
+parameters (say `step_ritual.yaml`), called by the pipeline's main machine. Its moves:
 
-1. **Template vars per call.** `vars: "{{ {**params.vars, 'phase': params.phase, 'aufgabe':
-   params.aufgabe} }}"` -- the v6 prompts branch on these names. The merge order (§11 of
+1. **Template vars per call.** `vars: "{{ {**params.vars, 'phase': params.phase, 'focus':
+   params.focus} }}"` -- the panel's prompts branch on these names. The merge order (§11 of
    format.md) puts a submachine's own vars over its caller's, so every call sets its own
    `phase`.
 2. **A marker line, parsed.** The panel ends its answer with one line such as
@@ -534,8 +534,8 @@ it is one submachine called once per step with parameters: `v6_ritual.yaml`, cal
    instance as feedback, `parse_retries` times.
 3. **The store's error goes to a new agent.** The merge's error transition (guard
    `error.type in ("tool_failed", "issues_failed")`) goes back to the initial choice with the
-   error text in `ctx`, and a fresh panel gets it in its task: in v6 a panel that closed its
-   forum channel cannot act again, so no `continue`. The bound is `max_visits: 3` on the panel
+   error text in `ctx`, and a fresh panel gets it in its task: a panel that closed its
+   discussion channel cannot act again, so no `continue`. The bound is `max_visits: 3` on the panel
    states (the first try and two store errors). The third store error enters a panel a fourth
    time and raises `loop_limit` while an error transition runs, which ends the ritual's frame
    (design §3.5); the caller's error transition around the ritual call takes it. Inside one
@@ -547,11 +547,11 @@ it is one submachine called once per step with parameters: `v6_ritual.yaml`, cal
 5. **A given result skips the agent.** An initial choice routes straight to the merge when
    the caller passes the marker itself.
 
-The caller runs it per step, `do: {machine: ritual, params: {phase: synopsis, ...}}`, each call
+The caller runs it per step, `do: {machine: ritual, params: {phase: outline, ...}}`, each call
 with its own error transition.
 
-Secrets a writer tool needs (`write_key`) come from the plugin's `inject_params`,
-never from the machine. A step that creates something (a story row) is not
+Secrets a store tool needs (`write_key`) come from the plugin's `inject_params`,
+never from the machine. A step that creates something (a database row) is not
 idempotent: give it an error path for `interrupted` that looks the object up by
 `run.origin` before creating it again. `run.origin` is the id of the first run of a
 fork chain, the same in a run and all its forks; `run.id` differs in a fork (see

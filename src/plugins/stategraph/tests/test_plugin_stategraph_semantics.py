@@ -750,7 +750,7 @@ async def test_map_with_concurrency_one_runs_strictly_in_order(harness):
 
 async def test_a_fail_fast_map_begins_no_item_after_one_failed(harness):
     # with concurrency 1 the failed item's slot frees before the join sees the failure: the next one must not begin
-    # (a drafting machine: it would set its chapter in progress before the cancel came)
+    # (a pipeline's draft step: it would set its part in progress before the cancel came)
     log: list[str] = []
 
     async def answer(call):

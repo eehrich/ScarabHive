@@ -86,7 +86,7 @@ export function shorten(text, max) {
 }
 
 /** A run id short enough for a list or the bar, cut where the runs of one job differ least: its leading segments go
- * (a writer job's request id, which every run of a book shares), so its label and hash stay -- "…_009_ch795_3c2cac96";
+ * (a job's request id, which all its runs share), so its label and hash stay -- "…_009_pt795_3c2cac96";
  * an id still too long loses its middle. The whole id belongs in the title. */
 export function runLabel(id, max = 24) {
   let label = String(id ?? '');

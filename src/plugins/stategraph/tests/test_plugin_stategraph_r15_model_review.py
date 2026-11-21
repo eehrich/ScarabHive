@@ -518,7 +518,7 @@ def test_feat5_a_call_that_fits_is_clean(activity):
 
 
 def test_feat5_a_decorated_function_may_take_more_than_its_def_names():
-    # a flow's _additive wrapper takes the args of a newer machine: a warning, not a refusal
+    # a caller's decorator wrapper takes the args of a newer machine: a warning, not a refusal
     tree = validate(machine("""\
         a:
           do: {call: tolerant, args: {text: x, argument_of_tomorrow: 1}}

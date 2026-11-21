@@ -485,7 +485,7 @@ def test_the_terms_keep_a_resume_the_workflow_sets_itself():
 
 
 async def test_a_run_without_the_workflow_column_gets_no_end_hook(server, monkeypatch):
-    """The writer's machines, the facade's runs: their backend is built as before."""
+    """A pipeline's machines, the facade's runs: their backend is built as before."""
     import plugins.stategraph.service as service_module
 
     built = []

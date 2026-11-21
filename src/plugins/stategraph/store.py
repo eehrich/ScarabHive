@@ -332,7 +332,7 @@ def _write_all(files: dict[str, tuple[Path, str]]) -> None:
             staged[current] = _stage(path, text.encode("utf-8"))
         for current, (path, _) in files.items():
             old = path.read_bytes() if path.exists() else None
-            os.replace(staged[current], path)  # no copystat: the new mtime must show (writer invariants on .envrc)
+            os.replace(staged[current], path)  # no copystat: the new mtime must show (watchers key on it)
             replaced.append((current, path, old))
     except OSError as exc:
         stuck = [name for name, path, old in reversed(replaced) if not _put_back(path, old)]

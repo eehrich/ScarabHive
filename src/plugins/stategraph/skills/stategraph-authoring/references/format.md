@@ -491,7 +491,7 @@ the agent's instance. Criteria that a template renders into the wrong shape rais
       by: stategraph_example_agent                     # an agent judges instead of a decision model
       question: Which ending fits this story?
       criteria: {open: leaves the question open, closed: resolves it, twist: turns it around}
-      input: "{{ ctx.story }}"
+      input: "{{ ctx.record }}"
 ```
 
 ```yaml
@@ -539,17 +539,17 @@ the agent's instance. Criteria that a template renders into the wrong shape rais
   tags:
     do:
       decide: questions
-      input: "{{ ctx.synopsis }}"
+      input: "{{ ctx.summary }}"
       questions:
-        romance: {type: noul, question: Is romance a main thread of this story?}
+        pricing: {type: noul, question: Is pricing a main topic of this text?}
         audience:
           type: choice
           question: Who is the main audience?
-          criteria: {children: under 12, young_adult: 12 to 17, adult: 18 and older}
+          criteria: {beginners: new to the field, practitioners: use it daily, experts: build it}
     transitions:
       - target: done
         effect: |
-          ctx.romance = out["romance"]["value"] >= 0.5
+          ctx.pricing = out["pricing"]["value"] >= 0.5
           ctx.audience = out["audience"]["value"]
 ```
 
@@ -1065,7 +1065,7 @@ shared prompt blocks). A machine sets them declaratively:
 vars:                                   # for every agent this machine spawns
   phase: "{{ params.phase }}"
   genre: thriller
-vars_from: v6_story_coordinator         # that agent's configured template_vars
+vars_from: report_coordinator           # that agent's configured template_vars
 states:
   write:
     do:
@@ -1145,7 +1145,7 @@ known, the line.
 ## 14. Multi-call steps, cleanup, external state
 
 **`sg.tool()` in a call.** An `async` companion function whose first parameter is `sg` may
-call tools: `await sg.tool("v6_story_json_manage_json", {"operation": "read", ...})`. A sync
+call tools: `await sg.tool("report_json_manage_json", {"operation": "read", ...})`. A sync
 function runs in a worker thread: it can only return `sg.tool(...)`, not run it (§5 `call`)
 -- comparing or reading what it gives raises, and one it calls without returning fails
 the call.
@@ -1209,7 +1209,7 @@ resources:
   store:
     open:  {call: namespace_for, args: {run_id: "{{ run.id }}"}}
     fork:  {call: copy_store, args: {source: "{{ fork_source }}", run_id: "{{ run.id }}"}}
-    close: {tool: v6_story_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
+    close: {tool: report_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
 vars: {json_namespace: "{{ resources.store }}"}
 ```
 

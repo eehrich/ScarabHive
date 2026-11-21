@@ -303,7 +303,7 @@ class StateGraphServer(SchemaBasedToolServer):
 
     def sees_run(self, user_id: Optional[str], owner: Optional[str]) -> bool:
         """Whether ``user_id`` may see and control a run of ``owner`` (§8.3): an admin every run, anyone else their
-        own; a run of nobody (the writer's, a schedule's without a user) an admin -- or a caller without a user, the
+        own; a run of nobody (a pipeline's, a schedule's without a user) an admin -- or a caller without a user, the
         process's own code (run_to_end, schedules). Without auth the app has one user (API-3)."""
         return not self._auth_enabled() or owner == user_id or self._is_admin(user_id)
 

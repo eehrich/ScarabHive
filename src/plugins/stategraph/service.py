@@ -745,7 +745,7 @@ class StateGraphService:
         in its sub-agent tree. With ``caller_request`` it is kept with the run: the panel lists a session's runs.
         ``live``: objects of the caller in this process for its call functions (``sg.live``) -- never journaled,
         handed again when the key resumes an interrupted run here.
-        ``tags``: a flat object of text or number values (``{book: 95}``) that list_runs filters on (FEAT-7).
+        ``tags``: a flat object of text or number values (``{project: 95}``) that list_runs filters on (FEAT-7).
         ``detached``: started (or resumed by its key) from a call activity, the run is still nobody's child -- a
         hand-off, not a step of the caller's work: the caller's spend, pause and end leave it alone (FEAT-1).
         """

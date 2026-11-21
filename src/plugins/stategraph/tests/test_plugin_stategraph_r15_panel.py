@@ -28,7 +28,7 @@ R15_CASES = [
     "r15_a_failed_refresh_keeps_the_machine_list_and_says_so",
     "r15_kinds_that_failed_at_start_are_asked_again",
     "r15_mock_only_and_pause_at_start_stay_with_their_machine",
-    "r15_writer_run_ids_keep_their_label_and_hash_and_the_list_is_not_sorted_here",
+    "r15_job_run_ids_keep_their_label_and_hash_and_the_list_is_not_sorted_here",
     "r15_fork_with_the_saved_machine_is_a_named_action",
     "r15_resume_says_which_machine_it_runs",
     "r15_a_large_machine_opens_readable_and_find_zooms_to_the_state",

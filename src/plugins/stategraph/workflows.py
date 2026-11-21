@@ -3,8 +3,8 @@
 
 What is theirs alone lives here: the instance's ``workflows:`` settings, the terms written into the machine before
 it runs, the rules an inline machine keeps, the process-wide gate on their agents, and the results that wait for
-their caller. A run without the ``workflow`` column -- every machine run that is not a dynamic workflow, the
-writer's among them -- meets none of it.
+their caller. A run without the ``workflow`` column -- every machine run that is not a dynamic workflow, a
+pipeline's among them -- meets none of it.
 """
 from __future__ import annotations
 

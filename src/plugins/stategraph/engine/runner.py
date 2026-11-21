@@ -52,7 +52,7 @@ def null_params_kept(row: dict[str, Any]) -> bool:
 
 LEASE_SECONDS = 60
 #: The lease says the PROCESS lives, so it is renewed from a thread of its own: a call that holds the event loop
-#: (synchronous work of minutes -- the writer's whole-book passes) must not lose its run to another process.
+#: (synchronous work of minutes -- a caller's long passes) must not lose its run to another process.
 HEARTBEAT_SECONDS = 20
 #: How often the owner of live runs takes the control requests of other processes (RunStore.request_control).
 CONTROL_POLL_SECONDS = 1.0
@@ -1614,7 +1614,7 @@ class RunManager:
 
     async def _watch_token(self, run_id: str, token: Any) -> None:
         """A cancel from outside reaches the run's token (a caller whose request id prefixes the run id, e.g.
-        a book cancel above the agent facade): the run is terminated like by the debugger, so its finally
+        a job queue cancelling above the agent facade): the run is terminated like by the debugger, so its finally
         activities run and no agent activity fails as agent_failed (§5.8)."""
         await token.wait_for_cancellation()
         live = self.live.get(run_id)

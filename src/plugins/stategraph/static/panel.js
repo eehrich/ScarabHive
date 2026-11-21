@@ -518,12 +518,12 @@ function folderTree(machines) {
   return root;
 }
 
-/** A folder's folders by name -- a group can lead with its order ("1 Front", "2 Chapters"). */
+/** A folder's folders by name -- a group can lead with its order ("1 Intake", "2 Review"). */
 const subfolders = (folder) => [...folder.children.values()].sort((a, b) => a.name.localeCompare(b.name));
 
 const folderSize = (folder) => folder.machines.length + [...folder.children.values()].reduce((sum, f) => sum + folderSize(f), 0);
 
-/** The id under a title only where it says something the title does not ("V4 Beats Write" is v4_beats_write). */
+/** The id under a title only where it says something the title does not ("V2 Report Draft" is v2_report_draft). */
 const bare = (text) => String(text).toLowerCase().replace(/[\s_-]+/g, '');
 const idSaysMore = (m) => Boolean(m.title) && bare(m.title) !== bare(m.id);
 
@@ -1640,7 +1640,7 @@ function agentSection(m) {
       <span class="pk-muted">input ${a.input}, on a wait: ${a.on_wait}</span>
       ${a.problems.length ? html`<div class="pk-text--danger">${a.problems.join('; ')}</div>` : ''}</li>`)}</ul>
     ${agents.some((a) => a.visibility === 'private') ? html`<p class="pk-help">A private agent is reached only by its name
-      (agent-cli --agent, writer_jobs): a SAM does not offer it, the chat does not list it.</p>` : ''}` : '';
+      (agent-cli --agent, a job queue): a SAM does not offer it, the chat does not list it.</p>` : ''}` : '';
   if (offer) {
     return html`${listed}<p class="pk-help">Its <span class="pk-mono">agent:</span> block offers it as
       <span class="pk-mono">${offer.name}</span>${offer.declared ? '.' : ' after a restart: every process reads the agent: blocks as it starts.'}</p>`;
@@ -2498,7 +2498,7 @@ function paramInput(id, name, p, given) {
 }
 
 /** A param's description: its first sentence shown, the rest unfolded on a click -- a description of a page made the
- * form a wall of columns (scarab_long's mode). An abbreviation's point (z. B., e.g.), an ordinal's (am 3. Oktober)
+ * form a wall of columns (a mode param's). An abbreviation's point (z. B., e.g.), an ordinal's (am 3. Oktober)
  * and an ellipsis (data/...) end no sentence. */
 function paramHelp(text, id) {
   if (!text) return '';
@@ -3455,7 +3455,7 @@ $('side-debug').addEventListener('toggle', (event) => {
 }, true);
 
 /** The semaphore slot a frame of the run waits for (FEAT-2), or null. */
-/** A semaphore wait's name, with its key when it has one (e.g. coder [KAN-7]). */
+/** A semaphore wait's name, with its key when it has one (e.g. coder [TCK-7]). */
 const semaphoreName = (w) => (w.sem_key ? `${w.semaphore} [${w.sem_key}]` : w.semaphore);
 const slotWait = (run, prefix) => (run?.view?.slot_waits || []).find((w) => (w.frame || '') === prefix) || null;
 

@@ -1,4 +1,4 @@
-"""The constructs of design §10 that writer v6 needs: sg.tool() in call activities (more follow).
+"""The constructs of design §10 that a multi-agent pipeline needs: sg.tool() in call activities (more follow).
 
 Every machine runs through the real RunManager on a RunStore under tmp_path; only the boundary
 behind the engine is FakeBackend. A "crash" is a real ``RunManager.shutdown()``.
@@ -57,8 +57,8 @@ async def run(harness: Harness, files: dict[str, str], backend: FakeBackend, **s
 
 TWO_CALLS = """\
 async def work(sg):
-    first = await sg.tool("store_read", {"doc": "synopsis"})
-    second = await sg.tool("store_write", {"doc": "synopsis", "value": first["value"] + 1})
+    first = await sg.tool("store_read", {"doc": "outline"})
+    second = await sg.tool("store_write", {"doc": "outline", "value": first["value"] + 1})
     return {"first": first, "second": second}
 """
 
@@ -69,7 +69,7 @@ async def test_sg_tool_calls_are_child_activities_of_the_call(harness):
 
     assert row["output"] == {"first": {"value": 41}, "second": {"status": "ok"}}, row
     assert [(c["tool"], c["args"]) for c in backend.calls] == [
-        ("store_read", {"doc": "synopsis"}), ("store_write", {"doc": "synopsis", "value": 42})]
+        ("store_read", {"doc": "outline"}), ("store_write", {"doc": "outline", "value": 42})]
     rows = activity_rows(harness.store, row["id"])
     assert {key: rows[key]["data"]["path"] for key in ("s0/t.0", "s0/t.1")} == {
         "s0/t.0": "c/store_read", "s0/t.1": "c/store_write"}
@@ -87,11 +87,11 @@ RECONCILE = """\
 async def work(sg):
     brief = await sg.tool("store_read", {"doc": "brief"})
     try:
-        made = await sg.tool("story_create", {"title": brief["title"]})
+        made = await sg.tool("record_create", {"title": brief["title"]})
     except sg.Error as exc:
         if exc.type != "interrupted":
             raise
-        made = await sg.tool("story_find", {"title": brief["title"]}, idempotent=True)
+        made = await sg.tool("record_find", {"title": brief["title"]}, idempotent=True)
     return made
 """
 
@@ -99,20 +99,20 @@ async def work(sg):
 async def test_a_resumed_call_replays_its_finished_tool_calls_and_reconciles_the_interrupted_one(harness):
     files = with_call(RECONCILE)
     gate = asyncio.Event()
-    first = FakeBackend({"c/store_read": {"title": "Nachtzug"}, "c/story_create": held(gate, {"id": 1})})
+    first = FakeBackend({"c/store_read": {"title": "Quarterly"}, "c/record_create": held(gate, {"id": 1})})
     manager = harness.manager()
     run_id = await manager.start(runnable(files), backend=first)
-    await until(lambda: first.count("c/story_create") == 1, what="story_create in flight")
+    await until(lambda: first.count("c/record_create") == 1, what="record_create in flight")
     await manager.shutdown()
 
-    second = FakeBackend({"c/store_read": {"title": "WRONG"}, "c/story_create": {"id": 2},
-                          "c/story_find": {"id": 1}})
+    second = FakeBackend({"c/store_read": {"title": "WRONG"}, "c/record_create": {"id": 2},
+                          "c/record_find": {"id": 1}})
     row = await resume(harness, run_id, second)
 
     assert (row["status"], row["output"]) == ("succeeded", {"id": 1}), row
     assert second.count("c/store_read") == 0, "a finished inner call ran again instead of replaying"
-    assert second.count("c/story_create") == 0, "a non-idempotent inner call in flight at the crash ran again"
-    assert second.calls[0]["args"] == {"title": "Nachtzug"}, "story_find did not see the replayed read"
+    assert second.count("c/record_create") == 0, "a non-idempotent inner call in flight at the crash ran again"
+    assert second.calls[0]["args"] == {"title": "Quarterly"}, "record_find did not see the replayed read"
 
 
 async def test_an_idempotent_inner_call_in_flight_at_a_crash_runs_again(harness):
@@ -165,7 +165,7 @@ async def test_changed_arguments_of_a_replayed_inner_call_diverge(harness):
     await until(lambda: first.count("c/store_write") == 1, what="the write in flight")
     await manager.shutdown()
     snapshot = harness.store.get_run(run_id)["definition"]
-    snapshot["files"]["m.py"] = snapshot["files"]["m.py"].replace('{"doc": "synopsis"}', '{"doc": "beats"}', 1)
+    snapshot["files"]["m.py"] = snapshot["files"]["m.py"].replace('{"doc": "outline"}', '{"doc": "summary"}', 1)
     harness.store.update_run(run_id, definition=snapshot)
 
     second = FakeBackend({"c/store_read": {"value": 1}, "c/store_write": {"status": "ok"}})
@@ -569,10 +569,10 @@ async def test_a_cancel_that_reaches_the_run_s_token_terminates_the_run_with_its
 
     manager = harness.manager()
     run_id = await manager.start(runnable({"m.yaml": FINALLY_MACHINE}), backend_factory=with_token,
-                                 run_id="book7_sub_x1_sg1")
+                                 run_id="job7_sub_x1_sg1")
     await until(lambda: backends and backends[0].count("a") == 1, what="a in flight")
 
-    get_cancellation_manager().cancel_request("book7")
+    get_cancellation_manager().cancel_request("job7")
     row = await settle(manager, run_id)
 
     assert row["status"] == "cancelled", row
@@ -582,17 +582,17 @@ async def test_a_cancel_that_reaches_the_run_s_token_terminates_the_run_with_its
         "no activity may fail as agent_failed: the run was terminated"
 
 
-# ------------------------------------------------------------------ vars as one template (the v6 machine passes ctx.vars)
+# ------------------------------------------------------------------ vars as one template (a caller machine passes ctx.vars)
 
 VARS_MACHINE = """\
 stategraph: 1
 id: m
-context: {vars: {brief: Nachtzug, genre_thriller: true, genre_horror: false}, bad: [1]}
-vars: {phase: synopsis}
+context: {vars: {brief: Quarterly, tone_formal: true, tone_casual: false}, bad: [1]}
+vars: {phase: outline}
 initial: a
 states:
   a:
-    do: {agent: w, task: t, vars: "{{ {**ctx.vars, 'aufgabe': 'idee'} }}"}
+    do: {agent: w, task: t, vars: "{{ {**ctx.vars, 'focus': 'idea'} }}"}
     transitions:
       - target: done
       - trigger: error
@@ -608,12 +608,12 @@ async def test_vars_as_one_template_passes_the_whole_object(harness):
     row = await run(harness, {"m.yaml": VARS_MACHINE}, backend)
 
     assert row["status"] == "succeeded", row
-    assert backend.calls[0]["vars"] == {"phase": "synopsis", "brief": "Nachtzug", "genre_thriller": True,
-                                        "genre_horror": False, "aufgabe": "idee"}
+    assert backend.calls[0]["vars"] == {"phase": "outline", "brief": "Quarterly", "tone_formal": True,
+                                        "tone_casual": False, "focus": "idea"}
 
 
 async def test_vars_that_render_to_no_object_are_template_failed(harness):
-    files = {"m.yaml": VARS_MACHINE.replace("{**ctx.vars, 'aufgabe': 'idee'}", "ctx.bad")}
+    files = {"m.yaml": VARS_MACHINE.replace("{**ctx.vars, 'focus': 'idea'}", "ctx.bad")}
     backend = FakeBackend({"a": "A"})
     row = await run(harness, files, backend)
 
@@ -624,7 +624,7 @@ async def test_vars_that_render_to_no_object_are_template_failed(harness):
 def test_vars_must_be_a_map_or_exactly_one_template():
     from plugins.stategraph.tests.stategraph_testkit import validate
 
-    tree = validate({"m.yaml": VARS_MACHINE.replace("vars: {phase: synopsis}", 'vars: "phase {{ 1 }}"')})
+    tree = validate({"m.yaml": VARS_MACHINE.replace("vars: {phase: outline}", 'vars: "phase {{ 1 }}"')})
     assert [(p.code, p.path) for p in tree.problems if p.level == "error"] == [("SG005", "vars")], tree.problems
 
 
@@ -747,7 +747,7 @@ async def test_a_fork_replays_outputs_that_hold_the_source_s_resource_value(harn
     """A3: a recorded output names the source's namespace; the fork's hashes take it as the same token."""
     def world(namespace):
         return FakeBackend({"resources/store/open": namespace, "resources/store/fork": "ns_forked",
-                            "a": lambda call: f"{call['args']['ns']}/synopsis", "b": "used", "c": "done"})
+                            "a": lambda call: f"{call['args']['ns']}/outline", "b": "used", "c": "done"})
 
     manager = harness.manager()
     source = await manager.start(runnable(FORK_OUTPUTS), backend=world("ns_source"))

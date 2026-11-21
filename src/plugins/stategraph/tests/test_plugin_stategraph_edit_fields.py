@@ -221,12 +221,12 @@ def test_a_key_of_its_own_beside_a_merge_is_the_state_s_business():
 
 def test_machine_keys_are_set_before_the_states_and_objects_come_as_yaml():
     out = apply_op(MACHINE, {"op": "update_machine", "fields": {
-        "title": "Scene review", "group": "Writer/demo",
+        "title": "Scene review", "group": "Reports/demo",
         "params": {"$yaml": "premise: {type: string, required: true}  # the scene"},
         "limits": {"$yaml": "max_steps: 200"}}})
 
     doc = data(out)
-    assert (doc["title"], doc["group"], doc["limits"]) == ("Scene review", "Writer/demo", {"max_steps": 200})
+    assert (doc["title"], doc["group"], doc["limits"]) == ("Scene review", "Reports/demo", {"max_steps": 200})
     assert doc["params"] == {"premise": {"type": "string", "required": True}}
     assert list(doc).index("params") < list(doc).index("states")
     assert kept(out) == [] and loads_cleanly(out) and "# the scene" in out
@@ -246,7 +246,7 @@ def test_what_update_machine_refuses(fields, message):
 
 def test_the_graph_carries_what_the_forms_show():
     text = apply_op(MACHINE, {"op": "update_state", "name": "done", "fields": {"output": {"$yaml": "draft: x"}}})
-    text = apply_op(text, {"op": "update_machine", "fields": {"group": "Writer", "limits": {"$yaml": "max_steps: 9"}}})
+    text = apply_op(text, {"op": "update_machine", "fields": {"group": "Reports", "limits": {"$yaml": "max_steps: 9"}}})
     tree = load_tree("review.yaml", SnapshotSources({"review.yaml": text}))
     graph = graph_view(tree)
     states = {s["name"]: s for s in graph["states"]}
@@ -254,7 +254,7 @@ def test_the_graph_carries_what_the_forms_show():
     assert states["write"]["do"] == {"agent": "scene_writer", "task": "{{ params.premise }}"}
     assert states["read"]["do"] == {"machine": "critique"}
     assert states["done"]["output"] == {"draft": "x"} and states["done"]["yaml"]["output"].strip() == "draft: x"
-    assert graph["group"] == "Writer" and graph["yaml"]["limits"].strip() == "max_steps: 9"
+    assert graph["group"] == "Reports" and graph["yaml"]["limits"].strip() == "max_steps: 9"
 
 
 def test_resume_is_set_like_any_machine_key_and_shown_as_set():

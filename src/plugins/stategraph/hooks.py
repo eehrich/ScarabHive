@@ -1,7 +1,7 @@
 """What the LLM calls inside a ``call`` activity cost -- and a dynamic workflow's result for its caller.
 
 An agent activity counts its calls from its run's events (backend._Spend). A call activity runs Python -- the
-writer's pipeline, a tool that asks a model -- whose LLM calls reach no run's events: they are counted here, on the
+caller's pipeline, a tool that asks a model -- whose LLM calls reach no run's events: they are counted here, on the
 one path every call takes, post_llm_response, into the meter of the call activity they run under
 (backend.CALL_SPEND). Every other call -- a chat, a job -- finds no meter: one context var read, nothing else.
 
