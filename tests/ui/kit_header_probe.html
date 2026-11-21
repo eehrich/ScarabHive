@@ -1,0 +1,28 @@
+<!doctype html>
+<html class="pk-root" lang="en" data-framed>
+<head><meta charset="utf-8"><link rel="stylesheet" href="/static/kit/kit.css"></head>
+<body>
+<!-- Page heads as panel_base.html lays them out, in a frame (data-framed): the title hidden, the toolbar right, the
+     toolbar_start block at the left edge. -->
+<header class="pk-page-header" id="both" style="width: 600px">
+  <div class="pk-toolbar-start"><button type="button" class="pk-btn" id="home">Home</button></div>
+  <h1 class="pk-page-title">Probe</h1>
+  <div class="pk-toolbar"><button type="button" class="pk-btn" id="tool">Tool</button></div>
+</header>
+<header class="pk-page-header" id="startOnly" style="width: 600px">
+  <div class="pk-toolbar-start"><button type="button" class="pk-btn">Home</button></div>
+  <h1 class="pk-page-title">Probe</h1>
+  <div class="pk-toolbar"></div>
+</header>
+<header class="pk-page-header" id="none" style="width: 600px">
+  <div class="pk-toolbar-start"></div>
+  <h1 class="pk-page-title">Probe</h1>
+  <div class="pk-toolbar"></div>
+</header>
+<!-- Outside a frame (the title shown): an empty start block adds no gap before the title. -->
+<div data-unframed>
+  <header class="pk-page-header" style="width: 600px"><div class="pk-toolbar-start"></div><h1 class="pk-page-title" id="titleAfterEmpty">Probe</h1></header>
+  <header class="pk-page-header" style="width: 600px"><h1 class="pk-page-title" id="titleAlone">Probe</h1></header>
+</div>
+</body>
+</html>

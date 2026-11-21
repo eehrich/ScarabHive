@@ -174,7 +174,10 @@
 /* In a frame the shell's tab or window bar carries the title; the toolbar stays. */
 [data-framed] .pk-page-title { display: none; }
 [data-framed] .pk-page-header { justify-content: flex-end; min-height: 0; }
-[data-framed] .pk-page-header:has(> .pk-toolbar:empty) { display: none; }
+[data-framed] .pk-page-header:has(> .pk-toolbar:empty):not(:has(> .pk-toolbar-start:not(:empty))) { display: none; }
+/* {% block toolbar_start %}: controls at the header's left edge (before the title; framed, the leftmost) */
+.pk-toolbar-start { display: flex; align-items: center; gap: var(--space-2); }
+.pk-toolbar-start:empty { display: none; }
 /* The tabs of sibling panels under the header (the panel_nav macro): shown framed too, where they say which one this is. */
 .pk-page-nav { padding: 0 var(--space-4); background: var(--surface-2); }
 /* scroll-padding: a row the keyboard moves to is scrolled clear of a sticky table head (its height: padding, one

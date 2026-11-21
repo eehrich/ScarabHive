@@ -126,6 +126,28 @@ def test_a_plugin_template_reaches_the_kit(tmp_path):
     assert "<title>Probe · ScarabHive</title>" in page
     assert 'data-theme="light"' in page
     assert "/static/kit/kit.css" in page and "icons.svg#bug" in page
+    # unused, the block renders nothing at all: kit.css hides it by :empty, a blank would leave a gap before the title
+    assert '<div class="pk-toolbar-start"></div>' in page
+
+
+def test_the_toolbar_start_block_comes_before_the_title_and_the_toolbar(tmp_path):
+    """A way back to a panel's start is looked for at the head's left edge: the block is drawn there."""
+    (tmp_path / "panel.html").write_text(
+        '{% extends "kit/panel_base.html" %}{% block title %}Probe{% endblock %}'
+        '{% block toolbar_start %}<button id="home">Home</button>{% endblock %}'
+        '{% block toolbar %}<button id="tool">Tool</button>{% endblock %}', encoding="utf-8")
+    app = FastAPI()
+    templates = ui_templates(tmp_path)
+
+    @app.get("/panel")
+    async def panel(request: Request):
+        return templates.TemplateResponse(request, "panel.html")
+
+    page = TestClient(app).get("/panel").text
+    head = page[page.index('<header class="pk-page-header">'):page.index("</header>")]
+
+    start = head.index('<div class="pk-toolbar-start"><button id="home">')
+    assert start < head.index('class="pk-page-title"') < head.index('<button id="tool">'), head
 
 
 @pytest.mark.parametrize("svg", sorted(p.name for p in KIT.glob("*.svg")))

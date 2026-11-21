@@ -129,7 +129,9 @@ it through `get_static_assets()`, it is reachable under
 `panel_base.html` sets the theme from the cookie (no flash), loads `kit.css`
 and `panel-kit.js`, and in the frame hides its own title — the tab or the
 window bar carries it there; the toolbar stays. Further blocks: `head`, `lang`
-(`de` for a German panel).
+(`de` for a German panel), `toolbar_start` (controls at the header's left edge,
+before the title -- framed the leftmost: the way back to a panel's start, a Home
+button, belongs there, not among the toolbar's controls on the right).
 
 Icons in the template: `{{ icon('refresh-cw') }}`, `{{ icon('bug', size='sm', label='Bug') }}`.
 A figure: `{{ stat('Open', 12, key='open', sub='3 new', pressed=false) }}`; a process's steps:

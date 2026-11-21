@@ -3,6 +3,8 @@
     {% extends "kit/panel_base.html" %}
     {% block title %}Message Debugger{% endblock %}
     {% block toolbar %}<pk-refresh interval="5"></pk-refresh>{% endblock %}
+    {% block toolbar_start %}<button ...>{{ icon('house') }}</button>{% endblock %}  (optional: at the
+        header's left edge, before the title -- a way back to the panel's start is looked for there)
     {% block content %} ... {% endblock %}
     {% block scripts %}<script type="module" src="..."></script>{% endblock %}
 
@@ -23,6 +25,7 @@
 </head>
 <body class="pk-panel">
   <header class="pk-page-header">
+    <div class="pk-toolbar-start">{% block toolbar_start %}{% endblock %}</div>
     <h1 class="pk-page-title">{{ self.title() }}</h1>
     <div class="pk-toolbar">{% block toolbar %}{% endblock %}</div>
   </header>

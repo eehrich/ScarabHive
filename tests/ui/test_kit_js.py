@@ -64,6 +64,7 @@ EXPECTED = [
     "api refuses latest for a raw response",
     "a row to choose keeps the keyboard focus through a redraw",
     "a pane stuck beside a list fits the scroll area beneath the page head",
+    "framed, the toolbar_start block sits at the left edge, the toolbar right, and keeps an otherwise empty head",
     "a menu opens at its button",
     "a menu stays inside the window however wide or tall it is",
     "a theme change reaches its listeners once",

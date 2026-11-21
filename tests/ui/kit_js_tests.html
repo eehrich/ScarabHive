@@ -722,6 +722,29 @@
     document.body.appendChild(frame);
   }));
 
+  await check('framed, the toolbar_start block sits at the left edge, the toolbar right, and keeps an otherwise empty head', () => new Promise((resolve) => {
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'width: 700px; height: 300px; border: 0';
+    frame.addEventListener('load', () => {
+      try {
+        const page = frame.contentDocument;
+        const box = (id) => page.getElementById(id).getBoundingClientRect();
+        const head = box('both');
+        const shown = (id) => frame.contentWindow.getComputedStyle(page.getElementById(id)).display !== 'none';
+        const framed = box('home').left - head.left < 40 && head.right - box('tool').right < 40
+          && shown('startOnly') && !shown('none');
+        page.documentElement.removeAttribute('data-framed');  // outside a frame the title shows
+        const gap = box('titleAfterEmpty').left - page.getElementById('titleAfterEmpty').parentElement.getBoundingClientRect().left;
+        const alone = box('titleAlone').left - page.getElementById('titleAlone').parentElement.getBoundingClientRect().left;
+        resolve(framed && box('titleAlone').width > 0 && Math.abs(gap - alone) < 1);
+      } finally {
+        frame.remove();
+      }
+    });
+    frame.src = '/tests/ui/kit_header_probe.html';
+    document.body.appendChild(frame);
+  }));
+
   // The panel in a frame of a phone's width, then of a desktop's: media queries follow the frame's width.
   const cardsAt = (width) => new Promise((resolve, reject) => {
     const frame = document.createElement('iframe');
