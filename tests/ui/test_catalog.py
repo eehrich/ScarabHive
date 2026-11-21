@@ -54,6 +54,7 @@ def test_a_declared_panel_becomes_a_catalogue_entry():
         "description": "A panel for tests", "keywords": ["requests"], "roles": [],
         "window": {"width": 800, "height": 600},
         "contexts": {"request": "/plugins/probe/?request_id={request_id}"}, "group": "", "help": "",
+        "category_label": "",
     }
 
 
@@ -69,7 +70,12 @@ def test_a_window_without_size_gets_the_default_size():
     (spec(roles=["admin"]), "unknown keys ['roles']"),
     ({**spec(), True: "x"}, "unknown keys ['True']"),
     ({k: v for k, v in spec().items() if k != "icon"}, "needs icon as text"),
-    (spec(category="tools"), "category 'tools'"),
+    (spec(category="Tools"), "category 'Tools'"),
+    (spec(category="my-tools"), "category 'my-tools'"),
+    (spec(category="tools", category_label=["Tools"]), "category_label must be text"),
+    (spec(category="tools", category_label="x" * 41), "category_label must be text"),
+    (spec(category="debgu"), "did you mean 'debug'"),
+    (spec(category="debug", category_label="Inspection"), "keeps its name"),
     (spec(category=["debug"]), "needs category as text"),
     (spec(icon="no-such-icon"), "icon 'no-such-icon'"),
     (spec(icon={"name": "bug"}), "needs icon as text"),
@@ -253,7 +259,28 @@ def test_the_catalogue_lists_the_panels_registered_plugins_declare(app, register
     ids = [p["id"] for p in data["panels"]]
     assert "probe" in ids and "routes_only" not in ids
     assert {"session", "system", "settings"} <= set(ids)
-    assert [c["id"] for c in data["categories"]][:2] == ["session", "writer"]
+    assert [c["id"] for c in data["categories"]] == ["session", "context", "agents", "debug", "system", "admin"]
+
+
+def test_a_plugin_brings_a_category_of_its_own_listed_after_session_while_a_panel_in_it_is_seen():
+    def panel(name, category, label="", roles=()):
+        made = plugin_panel(name, spec(endpoint=f"/plugins/{name}/", contexts={}, title=name, category=category,
+                                       **({"category_label": label} if label else {})), ICONS)
+        return replace(made, roles=list(roles))
+
+    plugins = [panel("ledger", "accounting", "Bookkeeping & invoices"), panel("crm", "sales"),
+               panel("leads", "sales", "Sales & leads"),  # a later panel's label names it, not the slug
+               panel("ops", "operations_desk", roles=["admin"]), panel("probe", "debug")]
+
+    as_admin = [c for c in build_catalog("admin", [], plugins)["categories"]]
+    as_user = [c["id"] for c in build_catalog("user", [], plugins)["categories"]]
+
+    assert as_admin[:4] == [{"id": "session", "label": "Session"},
+                            {"id": "accounting", "label": "Bookkeeping & invoices"},
+                            {"id": "operations_desk", "label": "Operations desk"},
+                            {"id": "sales", "label": "Sales & leads"}], "by name, after session"
+    assert [c["id"] for c in as_admin[4:]] == ["context", "agents", "debug", "system", "admin"], "debug twice"
+    assert "operations_desk" not in as_user, "a category whose only panel the viewer may not open"
 
 
 def test_a_plugin_panel_names_its_guide_for_the_shell_help_button(app, registered, tmp_path):

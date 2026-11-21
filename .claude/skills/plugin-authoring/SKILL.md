@@ -58,6 +58,7 @@ category = "tools"
 requires = { agent_system = ">=0.6.0" }  # required by the validator
 dependencies = []                        # pip specs only
 optional_dependencies = []               # pip specs an install may lack (requirements/optional.txt)
+undeclared_imports = []                  # imports left undeclared on purpose (a remote host's script); say why beside it
 plugins = []                             # other plugins this one imports from, by folder name
 ```
 

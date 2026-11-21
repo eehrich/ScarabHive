@@ -112,6 +112,13 @@
         "type": "string"
       }
     },
+    "undeclared_imports": {
+      "type": "array",
+      "description": "Third-party imports the plugin makes on purpose without declaring them (an import inside a tool that runs on another host, say); the dependency guard skips them. Give the reason in a comment beside the key",
+      "items": {
+        "type": "string"
+      }
+    },
     "plugins": {
       "type": "array",
       "description": "The other plugins whose modules this plugin imports (checked by tests/pluginsystem/test_plugin_deps_declared.py and at start)",

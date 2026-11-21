@@ -89,9 +89,6 @@ def _remove_temp_dirs() -> None:
 
 atexit.register(_remove_temp_dirs)
 
-# Disable WAL mode for writer plugins in tests (avoids Windows file locking issues)
-os.environ["WRITER_DISABLE_WAL"] = "true"
-
 # Set test session storage path BEFORE any imports of agent_system
 # This ensures all tests use a temporary directory for sessions
 _TEST_SESSION_DIR = _make_temp_dir("agent_test_sessions_")

@@ -37,31 +37,13 @@ DATA = REPO / "data"
 CONFIG = REPO / "config"
 SRC = REPO / "src"
 
-#: The agents the open configuration grants such a tool, all gated at admin. Agents of a further
-#: src/plugins_<name> root are not named here (the open-source checkout has none); the gate check
-#: below holds them all the same.
+#: The agents the open configuration grants such a tool, all gated at admin. Agents a further
+#: src/plugins_<name> root declares are its own tests' business: that root knows its exceptions.
 EXPECTED_ADMIN = frozenset({
     "agy_code_agent", "blender_agent", "claude_code_agent", "coder", "coder_explorer", "coder_reviewer",
     "coder_tester", "coder_ultra", "file_ops_test_agent", "gamedev", "gamedev_tester", "godot_agent",
     "skills_agent", "skills_agent_multimodal", "sysadmin_agent",
 })
-
-#: Granted a terminal, and still below admin: theirs (state_graph_terminal) runs one analysis script and
-#: nothing else -- its whitelist is anchored and closed to the end of the line, chaining is off -- and the
-#: writer's book runs spawn them (v4_sam) for ordinary accounts. Set in their YAML, not inherited: their
-#: base type skills_agent is gated at admin (a full terminal), metadata is merged deeply, so without a
-#: value of their own they would take admin and every ordinary account's book run would be refused;
-#: ``min_role: null`` does not lift an inherited gate. ``user`` is what POST /run and /events ask anyway.
-LOWER = {"state_graph_agent": "user", "state_graph_agent_ui": "user"}
-
-
-def _needs_the_exception(shipped: dict) -> None:
-    """The exception agents and their terminal belong to the writer, which the open-source checkout does not
-    carry; there is nothing to hold then, and EXPECTED_ADMIN still holds everything else. Keyed on the agents,
-    not the terminal: an agent still at ``user`` whose terminal was renamed or switched off must turn red."""
-    if not LOWER.keys() & shipped.keys():
-        pytest.skip("the state_graph agents ship with the writer, not in this checkout")
-
 
 @pytest.fixture(scope="module")
 def shipped():
@@ -195,153 +177,10 @@ def _private_agents() -> set[str]:
 def test_every_agent_granted_a_shell_or_the_checkout_is_admin_only(shipped, default_file_dirs):
     granted = _granted(shipped, _powerful(shipped, default_file_dirs))
 
-    public = set(granted) - set(LOWER) - _private_agents()
+    public = set(granted) - _private_agents()
     assert public == EXPECTED_ADMIN, (
         "the agents granted a shell, code execution or file access to what holds secrets changed -- look at the "
         f"difference, then gate it or update this list: {sorted(public ^ EXPECTED_ADMIN)}")
-    gates = {name: shipped[name].metadata.min_role if shipped[name].metadata else None for name in granted}
-    wrong = {name: gate for name, gate in gates.items() if gate != LOWER.get(name, "admin")}
+    gates = {name: shipped[name].metadata.min_role if shipped[name].metadata else None for name in public}
+    wrong = {name: gate for name, gate in gates.items() if gate != "admin"}
     assert wrong == {}, f"granted such a tool without the gate it needs: {wrong}"
-
-
-def test_the_exceptions_hold_only_a_whitelisted_terminal(shipped, default_file_dirs):
-    """The reason for LOWER, measured: nothing else powerful, and the terminal starts the one script only --
-    every whitelist entry anchored at both ends (``^`` ... ``\\Z``) and naming it, chaining off, and no
-    entry that matches a line break on its own, inside the command or at its end: ``bash -c`` runs every
-    line, and ``\\s``, or ``$`` (it also matches before a final line break), let a second one through.
-    The terminal refuses control characters before it asks a pattern; the entries do not lean on that."""
-    import re
-
-    _needs_the_exception(shipped)
-    granted = _granted(shipped, _powerful(shipped, default_file_dirs))
-
-    for name in LOWER:
-        assert granted.get(name) == {"state_graph_terminal"}, (name, granted.get(name))
-    security = (shipped["state_graph_terminal"].model_extra or {}).get("security") or {}
-    whitelist = security.get("whitelist") or []
-    assert whitelist, f"state_graph_terminal has no whitelist: {security}"
-    loose = [entry for entry in whitelist
-             if not (entry.startswith("^") and entry.endswith(r"\Z") and r"verdachtsliste\.py" in entry)
-             or re.fullmatch(entry, "bash -c 'id'")]
-    assert loose == [], f"whitelist entries that are not anchored to the analysis script: {loose}"
-    spanning = [entry for entry in whitelist
-                if any(re.match(entry, command) for command in (
-                    f"python {SCRIPT}\n4711", f"python {SCRIPT} 4711\n4712", f"python {SCRIPT} 4711\n"))]
-    assert spanning == [], f"whitelist entries that match across a line break: {spanning}"
-    assert security.get("allow_command_chains") is False, security
-
-
-SCRIPT = "skills/writer/zustandsgraph/scripts/verdachtsliste.py"
-
-
-def _build_state_graph_terminal(shipped, tmp_path, monkeypatch):
-    from agent_system.config.models import AgentSystemConfig
-    from agent_system.plugins import cache as cache_module
-    from plugins.terminal.server import TerminalServer
-
-    monkeypatch.setattr(cache_module, "default_cache_root", lambda: tmp_path / "cache")
-    return TerminalServer("state_graph_terminal", AgentSystemConfig(), shipped["state_graph_terminal"])
-
-
-@pytest.fixture
-def state_graph_terminal(shipped, tmp_path, monkeypatch):
-    """The shipped state_graph_terminal, built from its resolved config (its plugin cache under tmp_path)."""
-    _needs_the_exception(shipped)
-    return _build_state_graph_terminal(shipped, tmp_path, monkeypatch)
-
-
-@pytest.mark.parametrize("command, allowed", [
-    (f"python {SCRIPT} 4711", True),
-    (f"python3 {SCRIPT} 4711 --db /tmp/copy.db", True),
-    (f"python {SCRIPT} 4711 --db C:/tmp/copy.db", True),
-    (rf"python {SCRIPT} 4711 --db C:\tmp\copy.db", False),   # bash drops unquoted backslashes
-    (f"py.exe {SCRIPT} 4711", True),
-    (f".venv/bin/python {SCRIPT} 4711", True),
-    (f".venv/bin/python3 {SCRIPT} 4711", True),
-    (f".venv/Scripts/python.exe {SCRIPT} 4711", True),
-    (rf".venv\Scripts\python.exe {SCRIPT} 4711", False),   # bash drops unquoted backslashes: forward only
-    (rf"C:\work\hive\.venv\Scripts\python.exe {SCRIPT} 4711", False),   # the venv of the checkout only
-    (f"../x/.venv/bin/python {SCRIPT} 4711", False),
-    (f"/abs/.venv/bin/python {SCRIPT} 4711", False),
-    (f"/tmp/x/evilpy {SCRIPT} 4711", False),       # any program whose name ends in "py"
-    (f"/tmp/x/python {SCRIPT} 4711", False),
-    (f"python {SCRIPT}\n4711", False),               # a line break is a second command to bash -c
-    (f"python {SCRIPT} 4711\n", False),
-    (f"python {SCRIPT} 4711\rid", False),
-    (f"python\t{SCRIPT} 4711", False),
-    (f"python -c 'import os' {SCRIPT} 4711", False),
-    (f"python {SCRIPT} 4711; id", False),
-])
-def test_the_exception_terminal_starts_a_named_interpreter_on_the_script_only(state_graph_terminal, command,
-                                                                                allowed):
-    """The interpreter is named: ``python``, ``python3`` or ``py`` (optionally ``.exe``), or the checkout's
-    own venv interpreter by its relative path with forward slashes (``bash`` drops unquoted backslashes,
-    so a backslash form could only fail) -- the terminal starts in the directory the server runs from (its
-    initial_cwd). A free prefix before ``python``/``py`` let any program whose name ends in those letters
-    through, and a free directory before ``.venv`` any interpreter planted elsewhere. Behind it: this
-    script, a book id, optionally ``--db``, separated by spaces only, and the end of the command."""
-    assert state_graph_terminal.security.validate_command(command)[0] is allowed, command
-
-
-def test_the_command_the_prompt_names_passes_the_whitelist(shipped, state_graph_terminal):
-    """Evaluated, not quoted: every command the agent's prompt spells out for the script must run."""
-    import re
-
-    prompt = shipped["state_graph_agent"].agent_config.system_prompt or ""
-    commands = [command.replace("<book_id>", "4711") for command in re.findall(r"`([^`]*verdachtsliste\.py[^`]*)`", prompt)]
-    assert commands, "fixture: the prompt names no command for the analysis script"
-    refused = [command for command in commands if not state_graph_terminal.security.validate_command(command)[0]]
-    assert refused == [], refused
-
-
-class _Status:
-    async def progress(self, message): pass
-    async def end(self, message, meta=None): pass
-    async def error(self, message): pass
-
-
-@pytest.mark.parametrize("background", [False, True])
-@pytest.mark.parametrize("given", [{"cwd": "/tmp"}, {"env_vars": {"PYTHONPATH": "/tmp/x"}}])
-async def test_the_exception_terminal_refuses_a_directory_or_environment(state_graph_terminal, monkeypatch,
-                                                                          background, given):
-    """The whitelist checks the command string only, while the working directory decides which files the
-    script reads and writes and the environment how the interpreter runs; the model sets neither here. The
-    spawn is a recorder: nothing of the script runs, refused or not."""
-    from plugins.terminal import executor as executor_module
-
-    spawned = []
-
-    async def record(*argv, **kwargs):
-        spawned.append(kwargs)
-        raise RuntimeError("recorded, not started")
-
-    monkeypatch.setattr(executor_module.asyncio, "create_subprocess_exec", record)
-
-    answer = await state_graph_terminal.execute({"command": f"python {SCRIPT} 4711", "background": background,
-                                                 "_status": _Status(), **given})
-
-    assert answer.get("error_type") == "ConfiguredOnly", answer
-    assert spawned == [], "the script was started"
-
-
-def test_the_exception_terminal_starts_in_the_checkout_wherever_the_cli_was_started(shipped, tmp_path,
-                                                                                      monkeypatch):
-    """Its command names the script relative to the checkout, and the model sets no directory. Without
-    one configured the terminal starts where the person stood (paths.launch_dir) -- started from anywhere
-    else, the script was not found. The configured ``.`` is the directory the server runs from, the
-    checkout, as every relative path of the configuration assumes: agent-cli and agent-run enter the
-    project first (paths.enter_project) and resolve it after that; the API has to be started there, and
-    started elsewhere the script is not found (it fails closed)."""
-    from agent_system import paths
-
-    _needs_the_exception(shipped)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)                 # where the person stands
-    monkeypatch.setattr(paths, "_launch_dir", None)
-    paths.enter_project()                        # what agent-cli and agent-run do first
-
-    terminal = _build_state_graph_terminal(shipped, tmp_path, monkeypatch)
-
-    assert Path(terminal.executor.initial_cwd) == REPO, terminal.executor.initial_cwd
-    assert (REPO / SCRIPT).is_file(), "fixture: the analysis script is not where the command names it"

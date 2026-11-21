@@ -283,14 +283,6 @@ auth:
         min_role: "admin"
         description: "Forge panel requires admin role"
 
-      # writer_admin exposes the whole writer DB (jobs.db, books.db, sessions, story
-      # payloads, raw reader feedback): operator surface only. A user-role token must not be able
-      # to delete queue jobs or dump payloads.
-      - pattern: "/plugins/writer_admin/*"
-        policy: "require_auth"
-        min_role: "admin"
-        description: "writer_admin plugin (DB inspector + queue debug) requires admin role"
-
       # The logs carry every user's prompts, names, IPs and session ids (the
       # API logs each task at INFO): one user must not read another's.
       - pattern: "/plugins/log_viewer/*"

@@ -195,14 +195,13 @@ plugins:
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
       cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
-      # upload_image security allowlist. Mirrors the code defaults plus the
-      # asset dirs of a plugin: its image judge uploads a composite
-      # for VLM verification and is refused without that entry.
+      # upload_image security allowlist: the code defaults plus the workspace.
+      # A plugin whose agents upload from folders of their own sets the whole
+      # list in its agents/*.yaml (a list there replaces this one, it does not
+      # extend it), these entries included.
       upload_source_dirs:
         - "data/comfyui/outputs"
         - "data/comfyui"
-        - "data/writer/assets"
-        - "data/writer/covers"
         # drawings in the workspace (the image agent's, a project's), as reference for img2img / IPAdapter
         - "data/workspace"
       workflows:

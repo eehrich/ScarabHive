@@ -183,45 +183,40 @@ class TestRequiredSpawns:
 
 
 @pytest.fixture(scope="module")
-def panel():
-    """The panel's agent config through the real loader -- loaded once. A class-scoped fixture
+def gated_agent():
+    """A shipped agent with the gate, through the real loader -- loaded once. A class-scoped fixture
     written as a method is deprecated in pytest 9 (its instance attributes never reach the tests)."""
     from agent_system.config.settings import get_tool_server_config, load_settings
-    cfg = get_tool_server_config("v6_story_panel", load_settings())
-    if cfg is None and not any(d.is_dir() and d.name.isidentifier() for d in Path(__file__).resolve().parents[4].joinpath("src").glob("plugins_*")):
-        pytest.skip("v6_story_panel comes from a plugin root this checkout does not carry")
-    assert cfg is not None, "v6_story_panel not in the loaded config"
+    cfg = get_tool_server_config("required_spawns_test_agent", load_settings())
+    assert cfg is not None, "required_spawns_test_agent not in the loaded config"
     return cfg.agent_config
 
 
-class TestTheRealPanelConfig:
-    """The panel YAML through the real loader: the gate and the prompt read the
-    same review_map, and the configured expression names the tool the panel's
-    manager really registers."""
+class TestARealAgentConfig:
+    """An agent YAML through the real loader: the gate reads its review_map, and
+    the configured expression names the tool its manager really registers."""
 
-    def _hooks(self, panel):
-        hooks = panel.hooks if isinstance(panel.hooks, dict) else panel.hooks.model_dump()
+    def _hooks(self, gated_agent):
+        hooks = gated_agent.hooks if isinstance(gated_agent.hooks, dict) else gated_agent.hooks.model_dump()
         return hooks["overrides"]["agent_continuation.evaluate_completion"]
 
     @pytest.mark.asyncio
-    async def test_a_charakter_panel_without_reviewers_goes_back(self, panel):
-        hook_config = self._hooks(panel)
+    async def test_an_answer_without_its_reviewer_goes_back(self, gated_agent):
+        hook_config = self._hooks(gated_agent)
         assert hook_config["enabled"] is True
-        ctx = _context(_writers(), hook_config=hook_config,
-                       template_vars=dict(panel.template_vars),
-                       session_vars={"aufgabe": "charakter", "phase": "synopsis", "panel_review_size": 1})
+        ctx = _context(_writers(), hook_config=hook_config, template_vars=dict(gated_agent.template_vars), session_vars={})
         result = await _plugin().evaluate_completion(ctx)
         assert result.metadata["continue"] is True
-        expected = ", ".join(panel.template_vars["review_map"]["charakter"])
-        assert expected in result.metadata["continue_message"]
+        expected = ", ".join(gated_agent.template_vars["review_map"][gated_agent.template_vars["aufgabe"]])
+        assert expected and expected in result.metadata["continue_message"]
 
-    def test_the_tool_is_the_panel_managers_tool(self, panel):
+    def test_the_tool_is_its_managers_tool(self, gated_agent):
         from agent_system.config.settings import get_tool_server_config, load_settings
-        tool = self._hooks(panel)["required_spawns"]["tool"]
+        tool = self._hooks(gated_agent)["required_spawns"]["tool"]
         manager = tool.removesuffix("_manage_sub_agent")
         assert get_tool_server_config(manager, load_settings()) is not None, \
             f"no sub-agent manager named {manager!r}"
-        assert f"{manager}/*" in panel.tools.allowed
+        assert f"{manager}/*" in gated_agent.tools.allowed
 
 
 def _response_with_calls(messages, calls, **kwargs) -> HookContext:

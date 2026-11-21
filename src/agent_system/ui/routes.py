@@ -93,7 +93,7 @@ def plugin_panels(auth_config) -> list[Panel]:
 
 @router.get("/api/ui/catalog")
 async def catalog(request: Request):
-    """Every panel this viewer may open, with the fixed category list."""
+    """Every panel this viewer may open, with the categories they are in."""
     return catalog_for(request, await viewer_role(request))
 
 

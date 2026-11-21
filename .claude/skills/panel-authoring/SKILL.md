@@ -63,7 +63,8 @@ web_ui:
 | `endpoint` | yes | URL of the panel page. `{{ name }}` is the plugin instance. |
 | `title` | yes | Name in the launcher, the tab, the window bar. Two instances with the same title get the instance name appended. |
 | `icon` | yes | Symbol id from `static/kit/icons.svg` (list: `/ui/kit`). |
-| `category` | yes | `session`, `writer`, `business`, `context`, `agents`, `debug`, `system`, `admin` — fixed, not extensible. |
+| `category` | yes | `session`, `context`, `agents`, `debug`, `system`, `admin` — or one of the plugin's own: a slug (`a-z`, `0-9`, `_`), listed after `session` while a panel the viewer sees is in it. Reuse a core category where one fits. |
+| `category_label` | | the name of a category of the plugin's own; without it the slug names it (`sales` → "Sales"). The first panel's label wins. |
 | `description` | | one sentence, shown in the launcher and searched. |
 | `keywords` | | search words that are not in the title. |
 | `window` | | size of the detached window. |

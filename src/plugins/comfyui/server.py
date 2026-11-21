@@ -116,8 +116,7 @@ class ComfyUIServer(SchemaBasedToolServer):
         # host files. An empty list disables upload_image entirely.
         #
         # Default scope is INTENTIONALLY narrow — the plugin's own
-        # output_dir (re-upload of generated images) and an
-        # image-asset subtree under data/. The bare project ``data/``
+        # output_dir (re-upload of generated images) and its data folder. The bare project ``data/``
         # tree contains databases (plugin databases, users.db, message_debugger
         # debugger.db, comfyui jobs.db, lessons_learned), agent traces,
         # and other non-image state. Setting the default to ``data/``
@@ -129,7 +128,6 @@ class ComfyUIServer(SchemaBasedToolServer):
             raw_allowlist = [
                 str(self._output_dir_base),
                 str(data_path("comfyui")),
-                str(data_path("writer", "assets")),
             ]
         # Normalise a string config to a single-entry list so a misset
         # YAML value (e.g. upload_source_dirs: "data/img") doesn't get

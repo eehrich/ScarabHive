@@ -47,17 +47,13 @@ IMPORT_TO_DIST = {
     "opentelemetry": "opentelemetry-api",
 }
 
-#: (plugin, import) pairs that are deliberately undeclared, each with a reason.
+#: (plugin, import) pairs that are deliberately undeclared, each with a reason. A plugin may name its own in its
+#: plugin.toml instead -- ``undeclared_imports = [...]`` under [plugin], the reason in a comment beside it -- so a
+#: plugin root this list does not know keeps its exceptions to itself.
 KNOWN_OPTIONAL = {
     # Dev-layout absolute import (`from src.plugins...`) in __main__/cli —
     # not a package.
     ("sqlite_query", "src"),
-    # scripts/fix_comfyui_fp8.py repairs the transformers/kernels install on
-    # the ComfyUI HOST. Both imports sit inside its functions and describe
-    # that host's environment, not this plugin's runtime — declaring them
-    # would put a remote repair tool's pins into every install.
-    ("writer_jobs", "kernels"),
-    ("writer_jobs", "transformers"),
     # reportlab 4's old raster backend (dist rl_renderPM): accepted where an
     # older install has it, since reportlab 4 falls back to it; never
     # installed by us -- it has no wheel for current Pythons on macOS.
@@ -131,6 +127,17 @@ def _declared(plugin_dir: Path) -> set[str]:
     return {_norm(n) for n in names}
 
 
+def _undeclared_on_purpose(plugin_dir: Path) -> set[str]:
+    """The imports a plugin's manifest names as left undeclared on purpose (``undeclared_imports``)."""
+    manifest = plugin_dir / "plugin.toml"
+    if not manifest.exists():
+        return set()
+    names = tomllib.loads(manifest.read_text(encoding="utf-8")).get("plugin", {}).get("undeclared_imports", [])
+    assert isinstance(names, list) and all(isinstance(n, str) for n in names), (
+        f"{plugin_dir.name}: undeclared_imports must be a list of import names")
+    return set(names)
+
+
 def _third_party_imports(plugin_dir: Path) -> set[str]:
     stdlib = set(sys.stdlib_module_names)
     found = set()
@@ -180,6 +187,17 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
                     continue
                 found.add(top)
     return found
+
+
+def test_a_plugin_names_the_imports_it_leaves_undeclared_on_purpose(tmp_path):
+    plugin = tmp_path / "src" / "plugins_extra" / "probe"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.toml").write_text('[plugin]\nname = "probe"\nundeclared_imports = ["kernels"]\n',
+                                        encoding="utf-8")
+    (tmp_path / "src" / "plugins" / "plain").mkdir(parents=True)
+
+    assert _undeclared_on_purpose(plugin) == {"kernels"}
+    assert _undeclared_on_purpose(tmp_path / "src" / "plugins" / "plain") == set(), "no manifest: nothing"
 
 
 def test_an_import_from_another_plugin_root_is_a_finding(tmp_path):
@@ -261,9 +279,10 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
     scanned_imports = 0
     for plugin_dir in plugins:
         declared = _declared(plugin_dir)
+        on_purpose = _undeclared_on_purpose(plugin_dir)
         for imp in sorted(_third_party_imports(plugin_dir)):
             scanned_imports += 1
-            if (plugin_dir.name, imp) in KNOWN_OPTIONAL:
+            if (plugin_dir.name, imp) in KNOWN_OPTIONAL or imp in on_purpose:
                 continue
             dist = _norm(IMPORT_TO_DIST.get(imp.lower(), imp))
             if dist in core or dist in declared or _norm(imp) in declared:

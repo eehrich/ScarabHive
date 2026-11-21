@@ -460,6 +460,10 @@ dependencies = ["requests>=2.25.0", "beautifulsoup4>=4.9.0"]
   breaking the install — typically one that builds from source on some
   platforms (`image_compose`: `reportlab[pycairo]`). The code imports them
   lazily and answers with the fix when they are missing.
+- **`undeclared_imports`**: import names the plugin uses on purpose without
+  declaring them -- an import inside a script that runs on another host, say.
+  The dependency guard (`tests/pluginsystem/test_plugin_deps_declared.py`)
+  skips them; the reason goes in a comment beside the key.
 - **`plugins`**: the other plugins this one imports from, by folder name
   (a plugin that reads another's store: `["<other>"]`). They must be installed beside it;
   enabled is not required (`llm_common` is a library and never runs). The
@@ -753,7 +757,7 @@ web_ui:
     title: "My Plugin"                        # required
     description: "Plugin description for UI"  # shown and searched in the launcher
     icon: wrench                              # required: a symbol id in static/kit/icons.svg
-    category: agents                          # required: session, writer, business, context, agents, debug, system, admin
+    category: agents                          # required: session, context, agents, debug, system, admin -- or one of its own
     keywords: [dashboard, data]               # optional search words
     window: {width: 800, height: 600}         # optional: size of the detached window
     contexts:                                 # optional entry points from the chat: session, request
@@ -794,7 +798,9 @@ not parse is left out of the catalogue with an error log.
 - `endpoint` (required): URL of the panel page; `{{ name }}` is the plugin instance
 - `title` (required): name in the launcher, on the tab and in the window bar
 - `icon` (required): a symbol id from `static/kit/icons.svg` (all of them render at `/ui/kit`)
-- `category` (required): one of `session`, `writer`, `business`, `context`, `agents`, `debug`, `system`, `admin`
+- `category` (required): one of `session`, `context`, `agents`, `debug`, `system`, `admin` -- or a category of the
+  plugin's own: a slug (lower case letters, digits, `_`), listed after `session` while a panel the viewer sees is in it.
+  `category_label` (optional) names it; without it the slug does (`sales` -> "Sales")
 - `description`: one sentence, shown and searched in the launcher
 - `keywords`: search words that are not in the title
 - `window`: `{width, height}` of the detached window

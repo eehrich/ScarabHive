@@ -12,7 +12,8 @@ Three sources, one shape:
           title: "Message Debugger"
           description: "Inspect LLM requests and hook activity"
           icon: bug                  # a name in static/kit/icons.svg
-          category: debug            # one of CATEGORIES
+          category: debug            # one of CATEGORIES, or a plugin's own (a slug)
+          category_label: Debugging  # optional: the name of a category of its own (default: the slug)
           keywords: [requests, hooks]
           window: {width: 720, height: 520}
           contexts:                  # optional entry points from the chat
@@ -27,6 +28,7 @@ one list, so a panel is findable everywhere or nowhere.
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
@@ -34,11 +36,10 @@ from urllib.parse import unquote, urlsplit
 
 from agent_system.auth.enforcement import ROLE_HIERARCHY, role_rank
 
-#: Fixed on purpose: a plugin picks one, it does not invent its own.
+#: The core's own, in this order. A plugin's panel may name a category of its own (a slug, with an optional
+#: ``category_label``): it is listed after "session" -- once a panel the viewer sees is in it.
 CATEGORIES: tuple[tuple[str, str], ...] = (
     ("session", "Session"),
-    ("writer", "Writer"),
-    ("business", "Business"),
     ("context", "Context & memory"),
     ("agents", "Agents & tools"),
     ("debug", "Debugging"),
@@ -46,10 +47,12 @@ CATEGORIES: tuple[tuple[str, str], ...] = (
     ("admin", "Administration"),
 )
 CATEGORY_IDS = frozenset(key for key, _ in CATEGORIES)
+_CATEGORY_SLUG = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_CATEGORY_LABEL_MAX = 40
 #: A context names the one value the shell puts into the panel's URL.
 CONTEXTS = {"session": "session_id", "request": "request_id"}
 DEFAULT_WINDOW = {"width": 720, "height": 540}
-PANEL_KEYS = frozenset({"endpoint", "title", "description", "icon", "category",
+PANEL_KEYS = frozenset({"endpoint", "title", "description", "icon", "category", "category_label",
                         "keywords", "window", "contexts"})
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 #: What a browser strips from a URL or reads as a slash before resolving it.
@@ -72,6 +75,8 @@ class Panel:
     group: str = ""
     #: The plugin's guide in the Help panel (its id) when it has one or a README; the shell's help button opens it.
     help: str = ""
+    #: The name of a category of the plugin's own (one the core does not have); empty: the slug names it.
+    category_label: str = ""
 
     def visible_to(self, role: str) -> bool:
         return not self.roles or role in self.roles
@@ -195,8 +200,20 @@ def plugin_panel(instance: str, spec: Any, icons: Iterable[str], *, root: str | 
     if not endpoint.startswith(root):
         raise PanelSpecError(f"{instance}: endpoint must lie under {root}, got {endpoint!r}")
     category = _text(instance, spec, "category")
-    if category not in CATEGORY_IDS:
-        raise PanelSpecError(f"{instance}: category {category!r} is not one of {sorted(CATEGORY_IDS)}")
+    if not _CATEGORY_SLUG.fullmatch(category):
+        raise PanelSpecError(f"{instance}: category {category!r} must be one of {sorted(CATEGORY_IDS)} or a slug of "
+                             "its own (lower case letters, digits, _)")
+    # a slip of a core category would open a category of its own unnoticed
+    near = difflib.get_close_matches(category, CATEGORY_IDS, n=1, cutoff=0.75)
+    if category not in CATEGORY_IDS and near:
+        raise PanelSpecError(f"{instance}: category {category!r} is no core category -- did you mean {near[0]!r}? "
+                             "A category of its own needs a name of its own")
+    label = spec.get("category_label") or ""
+    if not isinstance(label, str) or len(label) > _CATEGORY_LABEL_MAX:
+        raise PanelSpecError(f"{instance}: category_label must be text of at most {_CATEGORY_LABEL_MAX} characters")
+    if label and category in CATEGORY_IDS:
+        raise PanelSpecError(f"{instance}: category_label names a category of the plugin's own; {category!r} is the "
+                             "core's and keeps its name")
     icon = _text(instance, spec, "icon")
     if icon not in set(icons):
         raise PanelSpecError(f"{instance}: icon {icon!r} is not in the kit sprite")
@@ -209,6 +226,7 @@ def plugin_panel(instance: str, spec: Any, icons: Iterable[str], *, root: str | 
         url=endpoint,
         icon=icon,
         category=category,
+        category_label=label.strip(),
         description=description,
         keywords=_string_list(instance, spec, "keywords"),
         window=_window(instance, spec),
@@ -240,10 +258,24 @@ def disambiguate(panels: list[Panel]) -> list[Panel]:
     return panels
 
 
+def categories_of(panels: list[Panel]) -> list[dict[str, str]]:
+    """The core's categories, and after "session" those of the plugins' own that ``panels`` use, by their name:
+    the first ``category_label`` a panel in it gives, else its slug ("sales" -> "Sales")."""
+    labels: dict[str, str] = {}
+    for panel in panels:
+        if panel.category not in CATEGORY_IDS and not labels.get(panel.category):
+            labels[panel.category] = panel.category_label
+    own = {key: label or key.replace("_", " ").capitalize() for key, label in labels.items()}
+    core = [{"id": key, "label": label} for key, label in CATEGORIES]
+    added = [{"id": key, "label": label} for key, label in sorted(own.items(), key=lambda item: (item[1].lower(), item[0]))]
+    return [core[0], *added, *core[1:]]
+
+
 def build_catalog(role: str, core: list[Panel], plugins: list[Panel]) -> dict[str, Any]:
     # Grouped among what this viewer sees: one visible instance is no group.
     panels = [*[p for p in core if p.visible_to(role)], *disambiguate([p for p in plugins if p.visible_to(role)])]
     return {
-        "categories": [{"id": key, "label": label} for key, label in CATEGORIES],
+        # a category of a plugin's own only where a panel this viewer sees is in it
+        "categories": categories_of(panels),
         "panels": [asdict(p) for p in panels],
     }
