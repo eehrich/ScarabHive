@@ -57,17 +57,17 @@ class TestUnknownToolHandling:
     @pytest.mark.asyncio
     async def test_unknown_tool_returns_error_not_exception(self, tool_execution_manager):
         """Test that unknown tool returns error message instead of raising exception."""
-        # Simulate LLM hallucinating a tool "writer_audio"
+        # Simulate LLM hallucinating a tool "voice_studio"
         tool_calls = [{
             "id": "call_123",
             "function": {
-                "name": "writer_audio",
+                "name": "voice_studio",
                 "arguments": '{"operation": "create"}'
             }
         }]
         
-        tool_name_mapping = {"writer_audio": "writer_audio"}
-        available_tools = ["writer_audio"]  # Tool is in available_tools but server doesn't exist
+        tool_name_mapping = {"voice_studio": "voice_studio"}
+        available_tools = ["voice_studio"]  # Tool is in available_tools but server doesn't exist
         step = 1
         request_id = "test_request_123"
         
@@ -82,19 +82,19 @@ class TestUnknownToolHandling:
         
         assert message.role == "tool"
         assert message.tool_call_id == "call_123"
-        assert message.name == "writer_audio"
+        assert message.name == "voice_studio"
         
         # Parse content to check error message
         content = json.loads(message.content)
         assert "error" in content
         assert "Unknown tool" in content["error"]
-        assert "writer_audio" in content["error"]
+        assert "voice_studio" in content["error"]
         assert content.get("type") == "ToolNotFoundError"
         
         # Verify event was emitted
         assert len(events) == 1
         assert events[0]["type"] == "tool_error"
-        assert events[0]["tool"] == "writer_audio"
+        assert events[0]["tool"] == "voice_studio"
 
     @pytest.mark.asyncio
     async def test_multiple_unknown_tools_all_return_errors(self, tool_execution_manager):
@@ -104,7 +104,7 @@ class TestUnknownToolHandling:
             {
                 "id": "call_1",
                 "function": {
-                    "name": "writer_audio",
+                    "name": "voice_studio",
                     "arguments": '{}'
                 }
             },
@@ -125,11 +125,11 @@ class TestUnknownToolHandling:
         ]
         
         tool_name_mapping = {
-            "writer_audio": "writer_audio",
+            "voice_studio": "voice_studio",
             "fake_tool": "fake_tool",
             "nonexistent_plugin": "nonexistent_plugin"
         }
-        available_tools = ["writer_audio", "fake_tool", "nonexistent_plugin"]
+        available_tools = ["voice_studio", "fake_tool", "nonexistent_plugin"]
         step = 1
         request_id = "test_request_multi"
         

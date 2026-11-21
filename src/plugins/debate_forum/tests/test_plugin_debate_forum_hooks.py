@@ -598,7 +598,7 @@ class TestWhereNewPostsGo:
         messages = [
             ChatMessage(role="user", content="analysiere X"),
             ChatMessage(role="assistant", content="fertig"),
-            ChatMessage(role="user", content="v6 fragt: wie weit bist du?",
+            ChatMessage(role="user", content="the coordinator asks: how far along are you?",
                         injected_by="debate_forum_direct"),
         ]
 

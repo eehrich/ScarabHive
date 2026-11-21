@@ -418,7 +418,7 @@ class RunPhasesMixin:
 
         # NOTE: no MCP shutdown here. The integration is process-wide state;
         # tearing it down at the end of EVERY request broke bootstrap-only
-        # processes (writer pipelines) after their first request, because
+        # processes (pipelines) after their first request, because
         # ToolServerIntegration.shutdown() stops all plugins but leaves
         # `initialized` True -- so the next request found a half-dead
         # integration and never re-initialized it. Shutdown belongs to the

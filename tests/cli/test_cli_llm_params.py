@@ -83,7 +83,7 @@ class TestParseLlmParamsArgs:
         # The classic: --llm-params BEFORE the task → nargs='+' eats the
         # task string. Skipping silently would mean the default task — abort hard.
         with pytest.raises(ValueError, match="expected KEY=VALUE"):
-            parse_llm_params_args(["thinking_level=max", "Schreibe ein Kinderbuch"])
+            parse_llm_params_args(["thinking_level=max", "Schreibe ein Gedicht"])
 
     def test_unknown_key_raises_with_field_list(self):
         # Typo keys must NOT vanish silently

@@ -81,7 +81,7 @@ async def test_inject_context_with_sub_agents(injector, mock_manager):
             "message_count": 45,
             "task_summary": "Q4 financial analysis for TSLA",
             "last_used": datetime.now(UTC).isoformat(),
-            "tools_used": ["yahoo_finance", "calculator"]
+            "tools_used": ["stock_quotes", "calculator"]
         }
     ]
     

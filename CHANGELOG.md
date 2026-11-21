@@ -440,7 +440,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Coding CLIs: the subscription guard went by what the last run to end had seen. A run reports the windows near its
   start and only its end stored that, so with many runs at once new ones started on a state minutes old. The report
   is now stored when it arrives. Runs already going when a window fills still go on.
-- MCP gateway: a tool that checks the caller's context in its session's template vars (a book's id) refused every
+- MCP gateway: a tool that checks the caller's context in its session's template vars (a record's id) refused every
   call through the gateway -- the runner that runs the calls knew nothing of the caller's session. A grant now
   carries the session's template vars as the issuing run has them (`session_vars`); the gateway sets them in its
   runner before the grant's first call (the session's first grant replacing what is there) and takes them away, with
@@ -523,8 +523,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The core knows no folder: a plugin declares the one its sessions belong in
   (`[session_folder]` in its plugin.toml: name, icon, the agent groups --
   `metadata.category` -- it files by itself; docs/plugin_authoring.md). A
-  plugin can declare a folder such as Writer (for the agent groups Writer and
-  Writer sub-agents); a stategraph machine's run session carries its `agent:`
+  plugin can declare a folder of its own (for the agent groups its agents
+  name); a stategraph machine's run session carries its `agent:`
   block's category, so a machine's runs land in its plugin's folder although
   their agent is the runner. A user makes folders of their own, changes or deletes a
   declared one (kept per user in `data/sessions/<user>/.folders.json`; one
@@ -581,14 +581,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the agent a machine's `agent:` block declares, and the LLM-using hooks
   (summarizer, watchdog, continuation, tool-result summaries).
 - Every agent names its group for the agent picker (`metadata.category`):
-  Assistant, Development, Testing, Writer, Writer sub-agents, Video, Media,
+  Assistant, Development, Testing, Video, Media,
   Research, Automation, Collaboration, Operations -- 21 of the 49 agents the
   picker lists had none and stood under "Other", the rest spelled the same
   group several ways. Set for the tool-only and private agents too;
   docs/agent_visibility.md lists the groups. A stategraph machine's `agent:`
   block takes a `category` too.
 - `file_ops` and the shared path sandbox: the tools' path parameters name the
-  instance's folders (`Path under data/runs, relative as written or
+  instance's folders (`Path under data/workspace, relative as written or
   absolute`) instead of asking for an "Absolute path", and refusals name them
   the same way, not as this machine's absolute paths. A read behind an
   invented root (`/workspace/data/...`, `/home/user/data/...`) reads from the
@@ -692,18 +692,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn's messages are stored zlib-compressed (about a third), in columns
   named for it (`payload_z`, `response_z`, `turns.messages_z`: a query of
   an old name fails instead of finding only old rows). The first start
-  moves an old file over on the writer (a minute or two, captures wait in
+  moves an old file over on a large installation (a minute or two, captures wait in
   the queue); the panel's prune then gives the freed space back to the
   disk. The move is one-way: code from before can neither write to the
   file nor start on it, so every process on it restarts together. A move
   that fails changes nothing: the retention strips the old payloads in
   place until a start succeeds, and takes no cost row while content is
-  left; the cost capture waits for the move, and writer-costs, where it
+  left; the cost capture waits for the move, and a cost analysis tool, where it
   needs a payload, says so and stops. The WAL is
   cut back after a checkpoint (`journal_size_limit`; it had stayed at
   2.1 GB). `llm_requests` keeps every cost column; a reader of payloads
   joins `llm_payloads` and reads them with `debugger_text()`
-  (`register_reader_functions`) -- writer-costs' resolvers do. A request
+  (`register_reader_functions`) -- a cost analysis tool's resolvers do. A request
   opened without its payload says why.
 - A state machine run's lease is renewed from a thread of its own: a `call`
   function holding the event loop for more than ~40 seconds let it run

@@ -391,8 +391,8 @@ class ToolSchemaBuilder:
         - "*tool*": wildcard matching on tool name
 
         Args:
-            tool_name: Individual tool name (e.g., "writer_graph_batch_link")
-            server_name: Server the tool belongs to (e.g., "writer_graph")
+            tool_name: Individual tool name (e.g., "notes_graph_batch_link")
+            server_name: Server the tool belongs to (e.g., "notes_graph")
             allowed_patterns: List of allowed patterns
 
         Returns:
@@ -485,8 +485,8 @@ class ToolSchemaBuilder:
         - "*tool*": wildcard matching on tool name
 
         Args:
-            tool_name: Individual tool name (e.g., "writer_graph_batch_link")
-            server_name: Server the tool belongs to (e.g., "writer_graph")
+            tool_name: Individual tool name (e.g., "notes_graph_batch_link")
+            server_name: Server the tool belongs to (e.g., "notes_graph")
             blocked_patterns: List of blocked patterns
 
         Returns:

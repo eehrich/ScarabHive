@@ -1223,7 +1223,7 @@ class TestUploadImageSecurity:
         extension allowlist closes the remaining exfil window."""
         allowed = tmp_path / "allowed"
         allowed.mkdir()
-        db_file = allowed / "writer.db"
+        db_file = allowed / "app.db"
         db_file.write_bytes(b"SQLite format 3\x00")
 
         server = self._make_server(mock_system_config, tmp_path, [str(allowed)])
@@ -1259,7 +1259,7 @@ class TestUploadImageSecurity:
     ) -> None:
         """Default (no explicit upload_source_dirs) must NOT include the
         bare project ``data/`` tree — that would re-expose databases
-        and writer state which the allowlist exists to protect."""
+        and plugin state which the allowlist exists to protect."""
         from plugins.comfyui.server import ComfyUIServer
         cfg = MagicMock()
         cfg.host = "127.0.0.1"
@@ -1278,7 +1278,7 @@ class TestUploadImageSecurity:
         bare_data = str(Path("data").resolve())
         assert bare_data not in resolved_roots, (
             "Default allowlist must not include bare data/ — exposes DBs "
-            "and writer state. Got: %s" % resolved_roots
+            "and plugin state. Got: %s" % resolved_roots
         )
 
 
@@ -1564,7 +1564,7 @@ class TestComfyUICleanup:
         # Recent: 1 hour ago
         os.utime(recent_file, (time.time() - 3600, time.time() - 3600))
         
-        # Set cleanup to 2 hours (writer_tts_comfyui config) and configure output_dir
+        # Set cleanup to 2 hours (as a TTS instance configures it) and configure output_dir
         mock_server_config.cleanup_age_hours = 2
         mock_server_config.output_dir = str(temp_output_dir)
         

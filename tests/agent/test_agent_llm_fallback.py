@@ -791,7 +791,7 @@ class _UpstreamErrorLLM:
 @pytest.mark.asyncio
 async def test_an_upstream_error_does_not_block_the_llm(system_config_with_profiles):
     """A gateway hiccup says nothing about the model's availability. Blocking it
-    routed whole hours onto the next chain member — for the writer chains that
+    routed whole hours onto the next chain member — for some chains that
     is a 4x-priced model."""
     primary = _UpstreamErrorLLM(failures=2)
     fallback = _ScriptedLLM("fallback")
@@ -951,14 +951,14 @@ async def test_descriptor_exhaustion_does_not_burn_the_fallback_chain(
     httpx reports "out of file descriptors" as a ConnectError, the same class
     an unreachable provider produces — so the transport clause switched
     profiles. No profile can help: the next client cannot open a socket
-    either. On 2026-08-30 a descriptor leak on the writer host did this 52
+    either. On 2026-08-30 a descriptor leak on a production host did this 52
     times, walking runs onto pricier fallback models that never had a chance
     of succeeding, while the log blamed the provider.
     """
     import errno as _errno
 
     # The exact chain httpx produces, measured against a real socket under a
-    # lowered RLIMIT_NOFILE on the writer host:
+    # lowered RLIMIT_NOFILE on that host:
     #   httpx.ConnectError -> httpcore.ConnectError -> OSError(EMFILE)
     # Three levels deep on purpose — a one-level fixture stays green even if
     # the cause-chain walk stops after the first hop, which is exactly the

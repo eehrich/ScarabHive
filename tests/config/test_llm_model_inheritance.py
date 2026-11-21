@@ -130,8 +130,8 @@ class TestAnInheritedFieldCanBeSwitchedOff:
 
 class TestFamilyMembers:
     """No separate base section: a family member carries the shared knobs and
-    the others extend it — exactly like the agent chains, where beat_writer
-    extends writer_agent."""
+    the others extend it — exactly like the agent chains, where a specialised
+    agent extends its base agent."""
 
     def test_a_sibling_supplies_the_shared_fields(self):
         out = _resolve({

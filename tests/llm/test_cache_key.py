@@ -45,18 +45,18 @@ class TestPrefixGrouping:
         assert a == b
 
     def test_early_divergence_different_key(self):
-        a = derive_prompt_cache_key("auto", _chat("sys", "Buch A Synopsis ..."))
-        b = derive_prompt_cache_key("auto", _chat("sys", "Buch B Synopsis ..."))
+        a = derive_prompt_cache_key("auto", _chat("sys", "Projekt A Konzept ..."))
+        b = derive_prompt_cache_key("auto", _chat("sys", "Projekt B Konzept ..."))
         assert a != b
 
     def test_long_system_prompt_does_not_mask_task(self):
         # Core case (user objection): the system prompt alone is >PREFIX_CHARS.
         # The window only counts FROM the first non-system message --
-        # different books must get different keys despite an identical,
+        # different projects must get different keys despite an identical,
         # huge system prompt.
         big_sys = "regelwerk " * 800  # ~8000 Zeichen
-        a = derive_prompt_cache_key("auto", _chat(big_sys, "Buch A Synopsis"))
-        b = derive_prompt_cache_key("auto", _chat(big_sys, "Buch B Synopsis"))
+        a = derive_prompt_cache_key("auto", _chat(big_sys, "Projekt A Konzept"))
+        b = derive_prompt_cache_key("auto", _chat(big_sys, "Projekt B Konzept"))
         assert a != b
 
     def test_different_system_prompt_different_key(self):
@@ -68,8 +68,8 @@ class TestPrefixGrouping:
         # Divergence BEYOND the first PREFIX_CHARS characters of the task
         # message deliberately does not separate the keys.
         stable_task = "x" * PREFIX_CHARS
-        a = derive_prompt_cache_key("auto", _chat("sys", stable_task + "Szene 1"))
-        b = derive_prompt_cache_key("auto", _chat("sys", stable_task + "Szene 2 anders"))
+        a = derive_prompt_cache_key("auto", _chat("sys", stable_task + "Schritt 1"))
+        b = derive_prompt_cache_key("auto", _chat("sys", stable_task + "Schritt 2 anders"))
         assert a == b
 
     def test_appended_messages_keep_key(self):
@@ -106,8 +106,8 @@ class TestInjectedBlocksDoNotMoveTheKey:
                 {"role": "user", "content": "die aufgabe"}]
 
     def test_a_rebuilt_block_keeps_the_key(self):
-        a = derive_prompt_cache_key("auto", self._with_block("- [ ] Kapitel 1"))
-        b = derive_prompt_cache_key("auto", self._with_block("- [x] Kapitel 1\n- [ ] Kapitel 2"))
+        a = derive_prompt_cache_key("auto", self._with_block("- [ ] Abschnitt 1"))
+        b = derive_prompt_cache_key("auto", self._with_block("- [x] Abschnitt 1\n- [ ] Abschnitt 2"))
         assert a == b
 
     def test_a_rebuilt_developer_note_keeps_the_key(self):
@@ -127,8 +127,8 @@ class TestInjectedBlocksDoNotMoveTheKey:
     def test_the_prompt_behind_the_block_still_counts(self):
         # And the block does not hide what stands behind it: two agents with
         # the same block stay apart.
-        a = self._with_block("- [ ] Kapitel 1")
-        b = self._with_block("- [ ] Kapitel 1")
+        a = self._with_block("- [ ] Abschnitt 1")
+        b = self._with_block("- [ ] Abschnitt 1")
         b[0] = {"role": "system", "content": "ein anderer agent"}
         assert derive_prompt_cache_key("auto", a) != derive_prompt_cache_key("auto", b)
 
@@ -150,7 +150,7 @@ class TestTheKeyTheRequestReallyCarries:
         return [
             ChatMessage(role="system", content=prompt or cls.PROMPT),
             ChatMessage(role="system", content=todo, injected_by="todo"),
-            ChatMessage(role="user", content="Schreib Kapitel eins."),
+            ChatMessage(role="user", content="Schreib Abschnitt eins."),
         ]
 
     @classmethod
@@ -245,9 +245,9 @@ class TestTheKeyTheRequestReallyCarries:
 
     @pytest.mark.asyncio
     async def test_chat_completions_keeps_the_shard_when_the_block_is_rebuilt(self):
-        a = await self._httpx_payload(self._history("- [ ] Kapitel 1"))
-        b = await self._httpx_payload(self._history("- [x] Kapitel 1\n- [ ] Kapitel 2"))
-        other = await self._httpx_payload(self._history("- [ ] Kapitel 1", prompt="Ein ANDERER Agent."))
+        a = await self._httpx_payload(self._history("- [ ] Abschnitt 1"))
+        b = await self._httpx_payload(self._history("- [x] Abschnitt 1\n- [ ] Abschnitt 2"))
+        other = await self._httpx_payload(self._history("- [ ] Abschnitt 1", prompt="Ein ANDERER Agent."))
         assert a == b, "the key moves with the todo list"
         assert a != other, "two agents share a shard"
 
@@ -255,20 +255,20 @@ class TestTheKeyTheRequestReallyCarries:
     async def test_list_shaped_content_still_tells_two_agents_apart(self):
         """The case that almost made this rule unusable.
 
-        Several pipelines, among them the audio pipeline, build their
+        Several pipelines build their
         messages with ``content=[TextContent(...)]``. If only dict parts are
         read, nothing but the role marker is left -- and EVERY agent with
         list content gets the same key, permanently, not just once."""
-        a = await self._httpx_payload(self._list_history("Du bist der Polisher.",
-                                                         "Pruefe Szene 3 (Buch 7)."))
+        a = await self._httpx_payload(self._list_history("Du bist der Pruefer.",
+                                                         "Pruefe Schritt 3 (Projekt 7)."))
         b = await self._httpx_payload(self._list_history("Ein GANZ anderer Agent.",
-                                                         "Pruefe Szene 3 (Buch 99)."))
+                                                         "Pruefe Schritt 3 (Projekt 99)."))
         assert a != b, "two unrelated agents on one shard"
         # And the same texts as a string must give the same key: the format
         # must not split the group (see TestFormats).
         from agent_system.llm.models import ChatMessage
-        plain = [ChatMessage(role="system", content="Du bist der Polisher."),
-                 ChatMessage(role="user", content="Pruefe Szene 3 (Buch 7).")]
+        plain = [ChatMessage(role="system", content="Du bist der Pruefer."),
+                 ChatMessage(role="user", content="Pruefe Schritt 3 (Projekt 7).")]
         assert a == await self._httpx_payload(plain)
 
     @pytest.mark.asyncio
@@ -276,14 +276,14 @@ class TestTheKeyTheRequestReallyCarries:
         """Both paths group the same conversation -- otherwise an agent sits
         on two shards depending on the call. The streaming path is the one
         most agents actually use."""
-        history = self._history("- [ ] Kapitel 1")
+        history = self._history("- [ ] Abschnitt 1")
         assert (await self._httpx_payload(history, streaming=True)
                 == await self._httpx_payload(history, streaming=False))
 
     def test_responses_keeps_the_shard_when_the_block_is_rebuilt(self):
-        a = self._responses_payload(self._history("- [ ] Kapitel 1"))
-        b = self._responses_payload(self._history("- [x] Kapitel 1\n- [ ] Kapitel 2"))
-        other = self._responses_payload(self._history("- [ ] Kapitel 1", prompt="Ein ANDERER Agent."))
+        a = self._responses_payload(self._history("- [ ] Abschnitt 1"))
+        b = self._responses_payload(self._history("- [x] Abschnitt 1\n- [ ] Abschnitt 2"))
+        other = self._responses_payload(self._history("- [ ] Abschnitt 1", prompt="Ein ANDERER Agent."))
         assert a == b, "the key moves with the todo list"
         assert a != other, "two agents share a shard"
 
@@ -297,15 +297,15 @@ class TestTheKeyTheRequestReallyCarries:
         return head + [ChatMessage(role="user", content=task)]
 
     @pytest.mark.asyncio
-    async def test_a_note_behind_the_system_prompt_keeps_books_apart(self):
+    async def test_a_note_behind_the_system_prompt_keeps_projects_apart(self):
         """A user note injected right behind the system prompt is the same for
         every run of the agent; hashed as "the first message" it put every
-        book on one shard."""
-        one, two = "Buch 1, Kapitel 3: Mila am Hafen.", "Buch 2, Kapitel 3: Jonas im Stellwerk."
+        project on one shard."""
+        one, two = "Projekt 1, Abschnitt 3: Hafenlogistik.", "Projekt 2, Abschnitt 3: Stellwerk."
         chat = [await self._httpx_payload(self._noted_task(t)) for t in (one, two)]
         responses = [self._responses_payload(self._noted_task(t)) for t in (one, two)]
         for name, (a, b) in (("chat", chat), ("responses", responses)):
-            assert a != b, f"{name}: two books share one shard"
+            assert a != b, f"{name}: two projects share one shard"
         assert chat[0] == await self._httpx_payload(self._noted_task(one, note=False)), \
             "the note moved the key"
 
@@ -459,11 +459,11 @@ class TestSegmentLadder:
             CacheBoundaryRegistry, plan_cache_blocks,
         )
         reg = CacheBoundaryRegistry()
-        plan_cache_blocks(self._task("S", "BUCH-A-DIGEST", "V"),
-                          mode="task_sequence", key="buchA", registry=reg)
-        out = plan_cache_blocks(self._task("S", "BUCH-B-DIGEST", "V"),
-                                mode="task_sequence", key="buchB", registry=reg)
-        assert out == [("S", True), ("BUCH-B-DIGEST", True), ("V", False)]
+        plan_cache_blocks(self._task("S", "PROJEKT-A-DIGEST", "V"),
+                          mode="task_sequence", key="projektA", registry=reg)
+        out = plan_cache_blocks(self._task("S", "PROJEKT-B-DIGEST", "V"),
+                                mode="task_sequence", key="projektB", registry=reg)
+        assert out == [("S", True), ("PROJEKT-B-DIGEST", True), ("V", False)]
 
 
 class TestBreakpointSplit:

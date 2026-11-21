@@ -11,7 +11,7 @@ own *execution*, because listing sessions in a terminal and in a browser have
 nothing in common but the name.
 
 Skills join the same namespace: anything that is not a built-in is looked up in
-the skill registry, so `/writer` runs the writer skill exactly the way
+the skill registry, so `/teach` runs the teach skill exactly the way
 `/sessions` lists sessions. That mirrors how the ecosystem (Claude Code, Codex)
 behaves, and it matches what the agent can already reach — `skills_list` never
 filtered by agent, so restricting the human here would leave the person at the

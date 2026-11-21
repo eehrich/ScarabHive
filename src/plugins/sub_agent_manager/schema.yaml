@@ -219,9 +219,9 @@ config:
     phase_variable: "workflow_phase"  # Name of the template variable to read
     phase_agents:  # Map of phase -> allowed agents for that phase
       # planning:
-      #   - story_designer
-      #   - story_reviewer
-      # characters:
-      #   - character_designer
-      #   - character_reviewer
+      #   - plan_designer
+      #   - plan_reviewer
+      # interfaces:
+      #   - api_designer
+      #   - api_reviewer
       _default: []  # Fallback if phase not in map (empty = show all allowed_agents)

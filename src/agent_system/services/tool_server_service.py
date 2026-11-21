@@ -451,7 +451,7 @@ class ToolServerService:
                     # PluginToolAdapter is the piece that knows all three shapes,
                     # so ask it whenever the raw object cannot answer. Without
                     # this fallback 18 public plugins report tool_count 0
-                    # (ssh_control, writer_player, log_viewer, ... = 22 tools).
+                    # (ssh_control, log_viewer, ... = 22 tools).
                     #
                     # The _tool_public check above deliberately stays on the RAW
                     # object: the adapter does not carry that flag, and reading

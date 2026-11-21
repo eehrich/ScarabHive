@@ -358,8 +358,8 @@ async def get_session(
 
         # Build hierarchical descendants tree with their context_vars (live-merged).
         # The Session Info panel uses this so users can see vars set on sub-agent
-        # sessions even when the top-level session has none yet (e.g. linear_book
-        # in early phases — vars are only set on spawned sub-agents).
+        # sessions even when the top-level session has none yet (e.g. a pipeline
+        # agent in early phases — vars are only set on spawned sub-agents).
         session["descendants_context_vars"] = []
         if descendants:
             try:

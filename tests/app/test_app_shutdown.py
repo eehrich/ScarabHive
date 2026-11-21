@@ -11,7 +11,7 @@ stream: every SSE endpoint of the API runs an agent, and a test must not
 start real LLM runs.
 
 The app loads the real config/*.yaml whatever its working directory, but
-opens the data and log paths in it (data/users.db, data/writer/books.db,
+opens the data and log paths in it (data/users.db, a plugin's own database,
 data/stategraph/runs.db -- whose startup sweep UPDATEs runs --, logs/api.log
 at DEBUG, ...) relative to that directory. The child therefore runs in a
 temporary one; only the few lines logged before the configured logging takes

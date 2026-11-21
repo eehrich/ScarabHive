@@ -2,7 +2,7 @@
 
 The mapping outlives its request on purpose: an append to a run that ended a moment ago still finds the run's
 session (app: /events/{id}/append falls back to it), and the admin view and the job manager name a finished job's
-session. Kept for every request -- a one-shot call's included, hundreds per book -- it grew without bound.
+session. Kept for every request -- a one-shot call's included, hundreds per pipeline run -- it grew without bound.
 """
 from __future__ import annotations
 

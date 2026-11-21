@@ -180,8 +180,8 @@ class ToolSchemaValidator:
         """Warn about a tool whose handler method exists nowhere in the plugin.
 
         Searched across the whole plugin package, not only server.py: a
-        handler may live in a mixin module (writer_issues keeps execute_task in
-        repair_pipeline.py).
+        handler may live in a mixin module (a plugin may keep execute_task in
+        a module of its own).
 
         Skipped: a plugin that routes by its own rule -- overriding
         ``_get_method_name``, or a ``call`` that hands on to no other ``call``

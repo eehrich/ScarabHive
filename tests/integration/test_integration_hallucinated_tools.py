@@ -12,12 +12,12 @@ from tool_execution_test_helpers import execute_tools_collect
 
 
 @pytest.mark.asyncio
-async def test_hallucinated_tool_example_writer_audio():
+async def test_hallucinated_tool_example_voice_studio():
     """
-    Test the specific example from the user: "writer_audio" hallucination.
+    Test the specific example from the user: "voice_studio" hallucination.
     
-    When an LLM hallucinates a tool like "writer_audio", the agent should:
-    1. NOT crash with RuntimeError("Unknown tool: writer_audio")
+    When an LLM hallucinates a tool like "voice_studio", the agent should:
+    1. NOT crash with RuntimeError("Unknown tool: voice_studio")
     2. Return an error message to the LLM
     3. Allow the agent to continue and recover
     """
@@ -40,22 +40,22 @@ async def test_hallucinated_tool_example_writer_audio():
     
     manager = ToolExecutionManager(registry=registry, agent=agent)
     
-    # Simulate LLM calling "writer_audio" which doesn't exist
+    # Simulate LLM calling "voice_studio" which doesn't exist
     tool_calls = [{
         "id": "call_12345",
         "function": {
-            "name": "writer_audio",
+            "name": "voice_studio",
             "arguments": '{"operation": "create", "filename": "test.wav"}'
         }
     }]
     
-    tool_name_mapping = {"writer_audio": "writer_audio"}
-    available_tools = ["writer_audio"]  # Tool is listed but server doesn't exist
+    tool_name_mapping = {"voice_studio": "voice_studio"}
+    available_tools = ["voice_studio"]  # Tool is listed but server doesn't exist
     step = 1
-    request_id = "test_request_writer_audio"
+    request_id = "test_request_voice_studio"
     
     # This should NOT raise RuntimeError!
-    # Before fix: Would crash with RuntimeError("Server not found for tool: writer_audio")
+    # Before fix: Would crash with RuntimeError("Server not found for tool: voice_studio")
     # After fix: Returns error message to LLM
     try:
         tool_messages, events, results = await execute_tools_collect(manager,
@@ -69,21 +69,21 @@ async def test_hallucinated_tool_example_writer_audio():
         # Verify message format
         assert message.role == "tool"
         assert message.tool_call_id == "call_12345"
-        assert message.name == "writer_audio"
+        assert message.name == "voice_studio"
         
         # Verify error content
         content = json.loads(message.content)
         assert "error" in content, "Should have error field"
         assert "Unknown tool" in content["error"], "Should mention unknown tool"
-        assert "writer_audio" in content["error"], "Should mention the hallucinated tool name"
+        assert "voice_studio" in content["error"], "Should mention the hallucinated tool name"
         assert content.get("type") == "ToolNotFoundError", "Should have error type"
         
         # Verify error event
         error_events = [e for e in events if e["type"] == "tool_error"]
         assert len(error_events) == 1
-        assert "writer_audio" in error_events[0]["tool"]
+        assert "voice_studio" in error_events[0]["tool"]
         
-        print("\n✓ Agent correctly handled hallucinated tool 'writer_audio'")
+        print("\n✓ Agent correctly handled hallucinated tool 'voice_studio'")
         print(f"✓ Error message to LLM: {content['error']}")
         print("✓ Agent can now recover and continue execution")
         
@@ -118,17 +118,17 @@ async def test_multiple_hallucinated_tools_no_crash():
     
     # Simulate LLM hallucinating multiple tools
     tool_calls = [
-        {"id": "call_1", "function": {"name": "writer_audio", "arguments": '{}'}},
+        {"id": "call_1", "function": {"name": "voice_studio", "arguments": '{}'}},
         {"id": "call_2", "function": {"name": "fake_tool_xyz", "arguments": '{}'}},
         {"id": "call_3", "function": {"name": "nonexistent", "arguments": '{}'}}
     ]
     
     tool_name_mapping = {
-        "writer_audio": "writer_audio",
+        "voice_studio": "voice_studio",
         "fake_tool_xyz": "fake_tool_xyz",
         "nonexistent": "nonexistent"
     }
-    available_tools = ["writer_audio", "fake_tool_xyz", "nonexistent"]
+    available_tools = ["voice_studio", "fake_tool_xyz", "nonexistent"]
     
     # Should handle all gracefully
     tool_messages, events, results = await execute_tools_collect(manager,

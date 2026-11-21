@@ -121,7 +121,7 @@ from .api.session_writes import resolve_agent_for_request  # noqa: E402,F401
 #: slot — and the usage write holds one for up to its 10 s SQLite busy_timeout,
 #: twice the hook's own 5 s limit. Measured 2026-09-01: "Hook
 #: 'context_usage_tracker.track_usage' timed out after 5.0s" while the CPU sat
-#: at 94 % idle, and the writer admin panel answered in ten seconds.
+#: at 94 % idle, and an admin panel answered in ten seconds.
 ASYNC_EXECUTOR_MAX_WORKERS = 32
 
 
@@ -599,11 +599,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Wire the BackgroundJobManager with the registry + default agent
     # so cancel_job can walk every Agent-typed server that may own a
-    # request (linear_book, v5b_story_designer, cover_artist, …) and
+    # request (any configured agent, not only the default) and
     # only fall back to the default agent when no registered server
-    # matches. Single source of truth for "cancel a writer-side
+    # matches. Single source of truth for "cancel a
     # request anywhere" — every endpoint (/api/requests/{rid}/cancel,
-    # /admin/active-sessions/{rid}/cancel, writer-jobs propagation)
+    # /admin/active-sessions/{rid}/cancel, a job queue's propagation)
     # now delegates to one path.
     try:
         get_background_job_manager().set_agent_registry(

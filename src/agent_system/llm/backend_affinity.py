@@ -14,7 +14,7 @@ entry's second, dearer backend hold every later run of the type there for 17 h
 call; a busy type held on one backend starts its next run unpinned once the
 window is over, which costs the first calls of one window their pin.
 
-Measured on the server on 22.09.2026, first calls of v4/v6 runs (72 h):
+Measured on the server on 22.09.2026, first calls of pipeline runs (72 h):
 
     gap to the type's previous call  same backend    another backend
     < 5 min                           57.8 % cached   27.8 %

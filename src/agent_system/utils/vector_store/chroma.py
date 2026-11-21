@@ -67,7 +67,7 @@ class _ChromaAccess:
     seen, and the lock live here, once per path: a reopen replaces the view
     for every instance at once, and ``epoch`` tells each of them to drop the
     collection handles it cached from the old one. Measured with a second
-    store open in every writer process (16 x 200): one access per instance
+    store open in every writing process (16 x 200): one access per instance
     638 and 206 of 640 found again, shared 637 and 639.
     """
 
@@ -91,7 +91,7 @@ class _ChromaAccess:
             # with its own threads, epoll and eventfd handles. Callers give every
             # session its own persist path, so no client is ever reused and a
             # dropped one leaks ~6 descriptors and ~5 threads that nothing
-            # reclaims — measured on the writer host at 229 leaked clients and 460
+            # reclaims — measured on a production host at 229 leaked clients and 460
             # tokio threads, which ran the API into the 1024 descriptor limit and
             # turned every X-API-Key request into a 401. close() drops the
             # refcount and stops the System.

@@ -53,7 +53,7 @@ def _forget_reported_config_mistakes():
     message_roles._reported.clear()
 
 
-NOTE = "Budget: two chapters left, then the run stops."
+NOTE = "Budget: two sections left, then the run stops."
 ANSWER = "I looked it up."
 QUESTION = "And what now?"
 

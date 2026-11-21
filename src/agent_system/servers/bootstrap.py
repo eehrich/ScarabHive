@@ -3,7 +3,7 @@
 Thin facade over ``agent_system.runtime``: discovering, declaring and building
 the configured servers lives there now, in one place instead of in every
 entry point. This function keeps its signature and its behaviour -- callers
-(tests, the writer tools, InitializationService) do not need to know.
+(tests, plugins' own tools, InitializationService) do not need to know.
 """
 from __future__ import annotations
 

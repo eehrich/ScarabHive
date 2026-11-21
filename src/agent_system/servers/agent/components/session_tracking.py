@@ -32,7 +32,7 @@ def is_volatile_note(msg: object) -> bool:
 
     Deliberately NOT ``message_roles.is_injected_note``, which also matches a
     marked ``user`` message. One of those is a hook's scripted follow-up -- a
-    turn somebody is meant to have said, and v4 reads it back out of the STORED
+    turn somebody is meant to have said, and a pipeline reads it back out of the STORED
     transcript by its configured text. Widening this predicate would delete it.
     """
     return (getattr(msg, "role", None) == DEVELOPER
@@ -314,7 +314,7 @@ class SessionTracker(SessionLocks):
     #: How many ended requests keep their request -> session mapping. It outlives the request on purpose -- an
     #: append to a run that ended a moment ago still finds its session (app: /events/{id}/append falls back to
     #: it), and the admin view and the job manager name a finished job's session -- but kept for every request,
-    #: a one-shot call's included (hundreds per book), it grew for the life of the process.
+    #: a one-shot call's included (hundreds per pipeline run), it grew for the life of the process.
     ENDED_REQUESTS_KEPT = 1000
 
     def _forget_ended_requests(self) -> None:
@@ -453,7 +453,7 @@ class SessionTracker(SessionLocks):
 
         Used for the ephemeral sessions that stateless one-shot calls create:
         without this the tracker would keep one growing entry per call (a
-        per-segment agent runs hundreds of times per book).
+        per-segment agent runs hundreds of times per pipeline run).
 
         Args:
             session_id: The session ID

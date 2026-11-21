@@ -112,8 +112,8 @@
       && card('b').querySelector('.sa-activity').textContent.trim() === '✅ completed (3 steps)';  // written before its last end: idle
     const actions = ['a', 'b', 'c', 'h'].every((key) => act(key, 'transcript') && act(key, 'archive') && !act(key, 'archive').disabled);
     const phase = !$('#phase').hidden && $('#phase .pk-badge').textContent === 'planning'
-      && $('#phase [data-part="agents"]').textContent === 'story_designer'
-      && $('#phase [data-part="allowed"]').textContent === 'story_designer, research_agent, writer_agent';
+      && $('#phase [data-part="agents"]').textContent === 'plan_designer'
+      && $('#phase [data-part="allowed"]').textContent === 'plan_designer, research_agent, writer_agent';
     return every({ shown: shown() === 'f,a,b,c,h', counts, running: Boolean(running), interrupted, idle, actions, phase });
   });
 

@@ -1,9 +1,9 @@
 """AgentCaller — code calls a sub-agent and gets text or a validated object back.
 
 The one primitive for code-orchestrated workflows: Python owns the control
-flow, an agent is a leaf call ``task -> structured result``. Lifted from the
-v4 pipeline's ``SubAgentMixin`` (writer_pipeline_v4/pipeline_agent.py), which
-had been forked into v5b; this is the single copy both are meant to use.
+flow, an agent is a leaf call ``task -> structured result``. Lifted from a
+pipeline's sub-agent mixin, which had been forked into a second pipeline; this
+is the single copy both are meant to use.
 
 Transport is the ``sub_agent_manager`` plugin's tool
 ``<instance>_manage_sub_agent`` (operations ``create`` / ``continue``),
@@ -51,7 +51,7 @@ class AgentCaller:
 
     Args:
         agent: the host ``Agent`` (needs ``call_tool``).
-        sam_instance: plugin instance name, e.g. ``"v5b_sam"``; the tool is
+        sam_instance: plugin instance name, e.g. ``"coder_sam"``; the tool is
             ``f"{sam_instance}_manage_sub_agent"``.
         session_id / user_id / request_id: forwarded as ``_session_id`` etc.
         cancellation_token: checked before every attempt.
@@ -146,7 +146,7 @@ class AgentCaller:
             self.last_instance_id = instance_id
         text = self._result_text(result, agent_type)
         # Rejected here at the transport seam — not in call() — so that
-        # text-level users (call_text / the v4 wrappers) are covered too.
+        # text-level users (call_text / a pipeline's wrappers) are covered too.
         self._reject_transport_failure(agent_type, text)
         await self._note(f"✓ {agent_type} ({time.monotonic() - t0:.1f}s)")
         return text, instance_id
@@ -351,16 +351,14 @@ class AgentCaller:
         ``_invoke`` raises before ``_create`` ever reaches this function, so a
         verdict that moves up there takes the counter with it -- and that
         counter is the only number telling a clean run from one that survived
-        thirty network faults (writer_pipeline_v4/server.py reads it for the
-        run report; the night of 2026-08-06 is why it exists).
+        thirty network faults (a pipeline reads it for its run report).
 
         Measured, and the reason this raises instead of only counting: the
-        text callers persist what they get. ``phase_4_5_finalize`` writes it
-        to ``books.metadata["book_summary"]`` AND into the series state,
-        ``phase_3_prosa`` to ``chapters.metadata.$.summary`` -- and neither
-        path retries (``_call_sub_agent`` is a single attempt). One 429 and
-        "Error: Agent execution failed: ..." is a book's published summary,
-        which the next volume of the series then reads as its predecessor.
+        text callers persist what they get. A pipeline wrote such a text as a
+        record's summary AND into the state the next record reads, without a
+        retry (a single attempt). One 429 and "Error: Agent execution failed:
+        ..." is a published summary, which the next record then reads as its
+        predecessor.
 
         Raising here also puts the JSON and the text path back on the same
         contract: ``parse_json_value`` already refuses the same prefix, so
@@ -408,13 +406,13 @@ def parse_json_value(text: str) -> Any:
     #     -> repair_json returns {'error': {...}}
     #     -> the caller's parsed.get("issues", []) yields []
     #     -> "0 findings", no exception, no retry: a failed review reads as a
-    #        clean book.
+    #        clean result.
     #
     # Any brace in a provider's error body is enough. Parsing it would be
     # parsing the transport's complaint as the agent's answer, so nothing
     # carrying this prefix is offered to the parser at all -- callers that can
     # still salvage the text get it unchanged from their own except-branch
-    # (``pipeline_agent._parse_json_result`` -> markdown replacement table).
+    # (a pipeline's own JSON parse -> markdown replacement table).
     if text.startswith(_FAILED_AS_CONTENT):
         raise ValueError(f"Sub-agent did not answer: {text[:200].strip()}")
 
@@ -429,8 +427,8 @@ def parse_json_value(text: str) -> Any:
     # ``<p>{<br> "a": 1</p>`` or ``<pre><code>{&quot;a&quot;: 1}``. That is
     # NOT a parse error: repair_json happily returns a dict whose keys are
     # ``quot;a&quot;`` or whose entries are cut at every <br> — no exception,
-    # a clean-looking empty result. Measured on B57 (2026-08-05): twelve
-    # findings silently lost, book passed the gate. The guard stays for JSON that
+    # a clean-looking empty result. Measured (2026-08-05): twelve
+    # findings silently lost, the result passed the gate. The guard stays for JSON that
     # still arrives that way (a model writing HTML itself), and says so. It sits
     # AFTER the fast path (valid JSON carrying <p> in a text field is never
     # touched) and BEFORE repair_json (the step that makes the damage silent).
@@ -465,7 +463,7 @@ def parse_json_value(text: str) -> Any:
     # A repaired LIST counts only when it carries at least one object.
     # repair_json happily extracts `[2]` out of prose like "see items [1]
     # and [2] in the text" — accepting that as a result means no retry, no
-    # error, and a consumer that sees "0 findings" (v4 review 2026-08-19).
+    # error, and a consumer that sees "0 findings" (a review, 2026-08-19).
     # A dict-free array as the WHOLE answer still passes via the strict
     # fast path above.
     if isinstance(repaired, dict) and repaired:

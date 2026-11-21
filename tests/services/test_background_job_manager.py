@@ -516,7 +516,7 @@ class TestBackgroundJobManager:
     async def test_cleanup_old_jobs(self, job_manager):
         """A finished job past its TTL keeps how its run ended -- and stays, found by its id.
 
-        writer_jobs' story_design retry reconnects under the same id long after and reads
+        A job queue's retry reconnects under the same id long after and reads
         the answer from it; with the job gone, the retry started the whole run again.
         """
         # Set very short TTL for testing
@@ -731,9 +731,9 @@ def _agent_owning(owned_request_ids: set[str]):
 
 
 class TestCancelJobRegistryWalk:
-    """The 2026-06-27 cancel regression: writer-side cancel was
+    """The 2026-06-27 cancel regression: a caller's cancel was
     setting the cancellation token + asking the DEFAULT agent only.
-    Sub-agent requests (linear_book, v5b_story_designer, ...) kept
+    Sub-agent requests (the agents of a pipeline) kept
     running because the agent server that owned them never had its
     _request_manager flag flipped. cancel_job now walks the registry
     AND falls back to the default agent."""

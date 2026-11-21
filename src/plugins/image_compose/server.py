@@ -54,8 +54,8 @@ class ImageComposeServer(SchemaBasedToolServer):
 
         # Optional write sandbox. Empty (the default) keeps the historical
         # behaviour -- the composite, its layer directory and the spec land
-        # wherever output_path says, which the writer's cover pipeline relies
-        # on. A non-empty list confines all three to those directories, so an
+        # wherever output_path says, which callers that pick their own paths
+        # rely on. A non-empty list confines all three to those directories, so an
         # instance handed to a sub-agent cannot write into another agent's
         # tree on a model-chosen path.
         dirs_cfg = getattr(server_config, "output_directories", None) or []

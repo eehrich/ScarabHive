@@ -341,9 +341,9 @@ class SubAgentManager:
         #    interval (default ~10s) can lag when the parent agent is blocked
         #    inside a long-running tool — the first sub-agent of such a tool
         #    would otherwise inherit a stale disk snapshot (often empty for
-        #    fresh sessions, missing late-set vars on resume). Symptom on v4:
-        #    scene_planner gets ``book_id`` missing → batch_scene validator
-        #    rejects ("book_id context not set"). See Fix #510.
+        #    fresh sessions, missing late-set vars on resume). Symptom: a
+        #    sub-agent finds a context var such as ``project_id`` missing and
+        #    its tool's validator rejects the call ("context not set").
         parent_context_vars = dict(parent_data.get("context_vars") or {})
         parent_agent = params.get("_agent") if params else None
         if parent_agent is not None and hasattr(parent_agent, "_session_tracker"):
@@ -397,8 +397,8 @@ class SubAgentManager:
         A sub-agent inherits the parent's context_vars only ONCE, when its
         session is created. Without this refresh, a ``continue`` would render
         the sub-agent's prompt from a frozen snapshot: after the coordinator
-        calls ``set_context(aufgabe=World)`` and continues an existing writer,
-        ``{{ aufgabe }}`` would still say "Idee" while the task text says
+        calls ``set_context(task=World)`` and continues an existing sub-agent,
+        ``{{ task }}`` would still say "Idea" while the task text says
         "World" — two contradicting instructions in one prompt.
 
         Provenance rule: a key the sub-agent set ITSELF (its value differs from

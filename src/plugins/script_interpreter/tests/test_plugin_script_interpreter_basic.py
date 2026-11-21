@@ -147,7 +147,7 @@ async def test_reset_sandbox(server, mock_status):
 
 @pytest.mark.asyncio
 async def test_bool_op_and_or_short_circuit(server, mock_status):
-    """and/or with Python semantics — the live v6 DB-transfer script failed
+    """and/or with Python semantics — a live DB-transfer script failed
     on `isinstance(x, dict) and x.get(...)` with UnsupportedFeatureError."""
     code = """
 d = {"a": 1}

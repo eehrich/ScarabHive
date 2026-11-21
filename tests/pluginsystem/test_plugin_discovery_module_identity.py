@@ -188,7 +188,7 @@ def test_a_single_file_plugin_belongs_to_the_root_it_lies_in(tmp_path):
 
 
 def test_a_shared_submodule_that_failed_is_retried(tmp_path, caplog):
-    """Shared modules (writer_core and friends) are imported once per process
+    """Shared modules (a plugin root's shared library packages) are imported once per process
     and skipped afterwards via ``sys.modules``. A submodule whose import blew
     up must therefore not stay behind -- it would never be tried again, and
     the failure was only a DEBUG line."""

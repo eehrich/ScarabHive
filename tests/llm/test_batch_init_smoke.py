@@ -4,12 +4,12 @@
 to the plugins, not to a model with one field per provider). Two of the three
 entry points in initialization.py were migrated with it, `init_batch_system`
 was not — and nothing here covered it, so a full green suite hid an
-AttributeError on every CLI and Writer bootstrap:
+AttributeError on every CLI and plugin bootstrap:
 
     providers_config.gemini.enabled  ->  'dict' object has no attribute 'gemini'
 
-Six call sites reach that function, two of them (writer_audio's
-audio_pipeline, writer_content's polish_pipeline) with no exception handler,
+Six call sites reach that function, two of them (an audio pipeline
+and a polish pipeline of further plugins) with no exception handler,
 where it takes `bootstrap_servers` and the hook registration down with it.
 """
 from __future__ import annotations

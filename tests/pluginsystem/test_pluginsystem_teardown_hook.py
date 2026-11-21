@@ -98,7 +98,7 @@ def _declares_a_factory(modules: List[Tuple[Path, ast.Module]]) -> bool:
     """Is this a plugin package at all?
 
     ``llm_*`` are LLM providers loaded by ``llm.registry`` from their
-    ``plugin.toml``, and ``writer_core`` and friends are libraries. Neither
+    ``plugin.toml``, and a plugin root's shared packages are libraries. Neither
     ever reaches ``capabilities.stop_plugin``, and neither names a factory.
     """
     return any(

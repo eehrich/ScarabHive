@@ -40,8 +40,8 @@ def configure(monkeypatch, directory: Path | str) -> None:
 class TestNothingConfigured:
     def test_data_paths_stay_the_relative_literals_they_replace(self):
         assert paths.configured_data_dir() is None
-        assert paths.data_path("writer", "books.db") == Path("data", "writer", "books.db")
-        assert paths.resolve_data_path("data/writer/books.db") == Path("data/writer/books.db")
+        assert paths.data_path("reports", "records.db") == Path("data", "reports", "records.db")
+        assert paths.resolve_data_path("data/reports/records.db") == Path("data/reports/records.db")
 
     def test_configuration_is_returned_untouched(self):
         config = {"a": "data/x", "b": ["data/y/"], "c": 3}
@@ -51,9 +51,9 @@ class TestNothingConfigured:
 class TestConfigured:
     def test_a_data_path_lands_in_the_configured_directory(self, monkeypatch, tmp_path):
         configure(monkeypatch, tmp_path)
-        assert paths.data_path("writer", "books.db") == tmp_path / "writer" / "books.db"
+        assert paths.data_path("reports", "records.db") == tmp_path / "reports" / "records.db"
         assert paths.data_path() == tmp_path
-        assert paths.resolve_data_path("data/writer/books.db") == tmp_path / "writer" / "books.db"
+        assert paths.resolve_data_path("data/reports/records.db") == tmp_path / "reports" / "records.db"
         assert paths.resolve_data_path("data") == tmp_path
 
     def test_other_paths_keep_what_they_say(self, monkeypatch, tmp_path):
@@ -67,7 +67,7 @@ class TestConfigured:
         """The loader moves configured values; the code that opens them may
         resolve again -- that must be harmless."""
         configure(monkeypatch, tmp_path)
-        once = paths.resolve_data_path("data/writer/books.db")
+        once = paths.resolve_data_path("data/reports/records.db")
         assert paths.resolve_data_path(once) == once
 
     def test_a_relative_setting_is_relative_to_the_project(self, monkeypatch):
@@ -85,7 +85,7 @@ class TestRelocate:
     def test_only_data_strings_move(self, monkeypatch, tmp_path):
         configure(monkeypatch, tmp_path)
         moved = paths.relocate_data_paths({
-            "db": "data/writer/books.db",
+            "db": "data/reports/records.db",
             "dirs": ["data/workspace", "src/plugins", "data"],
             "prose": "data/x\nis not a path",
             "near_miss": "database.db",
@@ -93,7 +93,7 @@ class TestRelocate:
         })
         root = tmp_path.as_posix()
         assert moved == {
-            "db": f"{root}/writer/books.db",
+            "db": f"{root}/reports/records.db",
             "dirs": [f"{root}/workspace", "src/plugins", root],
             "prose": "data/x\nis not a path",
             "near_miss": "database.db",
@@ -160,7 +160,7 @@ class TestLoader:
         assert cfg.auth.database_path == f"{(tmp_path / 'agentdata').as_posix()}/users.db"
 
     def test_the_master_config_is_read_when_nothing_loaded_it(self, monkeypatch, tmp_path):
-        """A process that never calls load_settings (a writer CLI) reads
+        """A process that never calls load_settings (a plugin CLI) reads
         paths.data_dir itself -- provisionally: a load after it still decides."""
         monkeypatch.setattr(paths, "_config_data_dir", paths._UNREAD)
         master = self.write_config(tmp_path, str(tmp_path / "from_master"))

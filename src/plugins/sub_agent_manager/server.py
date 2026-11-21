@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 #: An aborted run comes back as TEXT ("Error: ..."/"Cancelled: ..."), while
 #: `status` said "completed" regardless -- so a failed reviewer read like a
-#: clean book, and every consumer had to re-derive the truth from the prefix.
+#: clean result, and every consumer had to re-derive the truth from the prefix.
 #: The outcome now travels in its OWN field, next to the lifecycle status.
 #:
 #: Deliberately not in `status` itself, though that is where it belongs: the
@@ -224,8 +224,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
         # Same class of guard, one notch finer: for these agent types the
         # caller's use_advanced_model is honoured on `create` only; a
-        # `continue` on them always runs the normal chain. Built for the v6
-        # idea writers, whose advanced chain is the premium model: the
+        # `continue` on them always runs the normal chain. Built for panel
+        # writers whose advanced chain is the premium model: the
         # moderator's prompt legitimately asks for advanced continues
         # (synthesis, stuck), and each of those would be a premium call over
         # a 100k+ context. Empty by default = existing behaviour.
@@ -1260,8 +1260,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # A sub-agent inherits context_vars only once, at create time.
                 # Re-reading only its own frozen snapshot here would render the
                 # prompt from stale state: after the coordinator calls
-                # set_context(aufgabe=World) and continues this sub-agent,
-                # {{ aufgabe }} would still say the previous task while the task
+                # set_context(task=World) and continues this sub-agent,
+                # {{ task }} would still say the previous task while the task
                 # text says "World" — two contradicting instructions. Vars the
                 # sub-agent set itself survive (see merge_parent_context_vars).
                 try:
@@ -1665,7 +1665,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         if not known:
             return "This session has no sub-agents at all -- 'create' one first."
         # The most recently used first, as `list_sub_sessions` sorts them, and not all of them: a
-        # writer session has hundreds, and every one of them went into the model's context.
+        # long coordinator session has hundreds, and every one of them went into the model's context.
         ids = [m["instance_id"] for m in known if m.get("instance_id")]
         named = ", ".join(ids[:HINT_IDS]) + (
             f" and {len(ids) - HINT_IDS} more ('list' with include_completed names them)"
@@ -3113,8 +3113,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         """Whether some other process has this sub-agent's session in hand, i.e. is running it.
 
         `is_agent_running` knows this process only. A coordinator is not tied to one: a run woken
-        for a finished job continues the session in a process of its own, the API runs beside the
-        writer's worker. Asking only ourselves, `list` calls a live sub-agent interrupted and
+        for a finished job continues the session in a process of its own, the API runs beside a
+        job worker. Asking only ourselves, `list` calls a live sub-agent interrupted and
         writes that over its metadata -- the very thing the panel's read-only listing avoids
         (web_endpoints.py). A run holds the lock file next to its session for as long as it lasts
         (core/session_presence/), and that is the same answer in every process.

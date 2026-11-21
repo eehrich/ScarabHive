@@ -38,11 +38,11 @@ def plugin(tmp_path):
 
 def _call(call_id, reasoning=None):
     return ChatMessage(role="assistant", content=None, reasoning_details=reasoning, tool_calls=[
-        {"id": call_id, "type": "function", "function": {"name": "writer_content_chapter", "arguments": "{}"}}])
+        {"id": call_id, "type": "function", "function": {"name": "docs_content_chapter", "arguments": "{}"}}])
 
 
 def _result(call_id, content):
-    return ChatMessage(role="tool", tool_call_id=call_id, name="writer_content_chapter", content=content)
+    return ChatMessage(role="tool", tool_call_id=call_id, name="docs_content_chapter", content=content)
 
 
 async def _engineer(plugin, session_id, messages):

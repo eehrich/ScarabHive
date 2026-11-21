@@ -142,7 +142,7 @@ class TestShippedConfigArrives:
                 # Plugin-level keys are known to plugins.yaml but dropped per agent.
                 dead += [f"{path}: {key}" for key in unknown_config_keys(keys) + sorted(keys & PLUGIN_LEVEL_KEYS)]
 
-        # One anchor per scanned root (config/, src/), both public, so they hold with and without the writer.
+        # One anchor per scanned root (config/, src/), both public, so they hold with and without further plugin roots.
         assert {"context_browse_test_agent.yaml", "coder.yaml"} <= set(found), f"fixture: the scan found only {found}"
         assert not dead, f"override keys that reach no setting: {dead}"
 

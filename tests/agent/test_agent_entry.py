@@ -1,6 +1,6 @@
 """entry_agent: the one rule for "the agent a run starts on, by name".
 
-The API, agent-cli, agent-run, the chat's /agent and the writer plugins each
+The API, agent-cli, agent-run, the chat's /agent and the pipeline plugins each
 had their own copy; they differed in what they rewired, what they gated on and
 what they said. These tests pin the shared rule.
 """
@@ -90,4 +90,4 @@ def test_an_unknown_name_names_the_agents_there_are():
     with pytest.raises(NotAnAgent, match="Agent 'nowhere' not found") as refused:
         entry_agent("nowhere", _config(), ToolServerRegistry())
     assert "probe" in str(refused.value)
-    assert isinstance(refused.value, ValueError), "callers (agent-run, writer plugins) catch ValueError"
+    assert isinstance(refused.value, ValueError), "callers (agent-run, pipeline plugins) catch ValueError"

@@ -181,7 +181,7 @@ class Gateway:
         return text, bool(failed)
 
     def _seed(self, grant: Grant, runner: Any) -> Optional[str]:
-        """The issuing run's session vars (a book's id) set for the grant's session in the runner, before its first
+        """The issuing run's session vars (a project's id) set for the grant's session in the runner, before its first
         call: a tool reads its session's vars from the agent that runs it, and the runner knows nothing of that
         session. The first grant of the session replaces what is there; the last one to end takes all away, what
         a run set itself (a tool setting its context) included. Why the call cannot run, or None."""

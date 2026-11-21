@@ -13,13 +13,13 @@ from agent_system.utils.suggest import (
 
 
 class TestTheRealSlip:
-    """`reference/seitenformat.md` asked for, `references/seitenformat.md` held."""
+    """`reference/layout.md` asked for, `references/layout.md` held."""
 
     def test_singular_plural_typo_is_caught(self):
-        files = ["SKILL.md", "references/checks.md", "references/seitenformat.md",
-                 "scripts/verdachtsliste.py"]
-        assert suggest_path("reference/seitenformat.md", files) == \
-            "references/seitenformat.md"
+        files = ["SKILL.md", "references/checks.md", "references/layout.md",
+                 "scripts/scan.py"]
+        assert suggest_path("reference/layout.md", files) == \
+            "references/layout.md"
 
     def test_case_slip_is_taken_as_is(self):
         assert suggest_path("References/Checks.md",

@@ -960,7 +960,7 @@ class TestCacheRateStaysBelowOneHundred:
 
         path = tmp_path / "usage.json"
         path.write_text(json.dumps({"agents": {"old": {
-            "agent_id": "old", "agent_name": "v4_request_analyzer",
+            "agent_id": "old", "agent_name": "request_analyzer",
             "total_calls": 127, "total_tokens": 320639,
             "total_cached_tokens": 179968,     # accumulated since the old release
             "total_prompt_tokens": 22531,      # only since the newer one
@@ -1276,7 +1276,7 @@ class TestSharedStoreRegressions:
         assert got == {"req_1", "req_1_sub_x", "req_1_sub_x_sub_y"}, got
 
     def test_legacy_import_survives_simultaneous_starts(self, tmp_path):
-        """agent-api and agent-writer-worker are restarted together.
+        """agent-api and a job worker are restarted together.
 
         A check-then-act over separate transactions let both import: measured
         with three simultaneous starts, the history landed twice. The marker is

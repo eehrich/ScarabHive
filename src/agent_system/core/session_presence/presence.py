@@ -172,7 +172,7 @@ def note_stop(request_id: str) -> None:
 
 def forget_stop(request_id: str) -> None:
     """A new run is adopted under an id a caller chose (app.py): whatever an
-    earlier run of the same id was told is over (writer_jobs sends a run again
+    earlier run of the same id was told is over (a job queue sends a run again
     under its id)."""
     with _stops_lock:
         _stops.discard(request_id)

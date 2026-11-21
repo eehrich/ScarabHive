@@ -3,8 +3,8 @@
 Three things get written by one render call -- the composite, a directory of
 per-layer PNGs, and optionally the spec -- and every one of them takes a
 path the model chose. With ``output_directories`` set, none of the three
-may resolve outside; with it empty (the default), nothing changes for the
-writer's cover pipeline, which writes into data/writer/covers.
+may resolve outside; with it empty (the default), nothing changes for a
+caller that writes into a directory of its own.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ async def test_the_layer_directory_and_the_spec_are_confined_as_well(tmp_path):
 
 
 async def test_without_the_setting_writes_go_wherever_they_are_told(tmp_path):
-    """Counter-check: the default is unrestricted, or the writer's covers
+    """Counter-check: the default is unrestricted, or existing callers
     would start failing the day this shipped."""
     server, allowed = make_server(tmp_path, confined=False)
     assert server.output_directories == []

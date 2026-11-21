@@ -212,11 +212,11 @@ class TestWildcardRoots:
     def test_pattern_finds_grouped_skills(self, tmp_path):
         """skills/<group>/<skill>/SKILL.md — the reason wildcards exist."""
         root = tmp_path / "skills"
-        _write_skill(root / "amiga", "copper-tricks", "COPPER")
+        _write_skill(root / "garden", "compost-tricks", "COMPOST")
         _write_skill(root / "writing", "house-style", "STYLE")
         reg = SkillRegistry()
         reg.discover([str(root / "*")])
-        assert reg.names() == ["copper-tricks", "house-style"]
+        assert reg.names() == ["compost-tricks", "house-style"]
 
     def test_recursive_pattern_finds_any_depth(self, tmp_path):
         root = tmp_path / "skills"

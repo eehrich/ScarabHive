@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api.elevenlabs.io"
 DEFAULT_MODEL = "eleven_v4"
 # ponytail: fixed format, every plan has it (pcm_44100 needs Pro); a field on
-# TTSModelConfig when a book should get 44.1 kHz.
+# TTSModelConfig when a narration should get 44.1 kHz.
 OUTPUT_FORMAT = "pcm_24000"
 SAMPLE_RATE = 24000
 

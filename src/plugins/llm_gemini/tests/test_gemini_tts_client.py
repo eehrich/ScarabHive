@@ -576,7 +576,7 @@ class TestItReportsWhatTheSynthesisCost:
 class TestNoCloning:
     """Gemini cannot clone. A reference on the voice must fail the CALL --
     through synthesize()/synthesize_multi_speaker(), before any request --
-    not quietly turn into a preset voice for a whole book."""
+    not quietly turn into a preset voice for a whole narration."""
 
     @pytest.mark.asyncio
     async def test_synthesize_refuses_a_reference_before_any_request(self, mock_genai):

@@ -21,7 +21,7 @@ place (``Agent.tool_dispatch_denial``, the same predicate dispatch raises on).
 
 What this is deliberately NOT: prompt expansion. Claude Code's plugin commands
 and MCP prompts expand into a message for the model; here skills already do
-that (``/writer analysiere X``), and a second mechanism for the same thing
+that (``/teach X``), and a second mechanism for the same thing
 would only split the namespace further. A plugin command does something and
 prints the result — no LLM turn, no tokens.
 
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 #: alias of ``_session_id`` by the agent-as-tool path (``Agent.call``), and
 #: ``agent_name`` selects the target agent in lessons_learned. Deliberately
 #: NOT here: ``status`` and ``user_id`` -- enumerated the consumers, both are
-#: ordinary tool parameters (todo, lessons_learned, writer_audio), and
+#: ordinary tool parameters (todo, lessons_learned, an audio plugin), and
 #: forbidding them would block a perfectly good ``/todo open``.
 _RESERVED_ARGUMENTS = frozenset({"requestid", "sessionid", "agentname"})
 

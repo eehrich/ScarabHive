@@ -11,7 +11,7 @@ Measured 2026-09-01 on the live system: `agent-cli reload` reported
 2. No agent type implemented ``reload_config`` at all, although the feature's
    own docstring advertises "an agent's template vars" as covered. Raising an
    agent's ``max_steps`` therefore needed a full API restart, which drops
-   in-flight book runs.
+   in-flight pipeline runs.
 """
 from __future__ import annotations
 

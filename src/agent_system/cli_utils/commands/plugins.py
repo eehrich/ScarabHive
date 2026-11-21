@@ -93,7 +93,7 @@ def _print_plugin_info(args: Any, servers: Dict[str, Any], plugins: Dict[str, An
         sys.exit(1)
     meta = getattr(factory, "_plugin_metadata", None) or {}
     # A plugin is a TYPE; what plugins.yaml enables are its instances,
-    # whose names need not match the type (writer_audio_ops is an
+    # whose names need not match the type (speech_ops can be an
     # audio_ops). Same rule as the listing: enabled when any is.
     enabled_flag = any(
         v.enabled for k, v in servers.items() if _plugin_type_of(servers, plugins, k) == target)

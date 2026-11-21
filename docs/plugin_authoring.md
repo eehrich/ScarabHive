@@ -104,7 +104,7 @@ plugins:
         system_template: "./prompts/financial_analyst.md"   # ./ = relative to this YAML
         tools:
           allowed:                      # empty = no tools at all
-            - "yahoo_finance/*"
+            - "market_data/*"
             - "web_scraper/*"
             - "duckduckgo_search/*"
           blocked:
@@ -498,7 +498,7 @@ belongs in that plugin's `plugin.toml`.
 ### A folder for the plugin's sessions (`[session_folder]`)
 
 The session list in the shell groups sessions into folders. The core knows
-no folder: a plugin whose agents start sessions of their own -- books, video
+no folder: a plugin whose agents start sessions of their own -- long pipelines, video
 runs -- declares the one they belong in, next to `[plugin]`:
 
 ```toml

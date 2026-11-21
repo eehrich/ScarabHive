@@ -849,7 +849,7 @@ def _reset_all_global_state():
     # registry a prior app-building test populated. A later bare-agent test
     # then discovers every plugin and renders an extra tool-system prompt
     # (regression seen in tests/integration test_message_list_construction and
-    # broad writer-test pollution). Clear the registry contents IN PLACE so
+    # broad test pollution). Clear the registry contents IN PLACE so
     # every alias observes it empty, and unify both module references on one
     # instance.
     try:

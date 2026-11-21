@@ -127,7 +127,7 @@ def thinking_text_from_details(details: Any) -> str:
       and ending on punctuation — in all 702 multi-block messages at least one
       block ends without trailing whitespace. They are therefore joined like
       paragraphs, not glued: gluing produced
-      ``...proper continuity.**Evaluating story inconsistencies**``.
+      ``...proper order.**Evaluating the inconsistencies**``.
     * a verbatim replay block — ``reasoning.responses_items`` whose ``items``
       are the provider's raw output items; a reasoning item keeps its text in
       ``content[]`` (raw thinking) or ``summary[]`` (condensed).

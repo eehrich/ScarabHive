@@ -66,13 +66,13 @@ def _shown(client):
 
 async def test_a_session_files_by_its_agent_s_group_or_the_one_its_starter_stamped(setup):
     client, manager, _ = setup
-    writer = await manager.create_session("anonymous", title="w", agent_name=FILED_AGENT)
+    filed = await manager.create_session("anonymous", title="w", agent_name=FILED_AGENT)
     chat = await manager.create_session("anonymous", title="c", agent_name=CHAT_AGENT)
-    # stamped by its starter, of an agent whose own group is another -- and looked up, the writer session has it
+    # stamped by its starter, of an agent whose own group is another -- and looked up, the filed session has it
     run = await manager.create_session("anonymous", title="r", agent_name=FILED_AGENT)
     await manager.update_session_metadata("anonymous", run["session_id"], {"category": "Video"})
     listed = _listed(client)
-    assert listed[writer["session_id"]]["category"] == FILED_GROUP
+    assert listed[filed["session_id"]]["category"] == FILED_GROUP
     assert listed[chat["session_id"]]["category"] == CHAT_GROUP
     assert listed[run["session_id"]]["category"] == "Video", "the starter's stamp wins over the agent's group"
     assert all(s["folder"] is None for s in listed.values()), "nobody chose a folder yet"
@@ -116,24 +116,24 @@ async def test_tags_set_on_a_session_reach_the_list_without_another_save(setup):
 def test_a_user_keeps_their_own_changes_and_deletions_and_gets_what_they_left_from_the_plugin(setup):
     client, _, root = setup
     shown = _shown(client)
-    video, writer = shown[VIDEO_FOLDER], shown[FILED_FOLDER]
+    video, filed = shown[VIDEO_FOLDER], shown[FILED_FOLDER]
     mine = {"id": "proj", "name": " Project ", "icon": "rocket", "groups": []}
-    renamed = {**writer, "name": "Books", "icon": "star"}
+    renamed = {**filed, "name": "Reports", "icon": "star"}
     answer = client.put("/api/sessions/folders", json={"folders": [renamed, mine]})  # the video folder left out
     assert answer.status_code == 200
     shown = _shown(client)
     assert VIDEO_FOLDER not in shown, "a declared folder the user deleted stays deleted"
-    assert shown[FILED_FOLDER]["name"] == "Books" and shown["proj"]["name"] == "Project"
+    assert shown[FILED_FOLDER]["name"] == "Reports" and shown["proj"]["name"] == "Project"
     stored = json.loads((root / "anonymous" / ".folders.json").read_text(encoding="utf-8"))
     assert stored["removed"] == [VIDEO_FOLDER], "a dot file: the index rebuild reads no session from it"
     # a declared folder left as it is is not copied: a plugin that changes its declaration reaches the user
-    client.put("/api/sessions/folders", json={"folders": [writer, video, mine]})
+    client.put("/api/sessions/folders", json={"folders": [filed, video, mine]})
     stored = json.loads((root / "anonymous" / ".folders.json").read_text(encoding="utf-8"))
     assert [folder["id"] for folder in stored["folders"]] == ["proj"] and stored["removed"] == []
     # the user's own folder takes a group a declared one claims; the declared one lets it go
     claiming = {**mine, "groups": ["Video"]}
-    client.put("/api/sessions/folders", json={"folders": [writer, {**video, "groups": []}, claiming]})
-    client.put("/api/sessions/folders", json={"folders": [writer, claiming]})
+    client.put("/api/sessions/folders", json={"folders": [filed, {**video, "groups": []}, claiming]})
+    client.put("/api/sessions/folders", json={"folders": [filed, claiming]})
     stored_file = root / "anonymous" / ".folders.json"
     stored = json.loads(stored_file.read_text(encoding="utf-8"))
     stored["removed"] = []  # the video folder back, as a plugin's declaration would bring it

@@ -18,16 +18,16 @@ class TestToolSchemaBuilderBlockedPatterns:
         
         # Exact match should block
         assert builder._is_tool_blocked(
-            "writer_graph_batch_link",
-            "writer_graph",
-            ["writer_graph/writer_graph_batch_link"]
+            "doc_graph_batch_link",
+            "doc_graph",
+            ["doc_graph/doc_graph_batch_link"]
         )
         
         # Non-match should not block
         assert not builder._is_tool_blocked(
-            "writer_graph_validate",
-            "writer_graph",
-            ["writer_graph/writer_graph_batch_link"]
+            "doc_graph_validate",
+            "doc_graph",
+            ["doc_graph/doc_graph_batch_link"]
         )
 
     def test_is_tool_blocked_server_wildcard(self):
@@ -105,34 +105,34 @@ class TestToolSchemaBuilderBlockedPatterns:
         )
         
         tools_schema = [
-            {"type": "function", "function": {"name": "writer_graph_validate", "description": "Validate"}},
-            {"type": "function", "function": {"name": "writer_graph_batch_link", "description": "Batch link"}},
+            {"type": "function", "function": {"name": "doc_graph_validate", "description": "Validate"}},
+            {"type": "function", "function": {"name": "doc_graph_batch_link", "description": "Batch link"}},
             {"type": "function", "function": {"name": "web_scraper_scrape", "description": "Scrape"}},
         ]
         
         tool_name_mapping = {
-            "writer_graph_validate": "writer_graph",
-            "writer_graph_batch_link": "writer_graph",
+            "doc_graph_validate": "doc_graph",
+            "doc_graph_batch_link": "doc_graph",
             "web_scraper_scrape": "web_scraper",
         }
         
-        usable_tools = ["writer_graph", "writer_graph_validate", "writer_graph_batch_link", "web_scraper", "web_scraper_scrape"]
-        display_tools = ["writer_graph_validate", "writer_graph_batch_link", "web_scraper_scrape"]
+        usable_tools = ["doc_graph", "doc_graph_validate", "doc_graph_batch_link", "web_scraper", "web_scraper_scrape"]
+        display_tools = ["doc_graph_validate", "doc_graph_batch_link", "web_scraper_scrape"]
         
-        blocked_patterns = ["writer_graph/writer_graph_batch_link"]
+        blocked_patterns = ["doc_graph/doc_graph_batch_link"]
         
         filtered_schema, filtered_mapping, filtered_usable, filtered_display = builder._apply_blocked_patterns(
             tools_schema, tool_name_mapping, usable_tools, display_tools, blocked_patterns
         )
         
-        # writer_graph_batch_link should be removed
+        # doc_graph_batch_link should be removed
         assert len(filtered_schema) == 2
-        assert "writer_graph_batch_link" not in filtered_mapping
-        assert "writer_graph_batch_link" not in filtered_usable
-        assert "writer_graph_batch_link" not in filtered_display
+        assert "doc_graph_batch_link" not in filtered_mapping
+        assert "doc_graph_batch_link" not in filtered_usable
+        assert "doc_graph_batch_link" not in filtered_display
         
         # Other tools should remain
-        assert "writer_graph_validate" in filtered_mapping
+        assert "doc_graph_validate" in filtered_mapping
         assert "web_scraper_scrape" in filtered_mapping
 
     def test_apply_blocked_patterns_server_wildcard(self):
@@ -144,31 +144,31 @@ class TestToolSchemaBuilderBlockedPatterns:
         )
         
         tools_schema = [
-            {"type": "function", "function": {"name": "writer_graph_validate", "description": "Validate"}},
-            {"type": "function", "function": {"name": "writer_graph_batch_link", "description": "Batch link"}},
+            {"type": "function", "function": {"name": "doc_graph_validate", "description": "Validate"}},
+            {"type": "function", "function": {"name": "doc_graph_batch_link", "description": "Batch link"}},
             {"type": "function", "function": {"name": "web_scraper_scrape", "description": "Scrape"}},
         ]
         
         tool_name_mapping = {
-            "writer_graph_validate": "writer_graph",
-            "writer_graph_batch_link": "writer_graph",
+            "doc_graph_validate": "doc_graph",
+            "doc_graph_batch_link": "doc_graph",
             "web_scraper_scrape": "web_scraper",
         }
         
-        usable_tools = ["writer_graph", "writer_graph_validate", "writer_graph_batch_link", "web_scraper", "web_scraper_scrape"]
-        display_tools = ["writer_graph_validate", "writer_graph_batch_link", "web_scraper_scrape"]
+        usable_tools = ["doc_graph", "doc_graph_validate", "doc_graph_batch_link", "web_scraper", "web_scraper_scrape"]
+        display_tools = ["doc_graph_validate", "doc_graph_batch_link", "web_scraper_scrape"]
         
-        # Block all writer_graph tools
-        blocked_patterns = ["writer_graph/*"]
+        # Block all doc_graph tools
+        blocked_patterns = ["doc_graph/*"]
         
         filtered_schema, filtered_mapping, filtered_usable, filtered_display = builder._apply_blocked_patterns(
             tools_schema, tool_name_mapping, usable_tools, display_tools, blocked_patterns
         )
         
-        # All writer_graph tools should be removed
+        # All doc_graph tools should be removed
         assert len(filtered_schema) == 1
-        assert "writer_graph_validate" not in filtered_mapping
-        assert "writer_graph_batch_link" not in filtered_mapping
+        assert "doc_graph_validate" not in filtered_mapping
+        assert "doc_graph_batch_link" not in filtered_mapping
         
         # web_scraper should remain
         assert "web_scraper_scrape" in filtered_mapping
@@ -193,13 +193,13 @@ async def test_build_schemas_with_blocked_patterns():
     # Create mock server that returns tool objects with proper attributes
     mock_server = Mock()
     mock_server.list_tools = AsyncMock(return_value=[
-        MockTool(name="writer_graph_validate", description="Validate", input_schema={}),
-        MockTool(name="writer_graph_batch_link", description="Batch link", input_schema={}),
-        MockTool(name="writer_graph_create", description="Create", input_schema={}),
+        MockTool(name="doc_graph_validate", description="Validate", input_schema={}),
+        MockTool(name="doc_graph_batch_link", description="Batch link", input_schema={}),
+        MockTool(name="doc_graph_create", description="Create", input_schema={}),
     ])
     
     def mock_get_server(name):
-        if name == "writer_graph":
+        if name == "doc_graph":
             return mock_server
         return None
     
@@ -210,14 +210,14 @@ async def test_build_schemas_with_blocked_patterns():
     )
     
     # Build schemas with blocked patterns
-    blocked_patterns = ["writer_graph/writer_graph_batch_link"]
+    blocked_patterns = ["doc_graph/doc_graph_batch_link"]
     tools_schema, tool_name_mapping, usable_tools, display_tools = await builder.build_schemas(
-        available_tools=["writer_graph"],
+        available_tools=["doc_graph"],
         blocked_patterns=blocked_patterns
     )
     
-    # writer_graph_batch_link should be blocked
+    # doc_graph_batch_link should be blocked
     tool_names = [t["function"]["name"] for t in tools_schema]
-    assert "writer_graph_batch_link" not in tool_names
-    assert "writer_graph_validate" in tool_names
-    assert "writer_graph_create" in tool_names
+    assert "doc_graph_batch_link" not in tool_names
+    assert "doc_graph_validate" in tool_names
+    assert "doc_graph_create" in tool_names

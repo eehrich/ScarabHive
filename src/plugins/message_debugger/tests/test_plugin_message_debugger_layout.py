@@ -129,7 +129,7 @@ def test_a_move_that_failed_costs_no_cost_row(old_file, monkeypatch):
 
 
 def test_a_start_waits_for_another_process_moving_the_file_over(old_file, monkeypatch):
-    """The API and the writer worker start together on one file. The first one's move holds the write lock for
+    """The API and a job worker start together on one file. The first one's move holds the write lock for
     minutes; the second one's start must wait for it, not give up after the usual timeout and lose its
     debugger."""
     import threading

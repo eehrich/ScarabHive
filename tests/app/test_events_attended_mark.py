@@ -2,7 +2,7 @@
 
 The mark is what tool_approval asks before it puts a call to a person: only a
 client that shows the run's questions to the person who started it (the web
-chat) sends ``attended``. Everything else that starts runs -- the writer's
+chat) sends ``attended``. Everything else that starts runs -- a job queue's
 dispatches over /events, the openai_api plugin, the CLIs -- reads the stream as
 a program, and a question put there would wait for nobody.
 

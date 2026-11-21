@@ -191,7 +191,7 @@ class TTSClient:
     """
 
     #: Whether ``TTSVoice.reference_audio`` is honoured. ``check_voice``
-    #: refuses a reference on a client without it — never narrate a book in
+    #: refuses a reference on a client without it — never narrate a text in
     #: a preset voice instead.
     supports_voice_cloning: bool = False
 

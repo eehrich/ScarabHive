@@ -5,7 +5,7 @@
 #   prompts <- system_template "./prompts/x.md" resolves next to the YAML
 #   skills  <- config/config.yaml skills.skill_dirs has src/plugins*/*/skills
 # Plugin discovery skips a directory without an entrypoint file, so the absence
-# of plugin.py is the design, not an omission. Same shape as writer_publish.
+# of plugin.py is the design, not an omission.
 [plugin]
 name = "coder"
 version = "1.0.0"

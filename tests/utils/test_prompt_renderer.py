@@ -114,7 +114,7 @@ class TestHtmlCommentsNeverReachTheModel:
         md_file = tmp_path / "agent.md"
         md_file.write_text(
             "# Agent\n"
-            "<!-- why this rule exists: book 77 -->\n"
+            "<!-- why this rule exists: incident 77 -->\n"
             "Rule one. <!-- inline note --> Rule two.\n"
             "  <!--\n  a note over\n  several lines\n  -->\n"
             "End.",

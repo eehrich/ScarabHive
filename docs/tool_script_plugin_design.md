@@ -19,7 +19,7 @@ tool Y. This is:
 - **Expensive & slow** — output tokens are the costly, latency-bound part of a
   turn; a 5-call chain costs 5 LLM round-trips plus the re-typed payloads.
 - **Lossy** — LLMs corrupt payloads they re-type: `\n` un-escaped, values
-  shortened, commas dropped. This exact failure produced the v6 synopsis JSON
+  shortened, commas dropped. This exact failure produced a JSON document
   corruption and motivated `json_store`.
 
 `json_store` fixed this for *one* data shape (JSON documents, passed by
@@ -35,7 +35,7 @@ code-execution-with-MCP writeup reports >90 % token savings on chains).
 turn plus an error payload. The break-even depends on first-try validity, which
 depends on how close the sandbox is to real Python (§5) and how good dispatch
 errors are (§6). The pilot therefore ships with a measurement gate (§12) —
-tokens and turns per v6 ritual step, script-mode vs. direct-mode, before wider
+tokens and turns per coordinator ritual step, script-mode vs. direct-mode, before wider
 rollout.
 
 ### Why not a declarative pipe tool?
@@ -79,7 +79,7 @@ v1 of this doc claimed a plugin needs zero core changes. The review disproved
 that on three counts:
 
 1. **Tool-name→server resolution:** `_get_server_from_any_registry()` takes a
-   *server* name; scripts pass flat *tool* names (`v6_json_manage_json`). The
+   *server* name; scripts pass flat *tool* names (`notes_json_manage_json`). The
    flat-name→server mapping is built during schema expansion and lives on the
    per-request conversation context — a plugin cannot faithfully rebuild all of
    `tool_execution`'s branches (own tools, config agents, external MCP,
@@ -116,7 +116,7 @@ benefit of the core change. The plugin itself stays thin: sandbox embedding +
 `call_tool` bridging + result shaping.
 
 Resolution inside the helper: longest-prefix match of registered server names
-against the flat tool name (`v6_json_manage_json` → server `v6_json`), then
+against the flat tool name (`notes_json_manage_json` → server `notes_json`), then
 the existing registry lookups; own-tool prefix and config-agent branches as in
 `tool_execution` today; **external MCP names → explicit "not supported in
 scripts (v1)" error** rather than silent failure.
@@ -158,7 +158,7 @@ mis-execution or a failure three hops later.
   "status": "ok",
   "result": <value of the script's `result` variable>,
   "calls": [
-    {"tool": "v6_json_manage_json", "ok": true, "ms": 12},
+    {"tool": "notes_json_manage_json", "ok": true, "ms": 12},
     {"tool": "debate_forum_post_message", "ok": true, "ms": 48}
   ],
   "output": "<print() output, capped>"
@@ -170,11 +170,11 @@ mis-execution or a failure three hops later.
 ```json
 {
   "status": "error",
-  "error": "ToolCallError in line 7: v6_json_manage_json -> Document 'x' not found. Existing: ['synopsis']",
+  "error": "ToolCallError in line 7: notes_json_manage_json -> Document 'x' not found. Existing: ['summary']",
   "line": 7,
   "calls": [
-    {"tool": "v6_json_manage_json", "ok": true, "ms": 15},
-    {"tool": "v6_json_manage_json", "ok": false, "ms": 4, "error": "..."}
+    {"tool": "notes_json_manage_json", "ok": true, "ms": 15},
+    {"tool": "notes_json_manage_json", "ok": false, "ms": 4, "error": "..."}
   ],
   "committed_side_effects": "calls 1-1 committed; call 2 failed; nothing after line 7 executed",
   "variables": {"delta_id": "doc_a1b2c3d4", "big_payload": "<dict, 14.2k chars — omitted>"}
@@ -358,15 +358,15 @@ instead (enforced by the §6.5 caps, advised by their error messages).
 ## 9. Worked examples (validated against the sandbox subset — no slicing, no
 f-strings, `+`-concat only)
 
-### 9.1 v6 coordinator ritual step (today: 4 agent turns → 1 script call)
+### 9.1 A coordinator's ritual step (today: 4 agent turns → 1 script call)
 
 ```python
-merge = call_tool("v6_json_manage_json", operation="merge_doc",
-                  source=delta_id, doc="synopsis", namespace=group_id)
-delta = call_tool("v6_json_manage_json", operation="read",
+merge = call_tool("notes_json_manage_json", operation="merge_doc",
+                  source=delta_id, doc="summary", namespace=group_id)
+delta = call_tool("notes_json_manage_json", operation="read",
                   doc=delta_id, namespace=group_id)
 call_tool("debate_forum_post_message", channel_id=channel_id,
-          content="### 2.2 World\n```json\n" + delta["json"] + "\n```")
+          content="### 2.2 Delta\n```json\n" + delta["json"] + "\n```")
 result = {"merged_keys": merge["merged_keys"]}
 ```
 
@@ -375,10 +375,10 @@ result = {"merged_keys": merge["merged_keys"]}
 ### 9.2 Fan-out over a list
 
 ```python
-docs = call_tool("v6_json_manage_json", operation="list", namespace=group_id)
+docs = call_tool("notes_json_manage_json", operation="list", namespace=group_id)
 summaries = []
 for d in docs["docs"]:
-    o = call_tool("v6_json_manage_json", operation="outline",
+    o = call_tool("notes_json_manage_json", operation="outline",
                   doc=d["doc"], namespace=group_id, depth=1)
     summaries.append({"doc": d["doc"], "outline": o["outline"]})
 result = summaries
@@ -388,12 +388,12 @@ result = summaries
 
 ```python
 try:
-    r = call_tool("v6_json_manage_json", operation="read", doc="synopsis",
+    r = call_tool("notes_json_manage_json", operation="read", doc="summary",
                   namespace=group_id)
 except ToolCallError:
-    call_tool("v6_json_manage_json", operation="write", doc="synopsis",
+    call_tool("notes_json_manage_json", operation="write", doc="summary",
               namespace=group_id, data={})
-    r = call_tool("v6_json_manage_json", operation="read", doc="synopsis",
+    r = call_tool("notes_json_manage_json", operation="read", doc="summary",
                   namespace=group_id)
 result = {"chars": r["chars"]}
 ```
@@ -462,7 +462,7 @@ The agent gets the tool via the normal allowlist, e.g. `- "pipe/*"`.
   semaphore; unit tests (mocked agent) + security tests (allowlist/blocked
   bypass, recursion, object smuggling via result, oversized result, timeout,
   forged runtime params).
-- **Phase 2:** pilot in the v6 coordinator (ritual step as script) with the
+- **Phase 2:** pilot in a coordinator agent (ritual step as script) with the
   **measurement gate**: tokens + turns + failure rate script-mode vs.
   direct-mode over N runs; nested event channel in the dispatch helper if
   trace+logs prove insufficient; `dry_run`.

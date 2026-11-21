@@ -701,7 +701,7 @@ class Agent(
         - Testing individual tools
         
         Args:
-            tool_name: The full tool name (e.g., "writer_content_production_status")
+            tool_name: The full tool name (e.g., "sub_agent_manager_manage_sub_agent")
             params: Parameters to pass to the tool
             
         Returns:

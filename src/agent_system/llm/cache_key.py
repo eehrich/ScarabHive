@@ -25,7 +25,7 @@ from:
    it byte-identical —, this rule covers what still sits in the head.
 
    ⚠️ The converse: what is marked no longer carries identity.
-   An injected block that would have different text per run/story
+   An injected block that would have different text per run
    (e.g. a ``simple_prompt_inject`` with a run-specific
    ``template_vars`` variable) drops out of the key and puts two
    runs on the same shard. What distinguishes one run from another
@@ -373,7 +373,7 @@ def derive_prompt_cache_key(configured: str, messages: list) -> str:
             # The same rule outside the head: a note injected as a user
             # message right behind the system prompt (simple_prompt_inject,
             # after_system) is the same text for every run of the agent.
-            # Taken for "the first message", it put every book on one shard.
+            # Taken for "the first message", it put every run of the agent on one shard.
             injected = injected if injected is not None else msg
             continue
         # A run whose only task is injected (forge news on a woken session, a

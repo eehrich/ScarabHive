@@ -947,7 +947,7 @@ class TestWriteProtection:
 
     @pytest.mark.asyncio
     async def test_merge_doc_source_is_read_only(self, server):
-        # The v6 flow: writer owns its delta, coordinator owns synopsis and
+        # The panel flow: writer owns its delta, coordinator owns synopsis and
         # merges the (foreign) delta into it.
         await server.write({**COORD, "doc": "synopsis", "data": {"genre": "Krimi"}})
         delta = await server.write({**WRITER_A, "data": {"world_setting": "Hafen"}})
@@ -1364,7 +1364,7 @@ class TestKeyAliases:
 class TestSynopsisWorkflow:
     @pytest.mark.asyncio
     async def test_multi_step_merge_stays_valid(self, server):
-        """Simulates the v6 coordinator: sub-agent step results are merged in
+        """Simulates a coordinator: sub-agent step results are merged in
         code; the final document is complete and valid without the LLM ever
         re-typing JSON."""
         # 2.1 Idea (json_text with fence + raw newline, as LLMs produce it)
@@ -1996,7 +1996,7 @@ class TestRequireNamespace:
     for a shared one: the write succeeds, returns a doc id, and every later
     read (which does pass the namespace) misses it.
 
-    Measured on a v6 beat panel: one writer omitted the namespace five times,
+    Measured on a writing panel: one writer omitted the namespace five times,
     each ~11 KB, five failed read-backs, ~3 minutes and five LLM turns burnt.
     """
 

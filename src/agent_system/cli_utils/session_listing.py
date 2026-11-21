@@ -63,7 +63,7 @@ def in_chat_selector(runtime: Any, keep: tuple = ()) -> Optional[Callable[[str],
     fallback included). Everything else is a run some pipeline started under
     the same user: measured for cli_user on 25.09.2026, 4562 of 5054
     top-level sessions, so that 18 of the newest 20 lines were
-    ``v4_continuity_scorer_bench_*`` and a person's own chats sank below them.
+    ``scorer_bench_*`` and a person's own chats sank below them.
     A name the configuration no longer declares (a renamed agent, a benchmark
     instance) is not meant for chat either.
 

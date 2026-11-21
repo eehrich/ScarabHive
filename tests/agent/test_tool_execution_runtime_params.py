@@ -59,7 +59,7 @@ class TestForgedRuntimeParamsAreStripped:
         manager = _manager(server)
         await execute_tools_collect(manager,
             [_tool_call("store_manage_json",
-                        {"operation": "merge", "doc": "synopsis",
+                        {"operation": "merge", "doc": "outline",
                          "_session_id": "coordinator"})],
             tool_name_mapping={"store_manage_json": "store_manage_json"},
             available_tools=["store_manage_json"],

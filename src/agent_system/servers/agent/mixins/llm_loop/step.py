@@ -236,7 +236,7 @@ class StepMixin:
         # re-derived it from scratch — reasoning grew with the conversation
         # until it hit the 65536-token cap (measured: 2.6s/103 reasoning
         # tokens on turn 1, 650s/65536 once tool results had accumulated).
-        # Agents without tool calls (v4 pipeline) were never affected, which
+        # Agents without tool calls (a pipeline's) were never affected, which
         # is why this only showed up on the tool-heavy coding agents.
         assistant_msg = ChatMessage(
             role="assistant",

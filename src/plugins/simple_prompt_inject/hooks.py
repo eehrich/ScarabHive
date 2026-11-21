@@ -259,7 +259,7 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         old = mine.pop(self.injected_by, "")
         # Only other entries' texts may stand in front of this one's; past
         # them the task begins, and a match there is the task's own words
-        # (the v4 tasks use this very separator between their parts).
+        # (some pipelines' tasks use this very separator between their parts).
         head = sum(len(p) for p in mine.values())
         # Stripped: a file ends in a newline, and the task would open on blank lines.
         rendered = rendered.strip()

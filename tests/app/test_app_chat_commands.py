@@ -533,13 +533,13 @@ class TestVarsEndpoint:
         assert response.json()["vars"] == {}
 
     def test_setting_shows_up_in_the_listing(self, client, auth_headers, vars_session):
-        posted = self._set(client, auth_headers, vars_session, "lang=de book_id=7")
+        posted = self._set(client, auth_headers, vars_session, "lang=de record_id=7")
         assert posted.status_code == 200
         assert posted.json()["changed"] is True
 
         listed = client.get(f"/chat/vars?session_id={vars_session}",
                             headers=auth_headers).json()
-        assert listed["vars"] == {"lang": "de", "book_id": "7"}
+        assert listed["vars"] == {"lang": "de", "record_id": "7"}
 
     def test_it_writes_where_the_next_turn_reads(self, client, auth_headers, vars_session):
         """Not the session file: the agent's tracker is what prompt rendering
@@ -741,7 +741,7 @@ class TestVarsEndpoint:
         manager = SessionManager(storage_path=str(tmp_path))
         session = asyncio_run(manager.create_session(user_id="admin",
                                                      session_id=vars_session))
-        session["context_vars"] = {"lang": "de", "book_id": "7", "gone": "x"}
+        session["context_vars"] = {"lang": "de", "record_id": "7", "gone": "x"}
         asyncio_run(manager.save_session(session))
         monkeypatch.setattr(app_state, "session_service",
                             types.SimpleNamespace(session_manager=manager))
@@ -755,10 +755,10 @@ class TestVarsEndpoint:
                             headers=auth_headers).json()["vars"]
         removed = self._set(client, auth_headers, vars_session, "unset gone").json()
 
-        assert listed == {"lang": "de", "book_id": "7", "gone": "x"}, \
+        assert listed == {"lang": "de", "record_id": "7", "gone": "x"}, \
             "the listing ignored the persisted variables"
-        assert removed["vars"] == {"lang": "de", "book_id": "7"}
+        assert removed["vars"] == {"lang": "de", "record_id": "7"}
         on_disk = asyncio_run(manager.load_session("admin",
                                                    vars_session))["context_vars"]
-        assert on_disk == {"lang": "de", "book_id": "7"}, \
+        assert on_disk == {"lang": "de", "record_id": "7"}, \
             f"the other variables were wiped: {on_disk}"

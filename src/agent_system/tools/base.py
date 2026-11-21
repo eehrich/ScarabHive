@@ -194,7 +194,7 @@ class ToolServer(ABC):
         request_id = params.get("request_id") or params.get("requestId")
 
         # Extract method name from action (remove plugin prefix if present)
-        # Example: "writer_path_validate" -> "validate()"
+        # Example: "notes_path_validate" -> "validate()"
         method_name = strip_server_prefix(self.name, action)
         scope_name = f"{self.name}.{method_name}()"
 

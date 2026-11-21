@@ -1,6 +1,6 @@
 """Tests for the client-supplied request_id on POST /run and /events.
 
-2026-07-03 (writer_jobs audit, Finding A-F3): the writer-jobs worker
+2026-07-03: a job queue's worker
 keys its reconcile probes and cancel propagation on jobs.request_id —
 /run must accept that id (instead of always minting its own) or every
 probe is a guaranteed miss. Guards under test:
@@ -14,7 +14,7 @@ Both guards raise BEFORE agent selection / LLM work, so they are
 testable without a live agent run.
 
 2026-08-26: the same contract now holds for GET/POST /events (the
-story_design dispatch path). _handle_events used to use a supplied id
+dispatch path of a job queue). _handle_events used to use a supplied id
 ONLY as a reconnect lookup and silently minted a new one on the first
 dispatch — every /events-dispatched run then lived under an id its
 caller never learned, so cancel propagation 404'd ("agent_already_
@@ -98,7 +98,7 @@ async def test_run_returns_409_when_request_id_already_active(
 ):
     """Duplicate-dispatch guard: a worker retry with the same
     request_id while the original run is still active gets a clean
-    409 (classified transient writer-side → the retry waits) instead
+    409 (classified transient by the caller → the retry waits) instead
     of silently starting a second concurrent agent run."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
@@ -195,7 +195,7 @@ async def test_events_returns_409_when_request_id_active_elsewhere(
 async def test_events_adopts_client_request_id(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The core of the 2026-08 story_design cancel bug: a NEW /events run
+    """The core of the 2026-08 cancel bug: a NEW /events run
     must be keyed under the caller-supplied request_id, so the caller's
     later cancel/status probes against that id actually hit this run.
 
@@ -246,8 +246,8 @@ async def test_events_adopts_client_request_id(
 async def test_events_post_adopts_client_request_id(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """POST is the route the writer's story_design dispatcher actually
-    uses (worker/exec.py _post_events_sse). GET and POST share
+    """POST is the route a job queue's dispatcher actually
+    uses. GET and POST share
     _handle_events but each unpacks request_id on its own line, so the
     GET test cannot cover this one."""
     _disable_auth(monkeypatch)
@@ -290,7 +290,7 @@ async def test_events_reconnects_to_running_job_instead_of_409(
     """Guard ORDER: the reconnect lookup must happen BEFORE the
     already-active check. A RUNNING BackgroundJob makes
     is_request_active_anywhere True, so validating first would answer
-    every legitimate reconnect with 409 — and the writer's retry path
+    every legitimate reconnect with 409 — and a caller's retry path
     depends on exactly this reconnect."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod

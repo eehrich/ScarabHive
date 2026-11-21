@@ -10,7 +10,7 @@ Reading only the first name lost the text everywhere else. Measured before the
 fix: of 4.000 stored chat answers ``reasoning_content`` was filled in NONE
 while the text was present in 52; of 2.345 stored reasoning items on the
 Responses route ``summary`` was empty in ALL of them while ``content[].text``
-carried up to 294.763 characters. The Writer runs on that second route.
+carried up to 294.763 characters. Long-running pipelines use that second route.
 
 These tests pin every name, so a future client that learns a new one cannot
 quietly drop an old one.
@@ -300,7 +300,7 @@ def test_chat_without_any_thinking_sets_no_field():
     assert "reasoning_content" not in result["assistant"]
 
 
-# --- responses route (the one the Writer runs on) ---------------------------
+# --- responses route (the one long-running pipelines use) -------------------
 
 def test_responses_reads_raw_thinking_from_content():
     """``summary`` was empty in all 2.345 measured items; the text sat here."""

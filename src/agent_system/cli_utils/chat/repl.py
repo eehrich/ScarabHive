@@ -515,8 +515,8 @@ def run_chat_loop(
             # long /history -- is abandoned, not the chat.
             try:
                 # Skills share the command namespace: anything that is not a
-                # built-in is looked up as a skill, so "/writer analysiere X" runs
-                # the writer skill with "analysiere X" as its arguments.
+                # built-in is looked up as a skill, so "/teach X" runs
+                # the teach skill with "X" as its arguments.
                 skill_names = agent_setup._available_skills(ctx)
                 repl.skill_names = skill_names
                 resolution = resolve_chat_input(task, skill_names, repl.plugin_commands)

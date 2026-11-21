@@ -21,13 +21,13 @@ def client(model: str, base_url: str = OPENROUTER, **extra) -> HTTPXOpenAIClient
 def turns() -> list[dict]:
     """Two assistant turns of a tool chain, each with the thinking blocks the provider sent back."""
     return [
-        {"role": "user", "content": "Prepare the next book."},
+        {"role": "user", "content": "Prepare the next report."},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
                                                              "function": {"name": "okf_read_concept", "arguments": "{}"}}],
          "reasoning_details": [{"type": "reasoning.text", "text": "Check the histogram first."}]},
         {"role": "tool", "tool_call_id": "c1", "content": "concept"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function",
-                                                             "function": {"name": "writer_content_book", "arguments": "{}"}}],
+                                                             "function": {"name": "docs_content_catalogue", "arguments": "{}"}}],
          "reasoning_details": [{"type": "reasoning.text", "text": "Now the catalogue."}]},
         {"role": "tool", "tool_call_id": "c2", "content": "catalogue"},
     ]

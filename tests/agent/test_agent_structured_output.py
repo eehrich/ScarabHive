@@ -239,7 +239,7 @@ async def test_json_mode_sends_the_field_and_says_what_it_is_for():
 
 
 async def test_a_run_without_a_format_hands_the_client_nothing_new():
-    """Byte-identical for every caller that does not ask (the writer's AgentCaller, every chat):
+    """Byte-identical for every caller that does not ask (a pipeline's AgentCaller, every chat):
     no keyword, no note."""
     agent = _agent()
     agent.llm = llm = ScriptedLLM(["tool", "plain prose"])

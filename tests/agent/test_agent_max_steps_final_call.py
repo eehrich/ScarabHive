@@ -346,7 +346,7 @@ async def test_tool_calls_on_the_final_call_run_once_and_end_the_run(text):
     assert not _orphans(stored), f"unanswered tool calls in the session: {_orphans(stored)}"
     assert all(m.content or m.tool_calls for m in stored if m.role == "assistant"), "an empty assistant message"
 
-    # No final: the writer dispatch and the job manager take any final as
+    # No final: a pipeline's dispatch and the job manager take any final as
     # success, whatever the tools returned and whatever error follows.
     finals, errors = _outcome(events)
     assert finals == [], "a final event marks a run that ran out of steps as a success"

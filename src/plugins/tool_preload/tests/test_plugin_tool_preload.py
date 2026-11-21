@@ -99,7 +99,7 @@ class TestFillParams:
 # Context variables — the second placeholder source
 # ---------------------------------------------------------------------------
 class TestContextVars:
-    """State the user never types. v6 keeps its store namespace in
+    """State the user never types. A coordinator keeps its store namespace in
     ``json_namespace``, set once at bootstrap and inherited by every
     sub-agent, whose whole task text is "Aufgabe: World". Without this source
     a rule cannot name the store, and a read would silently hit the DEFAULT
@@ -124,7 +124,7 @@ class TestContextVars:
         assert out == {"namespace": 4711}
 
     def test_a_resolved_value_is_not_scanned_again(self):
-        """The v6 coordinator puts the ENTIRE user task into ``brief``. With
+        """A coordinator puts the ENTIRE user task into ``brief``. With
         two sequential passes, a brief containing ``{sid}`` was read as a group
         reference: the rule died with a warning naming a group that appears in
         no YAML, and the operator hunted a config error that did not exist."""

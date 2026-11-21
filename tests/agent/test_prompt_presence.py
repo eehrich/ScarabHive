@@ -40,9 +40,9 @@ def test_has_tool_matches_the_instance_prefixed_names_by_pattern():
 
 
 def test_plugins_and_mcp_servers_reach_the_template():
-    values = build_context_values(_context(plugins=["writer_core"], mcp_servers=["github"]))
+    values = build_context_values(_context(plugins=["report_core"], mcp_servers=["github"]))
 
-    assert values["plugins"] == ["writer_core"] and values["mcp_servers"] == ["github"]
+    assert values["plugins"] == ["report_core"] and values["mcp_servers"] == ["github"]
 
 
 def test_an_agents_own_template_var_still_wins():

@@ -132,7 +132,7 @@ def _is_local_resource_exhaustion(exc: BaseException) -> bool:
     both surface as httpx.ConnectError, but they call for opposite responses:
     the first is what fallback profiles exist for, the second cannot be helped
     by any profile — the next client hits the same wall. On 2026-08-30 a
-    descriptor leak made the writer host do exactly that: 52 fallback switches
+    descriptor leak made a production host do exactly that: 52 fallback switches
     onto pricier models, none of which could have succeeded.
     """
     seen: set[int] = set()

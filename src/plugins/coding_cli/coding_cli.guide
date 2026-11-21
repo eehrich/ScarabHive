@@ -347,7 +347,7 @@ bindings to what the run writes anyway -- its own file -- where a page could
 steer no more than the answer. Either way the vouch is the operator's, as a page the run reads could steer them. Plan mode gets no
 grant.
 @{bullet}The grant carries the caller's session and its template vars (a
-book's id): the tools see them as in the agent's own calls. The caller is the
+project's id): the tools see them as in the agent's own calls. The caller is the
 agent whose tool call starts the run, or the agent whose model call the run is
 (a coding CLI as an LLM).
 @{bullet}The run dials the gateway of this process: under the API's port in

@@ -1,13 +1,13 @@
 """A run started through POST /run can be followed like any other run.
 
-writer_jobs starts every book that way (linear_book). /run collected the run for
+A job queue starts every job that way. /run collected the run for
 its caller and made no BackgroundJob, so the chat -- which attaches to a
 session's job -- could only read the run back on a reload, never follow it. The
 run is now mirrored into a job; the caller still gets its answer from
 collect_final_result, not through the job's queue.
 
 Once such a run is over, the status endpoint answers as it did before: a
-finished job's status is what writer_jobs' reconcile takes as proof that a book
+finished job's status is what a job queue's reconcile takes as proof that a
 run is done, and for a /run that proof never went through the job.
 
 Drives the real build_app over ASGI; the agent's run is the only fake.
@@ -83,7 +83,7 @@ async def test_a_run_started_through_run_can_be_followed_while_it_works(tmp_path
     go = _a_run_that_waits(monkeypatch, session_id)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        run = asyncio.create_task(client.post("/run", json={"task": "a book", "request_id": request_id},
+        run = asyncio.create_task(client.post("/run", json={"task": "a report", "request_id": request_id},
                                               timeout=60.0))
         try:
             job = await _job_of(request_id)
@@ -120,7 +120,7 @@ async def test_a_forced_stop_leaves_the_mirror_to_the_run(tmp_path, monkeypatch)
     go = _a_run_that_waits(monkeypatch, f"s{uuid.uuid4().hex[:10]}")
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        run = asyncio.create_task(client.post("/run", json={"task": "a book", "request_id": request_id},
+        run = asyncio.create_task(client.post("/run", json={"task": "a report", "request_id": request_id},
                                               timeout=60.0))
         try:
             job = await _job_of(request_id)
@@ -168,7 +168,7 @@ async def test_a_second_run_under_a_running_id_is_refused(tmp_path, monkeypatch)
     register_request_user(request_id, "first")
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post("/run", json={"task": "a book", "request_id": request_id}, timeout=60.0)
+            response = await client.post("/run", json={"task": "a report", "request_id": request_id}, timeout=60.0)
         assert response.status_code == 409, response.text
         assert not started, "a second agent started under a running id"
         assert get_request_user(request_id, default=None) == "first", "the refused run let go of the first one's id"
@@ -178,7 +178,7 @@ async def test_a_second_run_under_a_running_id_is_refused(tmp_path, monkeypatch)
 
 
 async def test_a_finished_run_from_run_is_not_offered_as_a_finished_job(tmp_path, monkeypatch):
-    """writer_jobs' reconcile marks a book row done on a finished job's status with
+    """A job queue's reconcile marks a row done on a finished job's status with
     the job's keys; a /run's caller had its answer, and its row must be resumed, not
     buried, when the worker lost it."""
     from agent_system import app as app_mod
@@ -191,7 +191,7 @@ async def test_a_finished_run_from_run_is_not_offered_as_a_finished_job(tmp_path
     go.set()
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/run", json={"task": "a book", "request_id": request_id}, timeout=60.0)
+        response = await client.post("/run", json={"task": "a report", "request_id": request_id}, timeout=60.0)
         assert response.status_code == 200, response.text
         job = await get_background_job_manager().get_job(request_id)
         assert job is not None and job.mirror, "fixture: the run left no mirror job to hide"
@@ -230,7 +230,7 @@ async def test_a_detached_run_answers_at_once_and_hands_its_answer_to_the_status
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         try:
             response = await asyncio.wait_for(client.post(
-                "/run", json={"task": "a book", "request_id": request_id, "detach": True}), timeout=10.0)
+                "/run", json={"task": "a report", "request_id": request_id, "detach": True}), timeout=10.0)
             assert response.status_code == 202, response.text
             assert response.json()["request_id"] == request_id
             job = await _job_of(request_id)
@@ -265,7 +265,7 @@ async def test_a_detached_run_that_breaks_says_so_in_its_result(tmp_path, monkey
     monkeypatch.setattr(result_utils, "collect_final_result", collect_breaks)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/run", json={"task": "a book", "request_id": request_id, "detach": True})
+        response = await client.post("/run", json={"task": "a report", "request_id": request_id, "detach": True})
         assert response.status_code == 202, response.text
         status = await _status_once_over(client, request_id)
 

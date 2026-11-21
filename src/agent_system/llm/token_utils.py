@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # One image, whatever its size and form (file, inline payload, remote URL): the
 # provider bills the picture, not the base64 characters or bytes it came in.
-# 1120 is Gemini 3's flat per-image cost, measured on cover_artist in production
+# 1120 is Gemini 3's flat per-image cost, measured on an image agent in production
 # (prompt_tokens deltas of ~1060-1172 per added image). Claude bills large images
 # higher (up to ~4784 on the current models). The hooks take max(provider count,
 # estimate), which corrects that under-count after one call; an over-count would
@@ -31,7 +31,7 @@ VIDEO_BYTES_PER_SECOND = 100 * 1024
 
 # Text: characters per token, fitted 2026-09-14 against real prompt_tokens of
 # 2,770 production requests (DeepSeek v4, Gemini flash, GPT-5.6; message_debugger
-# on the writer host). Held-out median error 2-5 % per model, 9 % for GPT, which
+# on a production host). Held-out median error 2-5 % per model, 9 % for GPT, which
 # it overestimates. The word ratios this replaces (1.3 / 1.5 / 1.8 tokens per word,
 # "calibrated for cl100k") read real/estimate 1.36-1.47 on every one of them:
 # 97 % of requests were underestimated by more than 10 %, largely because German

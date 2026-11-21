@@ -6,7 +6,7 @@ These tests verify that:
 2. Plugin discovery uses config.plugins.plugin_dirs (not hardcoded paths)
 3. Plugins from all configured directories are discovered
 
-Background: Bug 2025-11-09 - Writer plugins not discovered because:
+Background: Bug 2025-11-09 - plugins of a further root not discovered because:
 - PLUGIN_FACTORY was in server.py instead of plugin.py
 - ToolServerIntegration used hardcoded plugin_dirs instead of config
 """

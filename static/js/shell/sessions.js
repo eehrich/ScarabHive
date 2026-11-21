@@ -373,7 +373,7 @@ export class SessionManager {
       const entry = this.active.get(item.dataset.id);
       const running = Boolean(entry);
       item.classList.toggle('is-running', running);
-      // WHICH agent: the server names it, and a run started from outside -- a book on
+      // WHICH agent: the server names it, and a run started from outside -- a pipeline on
       // the server, a woken session -- is exactly the one nobody knows the agent of.
       const agent = (entry && entry.agent_name) || '';
       const row = item.querySelector(':scope > .session-row');
@@ -384,7 +384,7 @@ export class SessionManager {
       const dot = row && row.querySelector(':scope > .session-running');
       if (dot) dot.title = agent ? `${agent} is working in this session` : 'An agent is working in this session';
     });
-    // a folder shows a run inside it while it is closed too -- a book being written under Writer, say
+    // a folder shows a run inside it while it is closed too -- a pipeline running under its plugin's folder, say
     const running = this.sessions.filter((s) => this.active.has(s.session_id));
     const working = new Set(running.map((s) => this.folderOf(s)));
     const said = (head, on) => {

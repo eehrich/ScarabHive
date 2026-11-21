@@ -79,7 +79,7 @@
     input.value = 'writer';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await sleep(150);
-    const agent = all('#paletteList .palette-item').some((item) => item.textContent.includes('Writes books'));
+    const agent = all('#paletteList .palette-item').some((item) => item.textContent.includes('Writes reports'));
     input.value = 'Status with its reasons';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await sleep(150);

@@ -72,16 +72,16 @@ class TestDebateForumDB:
 
     def test_create_channel_with_metadata(self, db: DebateForumDB):
         result = db.create_channel(
-            name="book-3",
+            name="project-3",
             topic="Test topic",
             context="Some context",
-            metadata={"book_id": 3, "stage": "synopsis"},
+            metadata={"project_id": 3, "stage": "draft"},
         )
         channel = db.get_channel(result["channel_id"])
         assert channel is not None
-        assert channel["name"] == "book-3"
+        assert channel["name"] == "project-3"
         assert channel["context"] == "Some context"
-        assert channel["metadata_json"]["book_id"] == 3
+        assert channel["metadata_json"]["project_id"] == 3
 
     def test_get_channel_not_found(self, db: DebateForumDB):
         assert db.get_channel(999) is None

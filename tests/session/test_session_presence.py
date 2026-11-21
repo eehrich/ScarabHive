@@ -962,7 +962,7 @@ class TestAStoppedRun:
         assert spawned == [("s1", USER, 1)]
 
     async def test_a_run_adopted_under_an_id_that_was_stopped_before_is_not_stopped(self):
-        # writer_jobs sends a run again under its request id, through /run.
+        # A job queue sends a run again under its request id, through /run.
         from agent_system.app import _validate_client_request_id
 
         sp.note_stop("r-again-01")

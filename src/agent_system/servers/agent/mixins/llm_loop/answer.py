@@ -163,7 +163,7 @@ class AnswerMixin:
             # itself. What a hook puts here is a SCRIPTED TURN -- the
             # `followups:` list in an agent's YAML is written to be said to
             # the agent, the way a person would say it -- and two readers
-            # take it as one: v4's prose recovery reads the follow-up back
+            # take it as one: a pipeline's recovery reads the follow-up back
             # out of the stored transcript and matches it by its configured
             # TEXT (the info tool hands out no injected_by), and the
             # watchdog's judge needs it in the picture. As a volatile note

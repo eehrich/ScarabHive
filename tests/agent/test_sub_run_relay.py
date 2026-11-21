@@ -257,7 +257,7 @@ async def test_a_caller_cannot_choose_an_id_in_line_with_a_run_in_flight():
 
 @pytest.mark.asyncio
 async def test_a_run_reusing_an_ended_runs_id_gets_nothing_of_the_old_runs_sub_agents():
-    """The writer dispatches a job again under its old id, while a sub-agent the old run
+    """A job queue dispatches a job again under its old id, while a sub-agent the old run
     never waited for is still at work. Neither it nor a run it starts afterwards is the
     new run's -- the ids say they are, the order they began in says they are not -- so
     none of their run events are relayed to it. (Their status lines still are: the

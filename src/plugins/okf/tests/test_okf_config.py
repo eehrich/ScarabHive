@@ -2,7 +2,7 @@
 
 The sysadmin's ``infra`` bundle is injected into its prompt every turn. It has
 an instance of its own (``sysadmin_okf``), and the shared ``okf`` -- held by
-okf_agent and the writer agents -- carves it out. Both halves are
+okf_agent and other agents -- carves it out. Both halves are
 checked with the real server's sandbox, not against the YAML text.
 """
 from __future__ import annotations
@@ -71,7 +71,7 @@ def test_the_shared_okf_cannot_reach_infra(config, bundle):
 
 def test_the_shared_okf_still_reaches_the_other_bundles(config):
     shared = server(config, "okf")
-    for bundle in ("data/okf/notes", "data/okf/zustandsgraph", "data/okf/writer_library"):
+    for bundle in ("data/okf/notes", "data/okf/zustandsgraph", "data/okf/library"):
         shared._resolve_bundle(bundle)
 
 

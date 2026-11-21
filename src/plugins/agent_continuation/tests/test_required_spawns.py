@@ -1,9 +1,8 @@
 """required_spawns: an answer that skipped a required sub-agent goes back.
 
-Measured on the story server (22.09.2026, 15 v6_story_panel sessions of three
-days): the panel returned its result without spawning a single reviewer in
-idee 2/2, titel 2/2, charakter 1/2 and milestones 1/2 — although the reviewers
-stood in its rendered prompt. The gate reads what the session really spawned,
+Measured on a review panel (15 sessions over three days): the panel returned
+its result without spawning a single reviewer in 6 of 8 rounds -- although the
+reviewers stood in its rendered prompt. The gate reads what the session really spawned,
 not what the answer claims.
 """
 
@@ -22,18 +21,18 @@ from plugins.agent_continuation.hooks import (
     REQUIRED_SPAWNS_MARKER, AgentContinuationPlugin)
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
-TOOL = "v6_story_panel_sam_manage_sub_agent"
+TOOL = "panel_sam_manage_sub_agent"
 GATE = {
     "strategy": "rules",
     "default": "final",
     "max_continuations": 2,
     "required_spawns": {
-        "agents": 'review_map.get(aufgabe, []) if panel_review_size > 0 and phase != "audit" else []',
+        "agents": 'review_map.get(task, []) if panel_review_size > 0 and phase != "audit" else []',
         "tool": TOOL,
-        "message": "3b fehlt: {missing}",
+        "message": "reviewers missing: {missing}",
     },
 }
-REVIEW_MAP = {"charakter": ["v6_critic", "v6_creative_critic"]}
+REVIEW_MAP = {"character": ["critic", "creative_critic"]}
 
 
 def _plugin() -> AgentContinuationPlugin:
@@ -66,7 +65,7 @@ def _spawn(call_id: str, agent_type: str, *, operation: str | None = "create",
 
 def _context(messages, *, hook_config=None, session_vars=None, request_id="req-1",
              template_vars=None):
-    session_vars = {"aufgabe": "charakter", "phase": "synopsis", "panel_review_size": 1} \
+    session_vars = {"task": "character", "phase": "draft", "panel_review_size": 1} \
         if session_vars is None else session_vars
     return HookContext(
         hook_type=HookType.POST_LLM_CALL,
@@ -74,7 +73,7 @@ def _context(messages, *, hook_config=None, session_vars=None, request_id="req-1
         session_id="sess-1",
         agent=_agent({"review_map": REVIEW_MAP, "panel_review_size": 0}
                      if template_vars is None else template_vars, session_vars),
-        agent_name="v6_story_panel",
+        agent_name="review_panel",
         messages=messages,
         llm_response={"assistant": {"content": "# Resultat\n\nBestes Ergebnis ..."}},
         step=5,
@@ -84,7 +83,7 @@ def _context(messages, *, hook_config=None, session_vars=None, request_id="req-1
 
 def _writers() -> list[ChatMessage]:
     return [m for i, w in enumerate(("inner", "outer", "relational"))
-            for m in _spawn(f"w{i}", f"v6_synopsis_writer_{w}")]
+            for m in _spawn(f"w{i}", f"draft_writer_{w}")]
 
 
 class TestRequiredSpawns:
@@ -94,38 +93,38 @@ class TestRequiredSpawns:
         result = await _plugin().evaluate_completion(_context(_writers()))
         assert result.metadata["continue"] is True
         assert result.metadata["continue_injected_by"] == REQUIRED_SPAWNS_MARKER
-        assert result.metadata["continue_message"] == "3b fehlt: v6_critic, v6_creative_critic"
+        assert result.metadata["continue_message"] == "reviewers missing: critic, creative_critic"
 
     @pytest.mark.asyncio
     async def test_only_the_missing_reviewer_is_named(self):
-        messages = _writers() + _spawn("r1", "v6_critic")
+        messages = _writers() + _spawn("r1", "critic")
         result = await _plugin().evaluate_completion(_context(messages))
-        assert result.metadata["continue_message"] == "3b fehlt: v6_creative_critic"
+        assert result.metadata["continue_message"] == "reviewers missing: creative_critic"
 
     @pytest.mark.asyncio
     async def test_all_spawned_is_final_even_without_an_explicit_operation(self):
         # The manager infers create from agent_type; the panel relies on that.
-        messages = _writers() + _spawn("r1", "v6_critic", operation=None) \
-            + _spawn("r2", "v6_creative_critic", operation=None)
+        messages = _writers() + _spawn("r1", "critic", operation=None) \
+            + _spawn("r2", "creative_critic", operation=None)
         result = await _plugin().evaluate_completion(_context(messages))
         assert not result.metadata.get("continue")
 
     @pytest.mark.asyncio
     async def test_a_refused_spawn_does_not_count(self):
-        messages = _writers() + _spawn("r1", "v6_critic") + _spawn(
-            "r2", "v6_creative_critic", result={"status": "error", "error": "not allowed"})
+        messages = _writers() + _spawn("r1", "critic") + _spawn(
+            "r2", "creative_critic", result={"status": "error", "error": "not allowed"})
         result = await _plugin().evaluate_completion(_context(messages))
-        assert result.metadata["continue_message"] == "3b fehlt: v6_creative_critic"
+        assert result.metadata["continue_message"] == "reviewers missing: creative_critic"
 
     @pytest.mark.asyncio
     async def test_a_spawn_through_another_tool_does_not_count(self):
-        messages = _writers() + _spawn("r1", "v6_critic")
-        for m in _spawn("r2", "v6_creative_critic"):
+        messages = _writers() + _spawn("r1", "critic")
+        for m in _spawn("r2", "creative_critic"):
             for call in m.tool_calls or []:
                 call["function"]["name"] = "other_sam_manage_sub_agent"
             messages.append(m)
         result = await _plugin().evaluate_completion(_context(messages))
-        assert result.metadata["continue_message"] == "3b fehlt: v6_creative_critic"
+        assert result.metadata["continue_message"] == "reviewers missing: creative_critic"
 
     @pytest.mark.asyncio
     async def test_the_session_vars_decide_over_the_agent_defaults(self):
@@ -134,13 +133,13 @@ class TestRequiredSpawns:
         assert result.metadata["continue"] is True
         off = await _plugin().evaluate_completion(_context(
             _writers(), request_id="req-2",
-            session_vars={"aufgabe": "charakter", "phase": "synopsis", "panel_review_size": 0}))
+            session_vars={"task": "character", "phase": "draft", "panel_review_size": 0}))
         assert not off.metadata.get("continue")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("session_vars", [
-        {"aufgabe": "charakter", "phase": "audit", "panel_review_size": 1},
-        {"aufgabe": "schauplatz_welten", "phase": "welten", "panel_review_size": 1},
+        {"task": "character", "phase": "audit", "panel_review_size": 1},
+        {"task": "setting", "phase": "worlds", "panel_review_size": 1},
     ])
     async def test_no_reviewers_required_is_final(self, session_vars):
         result = await _plugin().evaluate_completion(_context(_writers(), session_vars=session_vars))
@@ -158,8 +157,8 @@ class TestRequiredSpawns:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("spec", [
         {"agents": "review_map[", "tool": TOOL},       # syntax error
-        {"agents": "undefined_var.get(aufgabe)", "tool": TOOL},
-        {"agents": "review_map.get(aufgabe)"},          # no tool
+        {"agents": "undefined_var.get(task)", "tool": TOOL},
+        {"agents": "review_map.get(task)"},          # no tool
         "not a mapping",
     ])
     async def test_a_broken_gate_lets_the_answer_through(self, spec):
@@ -209,7 +208,8 @@ class TestTheRealPanelConfig:
         hook_config = self._hooks(panel)
         assert hook_config["enabled"] is True
         ctx = _context(_writers(), hook_config=hook_config,
-                       template_vars=dict(panel.template_vars))
+                       template_vars=dict(panel.template_vars),
+                       session_vars={"aufgabe": "charakter", "phase": "synopsis", "panel_review_size": 1})
         result = await _plugin().evaluate_completion(ctx)
         assert result.metadata["continue"] is True
         expected = ", ".join(panel.template_vars["review_map"]["charakter"])
@@ -244,15 +244,15 @@ class TestCompactedHistory:
     async def test_a_spawn_pruned_from_the_history_still_counts(self):
         plugin = _plugin()
         await plugin.evaluate_completion(_response_with_calls(
-            _writers(), _calls(("r1", "v6_critic"), ("r2", "v6_creative_critic"))))
+            _writers(), _calls(("r1", "critic"), ("r2", "creative_critic"))))
         # The history the final answer is judged on no longer has those calls.
         result = await plugin.evaluate_completion(_context(_writers()))
         assert not result.metadata.get("continue")
 
     @pytest.mark.asyncio
     async def test_a_result_replaced_by_a_reference_still_counts(self):
-        messages = _writers() + _spawn("r1", "v6_critic") + _spawn(
-            "r2", "v6_creative_critic", result={"type": "tool_result_ref", "ref": "x"})
+        messages = _writers() + _spawn("r1", "critic") + _spawn(
+            "r2", "creative_critic", result={"type": "tool_result_ref", "ref": "x"})
         result = await _plugin().evaluate_completion(_context(messages))
         assert not result.metadata.get("continue")
 
@@ -260,18 +260,18 @@ class TestCompactedHistory:
     async def test_a_watched_spawn_whose_result_says_error_does_not_count(self):
         plugin = _plugin()
         await plugin.evaluate_completion(_response_with_calls(
-            _writers(), _calls(("r1", "v6_critic"), ("r2", "v6_creative_critic"))))
-        messages = _writers() + _spawn("r1", "v6_critic") + _spawn(
-            "r2", "v6_creative_critic",
+            _writers(), _calls(("r1", "critic"), ("r2", "creative_critic"))))
+        messages = _writers() + _spawn("r1", "critic") + _spawn(
+            "r2", "creative_critic",
             result={"instance_id": "sub_r2", "status": "completed", "outcome": "error"})
         result = await plugin.evaluate_completion(_context(messages))
-        assert result.metadata["continue_message"] == "3b fehlt: v6_creative_critic"
+        assert result.metadata["continue_message"] == "reviewers missing: creative_critic"
 
     @pytest.mark.asyncio
     async def test_the_record_ends_with_the_final_answer(self):
         plugin = _plugin()
         await plugin.evaluate_completion(_response_with_calls(
-            _writers(), _calls(("r1", "v6_critic"), ("r2", "v6_creative_critic"))))
+            _writers(), _calls(("r1", "critic"), ("r2", "creative_critic"))))
         final = await plugin.evaluate_completion(_context(_writers()))
         assert not final.metadata.get("continue")
         assert plugin._seen_creates == {}

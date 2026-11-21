@@ -1,6 +1,6 @@
 """Stopping an agent leaves the process's state and a running request's state alone.
 
-Agents are plugins (``basic_agent``, the writer pipelines), so the framework
+Agents are plugins (``basic_agent``, a plugin's pipelines), so the framework
 asks them to stop through ``capabilities.stop_plugin`` -- at app shutdown,
 from ``shutdown_tools()``. Their teardown used to be ``Agent.shutdown()``, a
 name nothing called, and it did two things that must not happen there:

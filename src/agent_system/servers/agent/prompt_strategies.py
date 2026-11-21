@@ -50,7 +50,7 @@ def build_context_values(context: PromptContext) -> Dict[str, Any]:
         with fnmatch patterns, because tool names carry the instance name
         (``has_tool('*_manage_sub_agent')``, ``has_tool('github.*')``).
       * ``plugins`` -- plugin types installed and switched on, whether this
-        agent may use them or not (``'writer_pipeline_v4' in plugins``).
+        agent may use them or not (``'stategraph' in plugins``).
       * ``mcp_servers`` -- external MCP servers switched on.
     None of them may change between two steps: the system prompt is the
     cached prefix. So they come from configuration, never from a live state

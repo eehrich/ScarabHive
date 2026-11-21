@@ -1024,7 +1024,7 @@ async def test_a_broken_presence_check_does_not_stop_the_sweep(sm, tmp_path, cap
 # ---------------------------------------------------------------------------
 
 async def _make_deep_tree(sm: SessionManager) -> list[str]:
-    """root -> kid -> grandkid -> great: four levels, as a book run leaves them."""
+    """root -> kid -> grandkid -> great: four levels, as a pipeline run leaves them."""
     ids = ["deep_root", "deep_kid", "deep_grand", "deep_great"]
     await sm.create_session(user_id=USER, title="Deep", session_id=ids[0])
     for child, parent in zip(ids[1:], ids[:-1]):

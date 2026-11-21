@@ -630,11 +630,11 @@ class TestToolsAndPayload:
 
     def test_payload_prompt_cache_key_auto_hashes_prefix(self):
         # "auto" = prefix hash (cache_key.py): same prompt -> same key,
-        # early-diverging prompt (different book) -> different key.
+        # early-diverging prompt (different task) -> different key.
         c = _client(prompt_cache_key="auto")
-        p1 = c._build_payload([ChatMessage(role="user", content="Buch A")], None)
-        p2 = c._build_payload([ChatMessage(role="user", content="Buch A")], None)
-        p3 = c._build_payload([ChatMessage(role="user", content="Buch B")], None)
+        p1 = c._build_payload([ChatMessage(role="user", content="Task A")], None)
+        p2 = c._build_payload([ChatMessage(role="user", content="Task A")], None)
+        p3 = c._build_payload([ChatMessage(role="user", content="Task B")], None)
         assert p1["prompt_cache_key"].startswith("auto-")
         assert p1["prompt_cache_key"] == p2["prompt_cache_key"]
         assert p1["prompt_cache_key"] != p3["prompt_cache_key"]
@@ -970,7 +970,7 @@ class _FakeStream:
         SSE does not treat as line ends and JSON allows raw inside a string.
 
         Kept faithful on purpose. Going back to ``aiter_lines()`` must fail a
-        test here rather than a book in production.
+        test here rather than a run in production.
         """
         for line in self._lines:
             for piece in line.splitlines():

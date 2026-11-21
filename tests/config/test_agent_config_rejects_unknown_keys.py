@@ -110,7 +110,7 @@ class TestUnknownKeysAreRejected:
         # number: every file that DECLARES an agent_config must also have been
         # parsed into one. A walk that stops descending, or a file that fails to
         # parse and is skipped, shows up here as a difference -- while agents
-        # being added or deleted (v5b and the old book_architect generation went
+        # being added or deleted (a whole generation of agents went
         # on 04.09.2026, 207 blocks -> 124) does not age the test.
         assert declaring, "no agent_config anywhere in config/ or src/ — the scan went blind"
         assert declaring == reached, (

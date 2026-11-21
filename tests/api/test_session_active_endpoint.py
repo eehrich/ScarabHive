@@ -328,9 +328,9 @@ def test_the_live_view_keeps_a_system_message_that_is_conversation():
 def test_a_deliberately_placed_developer_note_stays():
     """No marker means nobody rebuilds it: it is a fact of its turn. The rule is
     narrower than message_roles.is_injected_note on purpose -- that one also matches
-    a marked USER message, which writer_pipeline_v4 reads back from the transcript."""
+    a marked USER message, which a pipeline reads back from the transcript."""
     messages = [ChatMessage(role=DEVELOPER, content="Read the style guide."),
-                ChatMessage(role="user", content="a scripted follow-up", injected_by="v4.loop")]
+                ChatMessage(role="user", content="a scripted follow-up", injected_by="pipeline.loop")]
     view = _AgentWithLiveState(messages).get_live_conversation("s1")
     assert [m.content for m in view] == ["Read the style guide.", "a scripted follow-up"]
 
@@ -589,7 +589,7 @@ async def test_the_count_keeps_counting_past_the_buffers_size():
 @pytest.mark.asyncio
 async def test_every_reader_of_a_run_gets_every_event():
     """A queue handed each event to ONE reader: a second tab on the same run, or the
-    chat beside writer_jobs' own stream, took every other event, the answer among
+    chat beside a job queue's own stream, took every other event, the answer among
     them. Two readers, each from the start, each reading to the end."""
     manager = BackgroundJobManager()
     go = asyncio.Event()

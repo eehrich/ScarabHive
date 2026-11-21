@@ -166,12 +166,12 @@ class TestTheRequestTravelsThroughTheSdk:
     async def test_the_passthrough_fields_travel(self, route):
         client = _client(plugins=[{"id": "response-healing"}],
                          prompt_cache_options={"mode": "explicit"},
-                         safety_identifier="book-42")
+                         safety_identifier="user-42")
         await client.chat_tools(MESSAGES, TOOLS)
         body = route.bodies[0]
         assert body["plugins"] == [{"id": "response-healing"}]
         assert body["prompt_cache_options"] == {"mode": "explicit"}
-        assert body["safety_identifier"] == "book-42"
+        assert body["safety_identifier"] == "user-42"
 
     @pytest.mark.asyncio
     async def test_a_flat_tool_is_accepted_too(self, route):

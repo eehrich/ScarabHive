@@ -65,7 +65,7 @@ async def test_a_claude_code_run_reaches_its_grant_and_only_while_it_runs(repo, 
 
 @pytest.mark.parametrize("how", ["the tool call's agent", "the run's agent", "both"])
 async def test_a_grant_carries_the_template_vars_of_the_callers_session(repo, log, gateway, how):
-    """A tool run through the gateway reads its session's vars (a book's id) from the gateway's runner: the grant
+    """A tool run through the gateway reads its session's vars (a project's id) from the gateway's runner: the grant
     brings the caller's. A model call that is a run of its own (llm_coding_cli) has no _agent, its run has; a tool
     call's own agent comes first (a run of another agent around it is not the caller)."""
     from types import SimpleNamespace

@@ -457,7 +457,7 @@ class SessionIndex:
     def subtree_ids(self, user_id: str, session_id: str) -> List[str]:
         """``SessionManager.subtree_ids``, all of it on the caller's thread: a stat per
         session of the tree and a read per parent, which on the event loop would hold
-        every stream for a writer's thousand sub-sessions."""
+        every stream for a pipeline's thousand sub-sessions."""
         found, seen, todo = [session_id], {session_id}, [session_id]
         while todo:
             parent = todo.pop()

@@ -4994,9 +4994,9 @@
       let task = written.trim();
 
       // Slash commands and skills. The server resolves them with the same
-      // parser the terminal chat uses, so "/writer x" means the same thing on
+      // parser the terminal chat uses, so "/teach x" means the same thing on
       // both surfaces. `typed` keeps what the user wrote: the chat shows
-      // "/writer x", not the skill's whole body.
+      // "/teach x", not the skill's whole body.
       let typed = null;
       if (task.startsWith('/') && !task.startsWith('//') && window.slashCommands) {
         const resolved = await window.slashCommands.resolve(task);

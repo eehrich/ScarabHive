@@ -363,8 +363,8 @@ class TestToolMethodRouting:
     """Every tool routes to a method (``SchemaBasedToolMixin._get_method_name``)
     that has to exist. This was a script of its own that walked two plugin
     roots of four, stripped the Jinja with a regex (tavily_search "broken") and
-    looked only into server.py (writer_issues keeps its handler in
-    repair_pipeline.py) -- both findings false alarms."""
+    looked only into server.py (a plugin may keep its handler in
+    another module) -- both findings false alarms."""
 
     TOOL = ("  - type: function\n"
             "    function:\n"

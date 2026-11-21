@@ -75,7 +75,7 @@ def _report_dropped_llm_params(data: dict, cfg: AgentSystemConfig) -> None:
     where the parent's chain will be once _resolve_server_inheritance has run.
     Its profile-keyed params were dropped for a mismatch that does not exist,
     and the merge after that had nothing left to keep. Measured on
-    v4_beat_scorer: `llm_writer_simple: {max_tokens: 120000}` in the child,
+    a scorer agent: `llm_simple: {max_tokens: 120000}` in the child,
     the chain inherited, and the key gone from get_tool_server_config with
     "in none of its LLM chains ['normal']".
 

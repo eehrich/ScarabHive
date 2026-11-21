@@ -384,8 +384,8 @@ class TestMultimodalTokenEstimation:
 
         assert estimate_media_tokens(item) == 20 * TOKENS_PER_AUDIO_SECOND
 
-    def test_audio_as_writer_audio_sends_it_is_counted_by_its_bytes(self):
-        """AudioContent(source=ImageSource(...)), the writer audio scorer's form."""
+    def test_audio_as_an_audio_scorer_sends_it_is_counted_by_its_bytes(self):
+        """AudioContent(source=ImageSource(...)), the form an audio scorer sends."""
         from agent_system.llm.models import AudioContent, ImageSource
         from agent_system.llm.token_utils import TOKENS_PER_AUDIO_SECOND, estimate_media_tokens
 

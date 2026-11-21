@@ -130,8 +130,8 @@ class TestResolution:
         assert resolve("/help", ["help"]).kind == "command"
 
     def test_skill_is_found_with_its_arguments(self):
-        r = resolve("/writer analysiere Kapitel 3", ["writer", "verify"])
-        assert (r.kind, r.name, r.payload) == ("skill", "writer", "analysiere Kapitel 3")
+        r = resolve("/writer analysiere Abschnitt 3", ["writer", "verify"])
+        assert (r.kind, r.name, r.payload) == ("skill", "writer", "analysiere Abschnitt 3")
 
     def test_skill_without_arguments(self):
         r = resolve("/verify", ["verify"])
@@ -260,9 +260,9 @@ class TestExpansion:
         assert expand(body, "") == body
 
     def test_typed_input_survives_a_body_full_of_dollar_amounts(self):
-        out = expand("Flag anything above $100 per run.", "pruefe Kapitel 3")
+        out = expand("Flag anything above $100 per run.", "pruefe Abschnitt 3")
         assert "$100" in out
-        assert out.endswith("ARGUMENTS: pruefe Kapitel 3")
+        assert out.endswith("ARGUMENTS: pruefe Abschnitt 3")
 
     def test_placeholders_still_work_next_to_prose(self):
         assert expand("copy $0 -> $1 (max $500)", "alt neu") == "copy alt -> neu (max $500)"

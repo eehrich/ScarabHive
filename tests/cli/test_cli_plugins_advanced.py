@@ -45,8 +45,8 @@ def test_cli_plugins_list_json_reports_enabled(monkeypatch, tmp_path, capsys):
 
 @pytest.mark.parametrize("instance_enabled", [True, False])
 def test_cli_plugins_info_enabled_follows_instances_of_the_type(monkeypatch, tmp_path, capsys, instance_enabled):
-    """The only instance carries a name of its own -- as writer_audio_ops is
-    an audio_ops. Matching the TYPE against instance names said NO for it."""
+    """The only instance carries a name of its own -- as an instance
+    named voice_ops is an audio_ops. Matching the TYPE against instance names said NO for it."""
     pdir = _plugin_dir(tmp_path, "st_example")
     cfg = _make_cfg(tmp_path, [str(pdir)])
     cfg.plugins.servers = {"renamed_instance": ToolServerConfig(type="st_example", enabled=instance_enabled, agent_config=None)}

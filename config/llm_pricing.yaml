@@ -1,5 +1,5 @@
 # LLM Pricing Configuration (per 1M tokens)
-# Used by writer-costs.exe / analyze_costs.py for cost calculation.
+# Used by cost analysis tools for cost calculation.
 #
 # For OpenRouter models: actual billed cost comes from usage_json.cost in the
 # response — these values are only used as fallback when that field is missing.

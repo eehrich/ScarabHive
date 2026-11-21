@@ -54,7 +54,7 @@ async def test_status_fallback_returns_unknown_not_completed(
     nor session_tracker know about the request, the endpoint MUST
     NOT lie with completed=true. The honest response is
     status='unknown', completed=false plus error+reason so callers
-    (writer-jobs reconcile pass, frontend poll loop) can act on the
+    (a job queue's reconcile pass, frontend poll loop) can act on the
     truth instead of treating it as a successful run."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
@@ -125,7 +125,7 @@ async def test_status_returns_completed_when_bg_job_has_it(
 ):
     """Real BackgroundJob path: the response carries the
     job-specific sse_clients / events_buffered keys that the
-    writer-side reconcile uses as the positive-evidence marker for
+    a job queue's reconcile uses as the positive-evidence marker for
     'this is a real completion' (vs the lying fallback)."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod
@@ -153,7 +153,7 @@ async def test_status_returns_completed_when_bg_job_has_it(
     assert resp.status_code == 200
     body = resp.json()
     assert body["completed"] is True
-    # The positive-evidence keys producer.py T1 looks for:
+    # The positive-evidence keys a job queue's reconcile looks for:
     assert "sse_clients" in body
     assert "events_buffered" in body
 
@@ -161,13 +161,13 @@ async def test_status_returns_completed_when_bg_job_has_it(
 async def test_status_registry_walk_finds_subagent_request(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """2026-07-03 fix (writer_jobs audit, Finding A-F3 status side):
-    a /run on a NON-default agent (linear_book, cover_artist, ...)
+    """2026-07-03 fix (status side):
+    a /run on a NON-default agent (a pipeline agent, ...)
     registers in that agent's request manager — the default agent's
     session tracker misses it. The endpoint must consult the
     BackgroundJobManager's registry walk
     (is_request_active_anywhere) and report 'running', otherwise the
-    writer-side reconcile treats a live multi-hour run as lost and
+    a job queue's reconcile treats a live multi-hour run as lost and
     re-queues it for resume (double-run)."""
     _disable_auth(monkeypatch)
     from agent_system import app as app_mod

@@ -5,14 +5,13 @@
 # A sub-agent by design, and the reason it is one: its loop is generate,
 # look, judge, regenerate -- every step carries a picture. Those belong in
 # its own context. What the caller gets back is a path and what was
-# verified. The writer's cover_artist is the older sibling of this agent;
-# this one knows nothing about books and everything about sizes, tiling and
-# how a generated image gets its alpha (a cutout in the compose step).
+# verified. It knows nothing about any one caller's content and everything
+# about sizes, tiling and how a generated image gets its alpha (a cutout in the compose step).
 plugins:
   servers:
 
     # A composition instance CONFINED to the image workspace. The shared
-    # `image_compose` server writes wherever it is told (the writer needs
+    # `image_compose` server writes wherever it is told (other callers need
     # that); this one cannot leave data/workspace/images, so a model-chosen
     # output path cannot land in a game project or anywhere else.
     images:

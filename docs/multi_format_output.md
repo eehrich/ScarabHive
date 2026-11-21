@@ -6,7 +6,7 @@ hook for this no longer exists: the `markdown_formatter` and the hook point
 `format_output` were removed on 30.09.2026. Until then the hook rendered to HTML
 in the server — enabled per agent, so most agents appeared in the chat as raw
 text, and wherever it ran, API clients and calling agents also got HTML instead
-of Markdown (B57, 05.08.2026: twelve findings silently lost; the protection for
+of Markdown (05.08.2026: twelve findings silently lost; the protection for
 that is still in `core/agent_caller.py`).
 
 ## Web chat

@@ -25,7 +25,7 @@ Output Format:
 - Data Sources + Timestamps
 
 Tool Usage Tips:
-- yahoo_finance_quote: Stock prices, fundamentals, historical data
+- a market data tool, where one is configured: Stock prices, fundamentals, historical data
 - web_scraper_page: News articles, company info
 - duckduckgo_search_web_search: Recent news, market sentiment
 - Parallelize tool calls for multiple stocks

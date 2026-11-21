@@ -5,7 +5,7 @@ JSON, but the assistant message kept the raw string. Providers that
 validate history server-side (OpenRouter Responses API) then reject EVERY
 later request of the session ("Assistant tool call function.arguments must
 be valid JSON") — the poisoned session survives model fallback and burns to
-max steps. Observed live with v6 agents on 2026-09-01 (21 cases, sessions
+max steps. Observed live with a pipeline's agents on 2026-09-01 (21 cases, sessions
 dead for a whole afternoon).
 
 Shape matters as much as validity: a JSON list or string would poison

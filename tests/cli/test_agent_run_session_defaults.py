@@ -401,7 +401,7 @@ class TestAnUnknownProfile:
 
 
 class TestARefusedRunExits1:
-    """The callers read the code (publish_pipeline, the writer runners), and
+    """The callers read the code (pipeline runners of further plugins), and
     agent-run left with 0 on a session it could not open."""
 
     def test_another_users_session(self, run_env, monkeypatch, capsys):

@@ -39,7 +39,7 @@ def manager(tmp_path):
             await mgr.create_session(
                 user_id=USER, title=f"another chat {i}", agent_name="sysadmin_agent")
         await mgr.create_session(
-            user_id=USER, title="spawned by the parent", agent_name="v6_psychologe",
+            user_id=USER, title="spawned by the parent", agent_name="helper_critic",
             parent_session_id=parent["session_id"])
         return parent["session_id"]
 
@@ -62,7 +62,7 @@ class TestTheListing:
         out = capsys.readouterr().out
         assert "spawned by the parent" not in out, (
             "a sub-agent session reached the listing")
-        assert "v6_psychologe" not in out
+        assert "helper_critic" not in out
         assert "the parent chat" in out, "fixture seeded nothing visible"
 
     def test_a_multiline_title_stays_one_line(self, manager, capsys):
@@ -155,13 +155,13 @@ class TestTheLine:
             "session_id": "a1b2c3d4e5",
             "updated_at": "2026-09-10T12:16:17.470030+00:00",
             "message_count": 14,
-            "agent_name": "v6_synopsis_writer",
-            "title": "idea-typ-normalkette",
+            "agent_name": "batch_draft_writer",
+            "title": "plan-type-basicchain",
         })
         assert "a1b2c3d4e5" in line
         assert "14 msg" in line
-        assert "v6_synopsis_writer" in line
-        assert "idea-typ-normalkette" in line
+        assert "batch_draft_writer" in line
+        assert "plan-type-basicchain" in line
         assert "\n" not in line
 
     def test_the_time_is_the_local_wall_clock_not_the_stored_utc(self):
@@ -224,7 +224,7 @@ class TestTheLine:
             "session_id": session_id,
             "updated_at": "2026-09-10T12:16:17.470030+00:00",
             "message_count": 9999,
-            "agent_name": "v5b_synopsis_audit_revalidator",
+            "agent_name": "batch_outline_audit_revalidate",
             "title": "x" * 80,
         })
         assert len(line) <= 100, f"{len(line)} columns: {line}"
@@ -243,7 +243,7 @@ class TestTheLine:
     def test_a_long_agent_name_does_not_push_the_title_out_of_line(self):
         short = format_session_line({"session_id": "x", "agent_name": "a", "title": "T"})
         long = format_session_line({
-            "session_id": "x", "agent_name": "v5b_synopsis_audit_revalidator_and_more",
+            "session_id": "x", "agent_name": "batch_outline_audit_revalidate_and_more",
             "title": "T"})
         assert short.index("T") == long.index("T")
 
@@ -263,10 +263,10 @@ class TestWhatTheListingLeavesOut:
         from agent_system.cli_utils.session_listing import in_chat_selector
 
         decls = {"coder": NS(visibility="ui"), "helper": NS(visibility="both"),
-                 "v4_scorer": NS(visibility="private"), "sam_tool": NS(visibility="tool")}
+                 "batch_scorer": NS(visibility="private"), "sam_tool": NS(visibility="tool")}
         shown = in_chat_selector(NS(describe=decls.get))
         # a session without an agent name cannot be judged, so it is shown
-        assert [n for n in ("coder", "helper", "v4_scorer", "sam_tool", "renamed", "")
+        assert [n for n in ("coder", "helper", "batch_scorer", "sam_tool", "renamed", "")
                 if shown(n)] == ["coder", "helper", ""]
         assert in_chat_selector(None) is None, "no runtime -- nothing may be filtered"
 
@@ -289,7 +289,7 @@ class TestWhatTheListingLeavesOut:
         from agent_system.cli_utils.session_listing import print_sessions
 
         # five-digit counts both -- the widest the footer gets
-        rows = [{"session_id": f"b{i}", "agent_name": "v4_continuity_scorer_bench_contA_26156",
+        rows = [{"session_id": f"b{i}", "agent_name": "batch_consistency_scorer_bench_a_26156",
                  "updated_at": "2026-09-25T00:00:00+00:00"} for i in range(12000)]
 
         async def listing(user_id):

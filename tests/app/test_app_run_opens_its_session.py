@@ -101,12 +101,12 @@ async def test_a_session_a_run_here_has_is_not_reset_under_it(api, endpoint, mon
         return {"s-busy": {"user_id": "anonymous"}}
     monkeypatch.setattr(BackgroundJobManager, "active_sessions", running)
     tracker = api.app.state.agent._session_tracker
-    tracker.set_session_template_vars("s-busy", {"book_id": 7})
+    tracker.set_session_template_vars("s-busy", {"record_id": 7})
 
     response = await _call(api.app, endpoint, "s-busy")
 
     assert response.status_code == 200, response.text
-    assert api.at_run == {"s-busy": {"book_id": 7}}, "the running run's session was reset"
+    assert api.at_run == {"s-busy": {"record_id": 7}}, "the running run's session was reset"
 
 
 @pytest.mark.parametrize("endpoint", ENDPOINTS)

@@ -362,7 +362,7 @@ class ToolStepMixin:
             st.end = StepEnd.RUN
             return
         # Tools on the final call run once: an agent that delivers
-        # through a tool (the v6 auditors) would otherwise lose the
+        # through a tool (an auditor agent) would otherwise lose the
         # delivery its whole run was for. The budget stays a cap --
         # no call follows to read the results -- and the run says so.
         ran = ", ".join(
@@ -373,7 +373,7 @@ class ToolStepMixin:
             f"ran without a further LLM call: {ran}. Increase max_steps or simplify the task."
         )
         # No final event: callers that read only final take it as
-        # success (the writer dispatch records ok=True, the job
+        # success (a job queue's dispatch records ok=True, the job
         # manager marks the run answered), whatever the tools
         # returned. The results stay in the session.
         error_msg = (f"Agent incomplete: max steps ({run.max_steps}) reached; "

@@ -118,7 +118,7 @@ class PluginValidator:
         return self._report_results()
 
     #: Types that ship no plugin-registry entrypoint module. A "library"
-    #: plugin (amiga, coder, research, writer_publish) is agents, skills and
+    #: plugin (coder, research) is agents, skills and
     #: prompts -- config, no code; an "llm-provider" is found by the LLM
     #: registry through provider.py, not through PLUGIN_FACTORY. Demanding
     #: plugin.py or an `entrypoint` from either was this validator refusing a

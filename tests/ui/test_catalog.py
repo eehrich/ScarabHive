@@ -196,7 +196,7 @@ def test_an_instance_the_viewer_may_not_open_does_not_group_the_one_they_may():
         panel = plugin_panel(name, spec(endpoint=f"/plugins/{name}/", contexts={}, title="Sub-Agents"), ICONS)
         return replace(panel, roles=roles)
 
-    catalog = build_catalog("user", [], [instance("sam_writer", ["admin"]), instance("sam_skills", [])])
+    catalog = build_catalog("user", [], [instance("sam_reports", ["admin"]), instance("sam_skills", [])])
 
     assert [(p["id"], p["title"], p["group"]) for p in catalog["panels"]] == [("sam_skills", "Sub-Agents", "")]
 

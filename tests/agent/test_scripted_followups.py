@@ -61,16 +61,16 @@ async def test_each_followup_is_sent_once_and_the_last_answer_is_the_result():
         agent.agent_config.max_steps = 10
         llm = _AnswersInTurn()
         agent.llm = llm
-        events = [event async for event in agent.run_events("Score chapter 3.", session_id="f1")]
+        events = [event async for event in agent.run_events("Score section 3.", session_id="f1")]
     finally:
         await registry.unregister_hook(HookType.POST_LLM_CALL, "test_followups.evaluate")
 
     assert llm.calls == 3, f"expected answer + 2 follow-up rounds, got {llm.calls} calls"
     last_users = llm.seen[-1]
-    assert [content for _, content, _ in last_users] == ["Score chapter 3.", *FOLLOWUPS]
+    assert [content for _, content, _ in last_users] == ["Score section 3.", *FOLLOWUPS]
     assert [marker for _, _, marker in last_users] == [None, FOLLOWUP_MARKER, FOLLOWUP_MARKER]
     # A scripted follow-up stays a user turn: the plugin counts what it sent by
-    # the marker, and v4 reads the follow-up back out of the stored transcript
+    # the marker, and a pipeline reads the follow-up back out of the stored transcript
     # by its configured text. Only the marker tells it from a person.
     assert [role for role, _, _ in last_users] == ["user", "user", "user"]
     finals = [e for e in events if e.get("type") == "final"]

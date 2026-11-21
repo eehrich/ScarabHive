@@ -21,7 +21,7 @@ waits up to ``panel_ask_timeout`` (the person may be in another tab or away from
 puts the run back to work, whatever the outcome.
 
 Nobody to ask -- a run no person watches (openai_api, agent-run, a one-shot
-agent-cli, a JSON /run, a job, a writer dispatch, an async sub-agent whose
+agent-cli, a JSON /run, a job, a pipeline's dispatch, an async sub-agent whose
 caller's stream ended) --
 and the call returns at once with an error that tells the model to decide
 itself. So does a call that is not the model's own turn (a script, a state

@@ -307,7 +307,7 @@ class TestInfoOnAnInstanceThatDoesNotExist:
     async def test_the_hint_names_the_real_siblings_instead_of_the_guessed_id(
         self, server, session_service, sub_agent_manager, sub_session
     ):
-        """The production case: 'panel-beats-P04' guessed from one sibling's
+        """The production case: 'panel-review-P04' guessed from one sibling's
         label and another's suffix. Neither existed, both do."""
         real_sub_id, _ = sub_session
         result = await server._handle_info(_params("sub_assembled_from_two_others_12345", session_service))
@@ -560,7 +560,7 @@ class TestListCountsFromTheSubIndex:
 class TestTheHintNamesTheMostRecentIds:
     @pytest.mark.asyncio
     async def test_a_session_with_many_names_the_most_recent_ones(self, server):
-        """A writer session has hundreds of sub-agents, and every id went into the model's context."""
+        """A long coordinator session has hundreds of sub-agents, and every id went into the model's context."""
         from plugins.sub_agent_manager.server import HINT_IDS
 
         ids = [f"sub_worker_{number}" for number in range(HINT_IDS + 10)]  # most recently used first

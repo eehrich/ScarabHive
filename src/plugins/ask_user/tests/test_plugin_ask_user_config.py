@@ -2,7 +2,7 @@
 
 Reads the real configuration (load_settings + get_tool_server_config, the
 inheritance included). Only agents a person chats with in the web UI may ask;
-a writer agent or a sub-agent that runs unattended must not get the tool --
+a pipeline agent or a sub-agent that runs unattended must not get the tool --
 through its own allowlist or through the agent it inherits from
 (research_worker from research_agent, gamedev from coder).
 """

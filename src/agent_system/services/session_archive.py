@@ -1,6 +1,6 @@
 """Old conversations move out of the live session store into zip archives.
 
-``data/sessions`` grew without a bound: one book run leaves a root session and
+``data/sessions`` grew without a bound: one pipeline run leaves a root session and
 several hundred sub-agent sessions behind, and nothing ever took them away.
 Measured 20.09.2026 on this machine: 60.196 files, 5,1 GB, 59.960 of them
 older than a month. Everything that walks the store pays for that -- a

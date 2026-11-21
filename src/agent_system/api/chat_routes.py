@@ -5,7 +5,7 @@
 The web UI resolves a typed line through the SAME catalogue and parser as
 the terminal chat (agent_system.chat_commands). The browser cannot read
 the skill folders, so expansion happens here -- one implementation, and
-`/writer x` means the same thing on both surfaces.
+`/teach x` means the same thing on both surfaces.
 
 A command that writes the session (/undo's cut, a rewind) holds it the way an
 append does (session_writes); what it reads comes from the record, which is

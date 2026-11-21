@@ -118,7 +118,7 @@ class ComfyUIServer(SchemaBasedToolServer):
         # Default scope is INTENTIONALLY narrow — the plugin's own
         # output_dir (re-upload of generated images) and an
         # image-asset subtree under data/. The bare project ``data/``
-        # tree contains databases (writer.db, users.db, message_debugger
+        # tree contains databases (plugin databases, users.db, message_debugger
         # debugger.db, comfyui jobs.db, lessons_learned), agent traces,
         # and other non-image state. Setting the default to ``data/``
         # would re-open the confused-deputy class the allowlist was
@@ -326,9 +326,9 @@ class ComfyUIServer(SchemaBasedToolServer):
             Resolved Path object with {session_id} substituted if applicable.
             
         Example:
-            Template: "data/writer/audio/temp/{session_id}"
+            Template: "data/audio/temp/{session_id}"
             Session ID: "abc123"
-            Result: Path("data/writer/audio/temp/abc123")
+            Result: Path("data/audio/temp/abc123")
         """
         if "{session_id}" not in self._output_dir_template:
             # No template - return base path
@@ -1837,7 +1837,7 @@ class ComfyUIServer(SchemaBasedToolServer):
                 return resolved
 
         # Bare filename: search the allowlisted roots (downloaded outputs,
-        # writer assets). Reject values with separators — those were paths
+        # image assets). Reject values with separators — those were paths
         # that simply don't exist, not names to hunt for.
         if raw.name != value:
             return None

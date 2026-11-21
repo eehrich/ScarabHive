@@ -196,7 +196,7 @@ plugins:
       workflow_files_dir: "config/comfyui_workflows"
       cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
       # upload_image security allowlist. Mirrors the code defaults plus the
-      # writer cover dir: the cover feedback judge uploads the cover composite
+      # asset dirs of a plugin: its image judge uploads a composite
       # for VLM verification and is refused without that entry.
       upload_source_dirs:
         - "data/comfyui/outputs"
@@ -941,7 +941,7 @@ plugins:
     #sqlite_query:
     #  type: sqlite_query
     #  enabled: true
-    #  database: "data/writer/books.db"
+    #  database: "data/example.db"
     #  query_timeout: 30
 
     sub_agent_manager:
@@ -1052,7 +1052,7 @@ plugins:
         # Request size limits (bytes). OpenRouter caps a request at 30 MB, but routed
         # to Google AI Studio (or-gemini-pro, or-gemini-flash) the body may hold at
         # most 20,000,000 bytes -- above that HTTP 413 on every Gemini profile
-        # (an image agent, measured: 20.66 MB). The estimate leaves out the
+        # (an image agent, 14.10.2026: 20.66 MB). The estimate leaves out the
         # tool schemas, hence the 1 MB buffer. Direct-Gemini agents (100 MB) just
         # compact a bit earlier.
         max_request_bytes: 18874368    # 18 MiB - trigger compaction (1.1 MB under the Google AI Studio 20 MB cap)
@@ -1084,7 +1084,7 @@ plugins:
         # pruning from 190 to 100 means one break per ~90 messages and one
         # checkpoint call (prune_checkpoint_profile); removed messages go to the archive. Must stay BELOW the
         # context_summarizer's max_messages (200), or it summarizes first.
-        # The writer_context_summarizer (writer agents) is set to 150 and
+        # A context_summarizer instance set to 150 for its agents
         # still triggers first there.
         max_messages: 190              # 0 = off
         max_messages_prune_to: 100     # messages kept after a prune; 0 = max_messages // 2
@@ -1100,8 +1100,8 @@ plugins:
         # Pre-Layer M, whatever the token count: media items leave all but the last N
         # messages that contain media
         # and what arrived since the model's last answer (parallel previews: each seen once).
-        # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
-        # cover_feedback_judge) set their own value in their agent YAML.
+        # Set to 0 to disable, >0 to enable. Agents that need more (image
+        # agents) set their own value in their agent YAML.
         always_compact_media_keep_last: 12
         # Past keep_last, evict down to keep_last - headroom (at least 1): one
         # cache break per headroom+1 new media messages instead of one per message.

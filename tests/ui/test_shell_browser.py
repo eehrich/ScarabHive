@@ -85,7 +85,7 @@ until its run saves it: neither listed nor loadable before);
 ``session-query:<id>`` collects the raw query string of every load of it, which
 is how a test says that the chat's load and the DELETE of a session stay the
 same URL. The
-Sub-Agents instance ``sam_writer``, ``context_engineer``, ``memory``, ``todo``
+Sub-Agents instance ``sam_tasks``, ``context_engineer``, ``memory``, ``todo``
 and ``context_usage_tracker`` are the real plugin panels; what they ask their
 plugin for, memory searches included, is counted by the session it names,
 answered with a number per session in every figure the panels show and, for
@@ -164,7 +164,7 @@ def plugin_panels() -> list[Panel]:
         Panel("probe", "Probe", PROBE_PAGE, "bug", "debug", "Records the protocol messages the shell sends", ["probe"],
               contexts={"request": f"{PROBE_PAGE}?request_id={{request_id}}",
                         "session": f"{PROBE_PAGE}?session_id={{session_id}}"}),
-        Panel("sam_writer", "Sub-Agents", "/plugins/sam_writer/", "workflow", "agents", "Sub-agent tasks"),
+        Panel("sam_tasks", "Sub-Agents", "/plugins/sam_tasks/", "workflow", "agents", "Sub-agent tasks"),
         Panel("sam_skills", "Sub-Agents", "/tests/ui/missing_panel_b.html", "workflow", "agents", "Sub-agent tasks"),
         Panel("context_engineer", "Context Engineer", "/plugins/context_engineer/", "brain", "context", "Context archive"),
         Panel("memory", "Memory", "/plugins/memory/", "database", "context", "Stored memories"),
@@ -229,13 +229,13 @@ FLAKY = "rf00000001"
 BACKGROUND = "rb00000001"
 BACKGROUND_RUN = f"{BACKGROUND}_003_sub_bgbgbg"
 PIPING = "r-live-piping"  # a pipeline still at work: /events streams it, once POST /__stub/live/release says so
-CHAPTERS = 120  # more sub-agents than a screen holds
-#: Chapters still at work when the session is read. 0 is read before its live events
+SECTIONS = 120  # more sub-agents than a screen holds
+#: Sections still at work when the session is read. 0 is read before its live events
 #: come (in view), 45 and 60 after (out of view; 60's read is slow and it has helpers
 #: of its own); 2's first read fails (in view). 1 and 75 have answered and only their
 #: end comes live; 120 is begun after the session was read. 3 is at work too, but its
 #: end never reaches the page. 45's step came after one that stored nothing.
-LIVE_CHAPTERS = (0, 2, 45, 60)
+LIVE_SECTIONS = (0, 2, 45, 60)
 UNENDED = 3
 #: Ended without an answer; an async helper it started works on. 35 the same, never in
 #: view: its helper's word is the first the page hears of it.
@@ -249,7 +249,7 @@ EDITOR = f"{PIPING}_002"
 EDITOR_HELPER = f"{EDITOR}_001_async_x0200"
 
 
-def _chapter(n):
+def _section(n):
     return f"{PIPING}_001_sub_q{n:05d}"
 
 
@@ -409,55 +409,55 @@ STORED_RUNS = {
         {"role": "user", "content": "Help the third", "request_id": f"{FLAKY}_003_sub_cont_cccccc_001_sub_dddddd"},
         {"role": "assistant", "content": "Deep read.", "content_format": "text"},
     ],
-    # a pipeline at work: its one call starts a sub-agent per chapter and waits for them
-    # all, so it has no answer yet. Chapters 0, 45 and 60 are still being written (see
-    # LIVE_CHAPTERS); every other one has answered.
+    # a pipeline at work: its one call starts a sub-agent per section and waits for them
+    # all, so it has no answer yet. Sections 0, 45 and 60 are still being written (see
+    # LIVE_SECTIONS); every other one has answered.
     "pipeline-live": [
-        {"role": "user", "content": "Write the book", "request_id": PIPING},
-        {"role": "assistant", "content": "", **_calls(PIPING, ("call_1", "linear_book_execute_task"),
-                                                      ("call_2", "chapter_editor"))},
+        {"role": "user", "content": "Write the report", "request_id": PIPING},
+        {"role": "assistant", "content": "", **_calls(PIPING, ("call_1", "report_pipeline_execute_task"),
+                                                      ("call_2", "report_editor"))},
     ],
-    **{f"sub-q{n:02d}": [{"role": "user", "content": f"Chapter {n}", "request_id": _chapter(n)},
-                         *([{"role": "assistant", "reasoning_content": f"chapter {n} is planned.",
+    **{f"sub-q{n:02d}": [{"role": "user", "content": f"Section {n}", "request_id": _section(n)},
+                         *([{"role": "assistant", "reasoning_content": f"section {n} is planned.",
                              **({"step": {2: 3, 45: 2}[n]} if n in (2, 45) else {}),
-                             # chapter 60 says a word before its call: not an answer
-                             "content": "Looking at chapter 60 first." if n == 60 else "",
-                             **_calls(_chapter(n), ("c_1", "skills_sam_manage_sub_agent" if n == 60
+                             # section 60 says a word before its call: not an answer
+                             "content": "Looking at section 60 first." if n == 60 else "",
+                             **_calls(_section(n), ("c_1", "skills_sam_manage_sub_agent" if n == 60
                                                     else "file_ops_read_file"))},
                             *_answers("c_1"),
                             *([{"role": "assistant", "content": "", "step": 3,
-                                **_calls(_chapter(n), ("c_2", "file_ops_read_file"))}] if n == 45 else [])]
-                          if n in (*LIVE_CHAPTERS, UNENDED, ASYNC_CALLER, ASYNC_OUT) else
-                           [{"role": "assistant", "content": f"Chapter {n} written.", "content_format": "text"}])]
-       for n in range(CHAPTERS)},
-    # chapter 60's own helpers: one still at work, one done
-    "sub-h60": [{"role": "user", "content": "Help with chapter 60", "request_id": f"{_chapter(60)}_001_sub_h60000"},
+                                **_calls(_section(n), ("c_2", "file_ops_read_file"))}] if n == 45 else [])]
+                          if n in (*LIVE_SECTIONS, UNENDED, ASYNC_CALLER, ASYNC_OUT) else
+                           [{"role": "assistant", "content": f"Section {n} written.", "content_format": "text"}])]
+       for n in range(SECTIONS)},
+    # section 60's own helpers: one still at work, one done
+    "sub-h60": [{"role": "user", "content": "Help with section 60", "request_id": f"{_section(60)}_001_sub_h60000"},
                 {"role": "assistant", "content": "", "reasoning_content": "the helper starts.",
-                 **_calls(f"{_chapter(60)}_001_sub_h60000", ("c_1", "file_ops_read_file"))},
+                 **_calls(f"{_section(60)}_001_sub_h60000", ("c_1", "file_ops_read_file"))},
                 *_answers("c_1")],
-    # chapter 35's async helper, and the editor's
-    "sub-a104": [{"role": "user", "content": "Look up for chapter 35", "request_id": f"{_chapter(ASYNC_OUT)}_001_async_a0350"},
+    # section 35's async helper, and the editor's
+    "sub-a104": [{"role": "user", "content": "Look up for section 35", "request_id": f"{_section(ASYNC_OUT)}_001_async_a0350"},
                  {"role": "assistant", "content": "", "reasoning_content": "the async helper of 35 starts.",
-                  **_calls(f"{_chapter(ASYNC_OUT)}_001_async_a0350", ("c_1", "file_ops_read_file"))},
+                  **_calls(f"{_section(ASYNC_OUT)}_001_async_a0350", ("c_1", "file_ops_read_file"))},
                  *_answers("c_1")],
     "sub-x02": [{"role": "user", "content": "Help the editor", "request_id": EDITOR_HELPER},
                 {"role": "assistant", "content": "", "reasoning_content": "the editor's helper starts.",
                  **_calls(EDITOR_HELPER, ("c_1", "file_ops_read_file"))},
                 *_answers("c_1")],
-    # chapter 4's async helper, at work
-    "sub-a04": [{"role": "user", "content": "Look up for chapter 4", "request_id": f"{_chapter(4)}_001_async_a0400"},
+    # section 4's async helper, at work
+    "sub-a04": [{"role": "user", "content": "Look up for section 4", "request_id": f"{_section(4)}_001_async_a0400"},
                 {"role": "assistant", "content": "", "reasoning_content": "the async helper starts.",
-                 **_calls(f"{_chapter(4)}_001_async_a0400", ("c_1", "file_ops_read_file"))},
+                 **_calls(f"{_section(4)}_001_async_a0400", ("c_1", "file_ops_read_file"))},
                 *_answers("c_1")],
-    "sub-f60": [{"role": "user", "content": "Check chapter 60", "request_id": f"{_chapter(60)}_001_sub_f60000"},
+    "sub-f60": [{"role": "user", "content": "Check section 60", "request_id": f"{_section(60)}_001_sub_f60000"},
                 {"role": "assistant", "content": "Checked.", "content_format": "text"}],
-    "sub-k60": [{"role": "user", "content": "Keep chapter 60", "request_id": f"{_chapter(60)}_001_sub_k60000"},
-                {"role": "assistant", "content": "", **_calls(f"{_chapter(60)}_001_sub_k60000", ("c_1", "skills_sam_manage_sub_agent"))},
+    "sub-k60": [{"role": "user", "content": "Keep section 60", "request_id": f"{_section(60)}_001_sub_k60000"},
+                {"role": "assistant", "content": "", **_calls(f"{_section(60)}_001_sub_k60000", ("c_1", "skills_sam_manage_sub_agent"))},
                 *_answers("c_1"),
                 {"role": "assistant", "content": "Kept.", "content_format": "text"}],
-    "sub-g60": [{"role": "user", "content": "Guard chapter 60", "request_id": f"{_chapter(60)}_001_sub_k60000_001_async_g6000"},
+    "sub-g60": [{"role": "user", "content": "Guard section 60", "request_id": f"{_section(60)}_001_sub_k60000_001_async_g6000"},
                 {"role": "assistant", "content": "", "reasoning_content": "the guard starts.",
-                 **_calls(f"{_chapter(60)}_001_sub_k60000_001_async_g6000", ("c_1", "file_ops_read_file"))},
+                 **_calls(f"{_section(60)}_001_sub_k60000_001_async_g6000", ("c_1", "file_ops_read_file"))},
                 *_answers("c_1")],
 }
 
@@ -500,30 +500,30 @@ def stub_app() -> FastAPI:
     children["s-machine"] = [{**sessions[0], "session_id": "sub-writer", "title": "writer (draft)", "agent_name": "writer",
                               "depth": 1, "run": "sub-writer", "runs": [f"{MACHINE_RUN}_001"]}]
     listing_fails_once = {"sub-flaky"}  # its first listing answers 500
-    children["s-pipeline-live"] = [{**sessions[0], "session_id": f"sub-q{n:02d}", "title": f"Chapter {n}",
-                                    "agent_name": "chapter_writer", "depth": 1, "run": f"sub-q{n:02d}",
+    children["s-pipeline-live"] = [{**sessions[0], "session_id": f"sub-q{n:02d}", "title": f"Section {n}",
+                                    "agent_name": "section_writer", "depth": 1, "run": f"sub-q{n:02d}",
                                     "created_at": f"2026-09-21T10:{n // 60:02d}:{n % 60:02d}",
-                                    "runs": [_chapter(n)],
+                                    "runs": [_section(n)],
                                     **({"delay": 1.5, "metadata": {"sub_agents": {"sub-h60": {}, "sub-f60": {}, "sub-k60": {}}}}
                                        if n == 60 else {}),
                                     **({"fails_once": True} if n == 2 else {}),
                                     **({"metadata": {"sub_agents": {"sub-a04": {}}}} if n == ASYNC_CALLER else {}),
                                     # its second read slow: the check reads the session anew meanwhile
                                     **({"slow_on": 2, "metadata": {"sub_agents": {"sub-a104": {}}}} if n == ASYNC_OUT else {})}
-                                   for n in range(CHAPTERS)] + [
+                                   for n in range(SECTIONS)] + [
         {**sessions[0], "session_id": "sub-x02", "title": "Help the editor", "agent_name": "skills_agent",
          "depth": 1, "run": "sub-x02", "created_at": "2026-09-21T11:00:00", "runs": [EDITOR_HELPER]}]
     children[f"sub-q{ASYNC_OUT:02d}"] = [{**sessions[0], "session_id": "sub-a104", "title": "Look up", "agent_name": "skills_agent",
-                             "depth": 2, "run": "sub-a104", "runs": [f"{_chapter(ASYNC_OUT)}_001_async_a0350"]}]
+                             "depth": 2, "run": "sub-a104", "runs": [f"{_section(ASYNC_OUT)}_001_async_a0350"]}]
     children["sub-q04"] = [{**sessions[0], "session_id": "sub-a04", "title": "Look up", "agent_name": "skills_agent",
-                            "depth": 2, "run": "sub-a04", "runs": [f"{_chapter(4)}_001_async_a0400"]}]
+                            "depth": 2, "run": "sub-a04", "runs": [f"{_section(4)}_001_async_a0400"]}]
     children["sub-q60"] = [{**sessions[0], "session_id": f"sub-{name}60", "title": title, "agent_name": "skills_agent",
-                            "depth": 2, "run": f"sub-{name}60", "runs": [f"{_chapter(60)}_001_sub_{name}60000"]}
-                           for name, title in (("h", "Help with chapter 60"), ("f", "Check chapter 60"),
-                                               ("k", "Keep chapter 60"))]
+                            "depth": 2, "run": f"sub-{name}60", "runs": [f"{_section(60)}_001_sub_{name}60000"]}
+                           for name, title in (("h", "Help with section 60"), ("f", "Check section 60"),
+                                               ("k", "Keep section 60"))]
     children["sub-q60"][2]["metadata"] = {"sub_agents": {"sub-g60": {}}}
-    children["sub-k60"] = [{**sessions[0], "session_id": "sub-g60", "title": "Guard chapter 60", "agent_name": "skills_agent",
-                            "depth": 3, "run": "sub-g60", "runs": [f"{_chapter(60)}_001_sub_k60000_001_async_g6000"]}]
+    children["sub-k60"] = [{**sessions[0], "session_id": "sub-g60", "title": "Guard section 60", "agent_name": "skills_agent",
+                            "depth": 3, "run": "sub-g60", "runs": [f"{_section(60)}_001_sub_k60000_001_async_g6000"]}]
     live_gate = asyncio.Event()  # the pipeline's live events wait for it; never cleared
     patches: list[dict] = []
     posted: list[dict] = []
@@ -628,18 +628,18 @@ def stub_app() -> FastAPI:
         """The number the plugin panels show: 7 for ``s-1``, 3 for any other session or none."""
         return 7 if session_id == "s-1" else 3
 
-    @app.get("/plugins/sam_writer/")  # an instance of sub_agent_manager: its templates and static files are the plugin's
+    @app.get("/plugins/sam_tasks/")  # an instance of sub_agent_manager: its templates and static files are the plugin's
     async def sub_agent_panel(request: Request):
         panel_templates = ui_templates(PLUGINS / "sub_agent_manager" / "templates")
-        return panel_templates.TemplateResponse(request, "panel.html", {"plugin": "sam_writer"})
+        return panel_templates.TemplateResponse(request, "panel.html", {"plugin": "sam_tasks"})
 
-    @app.get("/plugins/sam_writer/static/{name}")
+    @app.get("/plugins/sam_tasks/static/{name}")
     async def sub_agent_static(name: str):
         return FileResponse(PLUGINS / "sub_agent_manager" / "static" / name)
 
-    @app.get("/plugins/sam_writer/sub-agents")
+    @app.get("/plugins/sam_tasks/sub-agents")
     async def sub_agents(session_id: str):
-        hits[f"sam_writer:{session_id}"] = hits.get(f"sam_writer:{session_id}", 0) + 1
+        hits[f"sam_tasks:{session_id}"] = hits.get(f"sam_tasks:{session_id}", 0) + 1
         await asyncio.sleep(lag(session_id))
         count = marker(session_id)
         return {"instances": [{"instance_id": f"agent-{session_id}", "agent_type": "writer", "status": "active",
@@ -1138,119 +1138,119 @@ def stub_app() -> FastAPI:
                 await asyncio.sleep(0.5)
                 yield event({"type": "cancelled", "request_id": request_id, "step": 2})
                 await asyncio.sleep(1.5)
-            elif request_id == PIPING:  # the chapters still at work go on and finish (LIVE_CHAPTERS)
+            elif request_id == PIPING:  # the sections still at work go on and finish (LIVE_SECTIONS)
                 def relayed(run_id, spawned_by, depth, inner):
                     return event({"type": "sub_run", "run_id": run_id, "spawned_by": spawned_by,
-                                  "depth_level": depth, "agent": "chapter_writer", "event": inner})
+                                  "depth_level": depth, "agent": "section_writer", "event": inner})
 
-                def of_chapter(n, inner):
-                    return relayed(_chapter(n), f"{PIPING}_001", 2, inner)
+                def of_section(n, inner):
+                    return relayed(_section(n), f"{PIPING}_001", 2, inner)
                 await asyncio.wait_for(live_gate.wait(), timeout=30)
                 def line(n, call, message):
                     return event({"type": "status", "server": "file_ops.read_file()", "phase": "start",
-                                  "request_id": f"{_chapter(n)}_{call}", "message": message, "meta": {},
-                                  "tree": {"parent_id": _chapter(n), "depth_level": 3, "child_count": 0,
+                                  "request_id": f"{_section(n)}_{call}", "message": message, "meta": {},
+                                  "tree": {"parent_id": _section(n), "depth_level": 3, "child_count": 0,
                                            "is_leaf": True}})
                 # the pipeline's own line: never waits for anything
-                yield event({"type": "status", "server": "linear_book.execute_task()", "phase": "start",
+                yield event({"type": "status", "server": "report_pipeline.execute_task()", "phase": "start",
                              "request_id": f"{PIPING}_001", "message": "the pipeline writes", "meta": {},
                              "tree": {"parent_id": PIPING, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 # 0 (read already): its call's line before any event naming a step, the tail
                 # of its step 1 once more, its call's result; a line of its own work; then
                 # its step 2
-                yield line(0, "001", "chapter 0 reads")
-                yield of_chapter(0, {"type": "reasoning_delta", "step": 1, "delta": "chapter 0 is planned."})
-                yield of_chapter(0, {"type": "tool_result", "step": 1, "server": "file_ops", "action": "read_file",
-                                     "request_id": f"{_chapter(0)}_001", "result": {"status": "success"}})
+                yield line(0, "001", "section 0 reads")
+                yield of_section(0, {"type": "reasoning_delta", "step": 1, "delta": "section 0 is planned."})
+                yield of_section(0, {"type": "tool_result", "step": 1, "server": "file_ops", "action": "read_file",
+                                     "request_id": f"{_section(0)}_001", "result": {"status": "success"}})
                 yield event({"type": "status", "server": "file_ops.read_file()", "phase": "start",
-                             "request_id": f"{_chapter(0)}_003", "message": "chapter 0 reads on", "meta": {},
-                             "tree": {"parent_id": _chapter(0), "depth_level": 3, "child_count": 0, "is_leaf": True}})
+                             "request_id": f"{_section(0)}_003", "message": "section 0 reads on", "meta": {},
+                             "tree": {"parent_id": _section(0), "depth_level": 3, "child_count": 0, "is_leaf": True}})
                 # 3 (read already): a word of its step 2, and no more
-                yield of_chapter(UNENDED, {"type": "reasoning_delta", "step": 2, "delta": "chapter 3 goes on."})
-                yield relayed(f"{_chapter(UNENDED)}_001", _chapter(UNENDED), 3, {"type": "start", "task": "a tool agent of 3"})
+                yield of_section(UNENDED, {"type": "reasoning_delta", "step": 2, "delta": "section 3 goes on."})
+                yield relayed(f"{_section(UNENDED)}_001", _section(UNENDED), 3, {"type": "start", "task": "a tool agent of 3"})
                 yield event({"type": "status", "server": "tool_agent.call()", "phase": "start",
-                             "request_id": f"{_chapter(UNENDED)}_001", "message": "chapter 3 asks its tool agent", "meta": {},
-                             "tree": {"parent_id": _chapter(UNENDED), "depth_level": 3, "child_count": 0, "is_leaf": True}})
+                             "request_id": f"{_section(UNENDED)}_001", "message": "section 3 asks its tool agent", "meta": {},
+                             "tree": {"parent_id": _section(UNENDED), "depth_level": 3, "child_count": 0, "is_leaf": True}})
                 # 4 (read already, ended): a line of the async helper it left at work
                 yield event({"type": "status", "server": "file_ops.read_file()", "phase": "start",
-                             "request_id": f"{_chapter(4)}_001_async_a0400_002", "message": "the async helper reads",
-                             "meta": {}, "tree": {"parent_id": f"{_chapter(4)}_001_async_a0400", "depth_level": 5,
+                             "request_id": f"{_section(4)}_001_async_a0400_002", "message": "the async helper reads",
+                             "meta": {}, "tree": {"parent_id": f"{_section(4)}_001_async_a0400", "depth_level": 5,
                                                   "child_count": 0, "is_leaf": True}})
                 # 45 (unread): the line of the call it waits in says the first word, then
                 # the tail of its step 2 -- read afterwards
-                yield line(45, "001", "chapter 45 reads")
+                yield line(45, "001", "section 45 reads")
                 yield event({"type": "status", "server": "file_ops.read_file()", "phase": "start",
-                             "request_id": f"{_chapter(45)}_001_001", "message": "chapter 45 reads page 1", "meta": {},
-                             "tree": {"parent_id": f"{_chapter(45)}_001", "depth_level": 4, "child_count": 0,
+                             "request_id": f"{_section(45)}_001_001", "message": "section 45 reads page 1", "meta": {},
+                             "tree": {"parent_id": f"{_section(45)}_001", "depth_level": 4, "child_count": 0,
                                       "is_leaf": True}})
-                yield of_chapter(45, {"type": "reasoning_delta", "step": 2, "delta": "chapter 45 is planned."})
+                yield of_section(45, {"type": "reasoning_delta", "step": 2, "delta": "section 45 is planned."})
                 # 60 (unread, read slowly): its call's line and result, then a step 2 whose marker
                 # the page never saw, and a line of that step
-                yield line(60, "001", "chapter 60 waits for its helpers")
-                yield of_chapter(60, {"type": "tool_result", "step": 1, "server": "skills", "action": "manage_sub_agent",
-                                      "request_id": f"{_chapter(60)}_001", "result": {"status": "success"}})
-                yield of_chapter(0, {"type": "thinking", "step": 2})
+                yield line(60, "001", "section 60 waits for its helpers")
+                yield of_section(60, {"type": "tool_result", "step": 1, "server": "skills", "action": "manage_sub_agent",
+                                      "request_id": f"{_section(60)}_001", "result": {"status": "success"}})
+                yield of_section(0, {"type": "thinking", "step": 2})
                 for n in (0, 60):
-                    yield of_chapter(n, {"type": "reasoning_delta", "step": 2, "delta": f"chapter {n} is revised."})
+                    yield of_section(n, {"type": "reasoning_delta", "step": 2, "delta": f"section {n} is revised."})
                 # the pipeline's second call, an agent called as a tool, and its async helper
-                yield relayed(EDITOR, PIPING, 1, {"type": "start", "task": "edit the book"})
+                yield relayed(EDITOR, PIPING, 1, {"type": "start", "task": "edit the report"})
                 # the line of the call that called the editor (the editor's run id is the call's)
-                yield event({"type": "status", "server": "chapter_editor.call()", "phase": "start",
+                yield event({"type": "status", "server": "report_editor.call()", "phase": "start",
                              "request_id": EDITOR, "message": "the editor edits", "meta": {},
                              "tree": {"parent_id": PIPING, "depth_level": 1, "child_count": 0, "is_leaf": True}})
                 yield relayed(EDITOR_HELPER, EDITOR, 3, {"type": "thinking", "step": 2})
                 yield relayed(EDITOR_HELPER, EDITOR, 3, {"type": "reasoning_delta", "step": 2,
                                                          "delta": "the editor's helper goes on."})
                 # 7 answered too short: its retry
-                for inner in ({"type": "start", "task": "Chapter 7, longer"}, {"type": "final", "content": "Chapter 7, again."},
+                for inner in ({"type": "start", "task": "Section 7, longer"}, {"type": "final", "content": "Section 7, again."},
                               {"type": "end"}):
-                    yield relayed(f"{_chapter(RETRIED)}_minlen_0", _chapter(RETRIED), 3, inner)
+                    yield relayed(f"{_section(RETRIED)}_minlen_0", _section(RETRIED), 3, inner)
                 # 0 calls an agent as a tool (its run's id is its call's), no line of that call shown
                 for inner in ({"type": "start", "task": "a tool agent"}, {"type": "final", "content": "Tool agent done."},
                               {"type": "end"}):
-                    yield relayed(f"{_chapter(0)}_004", _chapter(0), 3, inner)
-                yield line(60, "002", "chapter 60 revises")
+                    yield relayed(f"{_section(0)}_004", _section(0), 3, inner)
+                yield line(60, "002", "section 60 revises")
                 # 1 (read, answered): a line after its answer, then its end; 75 (unread,
                 # answered): only its end
-                yield line(1, "002", "chapter 1 saves")
+                yield line(1, "002", "section 1 saves")
                 for n in (1, 75):
-                    yield of_chapter(n, {"type": "end"})
+                    yield of_section(n, {"type": "end"})
                 await asyncio.sleep(1)
-                yield of_chapter(2, {"type": "thinking", "step": 2})
-                for n in LIVE_CHAPTERS:
+                yield of_section(2, {"type": "thinking", "step": 2})
+                for n in LIVE_SECTIONS:
                     if n != 2:   # 2 answers by its final alone
-                        yield of_chapter(n, {"type": "thinking_complete", "step": 3,
-                                             "assistant": {"role": "assistant", "content": f"Chapter {n} finished live."}})
-                    yield of_chapter(n, {"type": "final", "content": f"Chapter {n} finished live."})
-                    yield of_chapter(n, {"type": "end"})
-                # chapter 60's helper still at work, once 60's slow read has placed it
+                        yield of_section(n, {"type": "thinking_complete", "step": 3,
+                                             "assistant": {"role": "assistant", "content": f"Section {n} finished live."}})
+                    yield of_section(n, {"type": "final", "content": f"Section {n} finished live."})
+                    yield of_section(n, {"type": "end"})
+                # section 60's helper still at work, once 60's slow read has placed it
                 await asyncio.sleep(1.5)
-                helper = f"{_chapter(60)}_001_sub_h60000"
+                helper = f"{_section(60)}_001_sub_h60000"
                 for inner in ({"type": "thinking", "step": 2}, {"type": "final", "content": "Helper finished live."},
                               {"type": "end"}):
-                    yield relayed(helper, f"{_chapter(60)}_001", 4, inner)
-                yield relayed(f"{_chapter(60)}_001_sub_k60000_001_async_g6000", f"{_chapter(60)}_001_sub_k60000_001", 6,
+                    yield relayed(helper, f"{_section(60)}_001", 4, inner)
+                yield relayed(f"{_section(60)}_001_sub_k60000_001_async_g6000", f"{_section(60)}_001_sub_k60000_001", 6,
                               {"type": "thinking", "step": 2})
                 # 120, begun after the session was read: under the call too; a line of it
                 # comes before its first event
-                yield line(120, "002", "chapter 120 begins")
-                for inner in ({"type": "start", "task": "Chapter 120"}, {"type": "thinking", "step": 1},
-                              {"type": "final", "content": "Chapter 120 finished live."}, {"type": "end"}):
-                    yield of_chapter(120, inner)
+                yield line(120, "002", "section 120 begins")
+                for inner in ({"type": "start", "task": "Section 120"}, {"type": "thinking", "step": 1},
+                              {"type": "final", "content": "Section 120 finished live."}, {"type": "end"}):
+                    yield of_section(120, inner)
                 await asyncio.sleep(1.5)
                 for run_id, by, depth in ((EDITOR_HELPER, EDITOR, 3), (EDITOR, PIPING, 1)):
                     yield relayed(run_id, by, depth, {"type": "final", "content": "Edited."})
                     yield relayed(run_id, by, depth, {"type": "end"})
                 # the pipeline's own call answers: its result goes to the call the session read back
-                yield event({"type": "tool_result", "step": 1, "server": "linear_book", "action": "execute_task",
-                             "request_id": f"{PIPING}_001", "result": {"status": "success", "note": "the book is done"}})
-                yield event({"type": "final", "content": "Book written"})
-                # after its answer: a line of its own, open while chapter 35's async helper
+                yield event({"type": "tool_result", "step": 1, "server": "report_pipeline", "action": "execute_task",
+                             "request_id": f"{PIPING}_001", "result": {"status": "success", "note": "the report is done"}})
+                yield event({"type": "final", "content": "Report written"})
+                # after its answer: a line of its own, open while section 35's async helper
                 # says its first word -- the page reads 35 for it meanwhile
-                save_scope = {"server": "linear_book.save()", "request_id": f"{PIPING}_003", "meta": {},
+                save_scope = {"server": "report_pipeline.save()", "request_id": f"{PIPING}_003", "meta": {},
                           "tree": {"parent_id": PIPING, "depth_level": 1, "child_count": 0, "is_leaf": True}}
                 yield event({"type": "status", "phase": "start", "message": "the pipeline saves", **save_scope})
-                yield relayed(f"{_chapter(ASYNC_OUT)}_001_async_a0350", f"{_chapter(ASYNC_OUT)}_001", 4,
+                yield relayed(f"{_section(ASYNC_OUT)}_001_async_a0350", f"{_section(ASYNC_OUT)}_001", 4,
                               {"type": "thinking", "step": 2})
                 await asyncio.sleep(1.5)
                 yield event({"type": "status", "phase": "end", "message": "saved", **save_scope})
@@ -1501,8 +1501,8 @@ def stub_app() -> FastAPI:
                 "details": [{"name": "assistant", "llm_profile": "default", "description": "General help",
                              "category": "tools", "tags": ["chat"]},
                             {"name": "writer", "llm_profile": "default", "category": None, "tags": ["prose"],
-                             "description": "Writes books from one request: plans the story, drafts every chapter and "
-                                            "scene, then reviews and repairs the text until it reads well"}]}
+                             "description": "Writes reports from one request: plans the outline, drafts every section and "
+                                            "paragraph, then reviews and repairs the text until it reads well"}]}
 
     @app.get("/llm/profiles")
     async def profiles():

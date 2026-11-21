@@ -105,8 +105,8 @@ async def test_the_first_save_writes_the_title_the_run_was_given(api, how):
 
 
 async def test_a_session_run_makes_is_kept_on_disk_not_in_memory(api):
-    """/run without a session makes one -- stored, as /events stores its own. Its caller is headless (the
-    writer's dispatches) and never learns the id: once saved, the session leaves the agent's tracker, which
+    """/run without a session makes one -- stored, as /events stores its own. Its caller is headless (a job
+    queue's dispatches) and never learns the id: once saved, the session leaves the agent's tracker, which
     would hold every such run for the life of the process."""
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app), base_url="http://test") as client:
         response = await client.post("/run", json={"task": "hallo"}, timeout=60.0)

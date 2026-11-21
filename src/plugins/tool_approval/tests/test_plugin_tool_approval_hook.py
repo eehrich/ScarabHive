@@ -390,7 +390,7 @@ class TestUnattended:
         agent = _agent(probe, {})
         agent.llm = model
 
-        # owned, but started by a client that shows no questions (openai_api, the writer)
+        # owned, but started by a client that shows no questions (openai_api, a job pipeline)
         events = await _run(agent, watched("headless1", attended=False))
 
         assert probe.received == []

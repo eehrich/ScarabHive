@@ -183,7 +183,7 @@ def parse_tool_arguments(raw: str) -> Tuple[Optional[Dict[str, Any]], str]:
 
     Returns ``(arguments, "")``, or ``(None, problem)`` for a call that must
     not run. Nothing is repaired: json-repair makes SOMETHING of any text, and
-    a call that ran on its guess wrote a spliced token stream into a story
+    a call that ran on its guess wrote a spliced token stream into a
     document with status ok (2026-09-11). Two readings guess nothing and stay:
     a control character inside a string is taken literally (``strict=False``),
     and a single object wrapped in a list is unwrapped.
@@ -206,7 +206,7 @@ def history_safe_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, 
     Providers that validate history server-side then reject EVERY later
     request of the session ("Assistant tool call function.arguments must be
     valid JSON") -- a poisoned session survives model fallback and burns to
-    max steps (observed with v6 agents, 2026-09-01).
+    max steps (observed with a pipeline's agents, 2026-09-01).
 
     History stores what execution ran on, read by the same
     parse_tool_arguments: the arguments as sent when they are a JSON object,

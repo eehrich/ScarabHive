@@ -413,20 +413,20 @@ async def test_instance_hook_config_disables_the_registration_default(clean_regi
     """A server instance's hook_config.enabled=False must win over the schema.
 
     This is the "one instance on, second instance off" case: the schema says
-    enabled, the instance (e.g. writer_context_summarizer) says off-by-default.
+    enabled, the instance (e.g. a second context_summarizer) says off-by-default.
     Until 2026-09-02 the instance value was written into configs but read by
     nobody -- every agent without an override ran BOTH summarizer instances.
     """
-    plugin = MockHookPlugin("writer_summarizer", {})
+    plugin = MockHookPlugin("report_summarizer", {})
     metadata = {'hooks': [{'name': 'summarize', 'type': 'pre_llm_call',
                            'enabled': True}]}
 
     registered = await register_plugin_hooks(
-        "writer_summarizer", plugin, metadata, clean_registry,
+        "report_summarizer", plugin, metadata, clean_registry,
         instance_hook_config={'enabled': False})
 
-    assert registered == ['writer_summarizer.summarize']
-    assert clean_registry.get_hook_info('writer_summarizer.summarize')['enabled'] is False
+    assert registered == ['report_summarizer.summarize']
+    assert clean_registry.get_hook_info('report_summarizer.summarize')['enabled'] is False
 
 
 @pytest.mark.asyncio
@@ -434,7 +434,7 @@ async def test_instance_hook_config_disables_the_registration_default(clean_regi
 @pytest.mark.parametrize("entry", ["agent tool integration", "CLI bootstrap"])
 async def test_an_instance_the_callers_config_does_not_know_keeps_its_hook_default(monkeypatch, entry, registered):
     """The hook registry is the process's, and whoever wires the hooks first reads every instance's default from
-    ITS config. One built on another config -- a test rig, a CLI -- did not know the writer's inject instances
+    ITS config. One built on another config -- a test rig, a CLI -- did not know a plugin's inject instances
     (hook_config.enabled: false), and their notes went to every agent. The default the instance was built with
     holds."""
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig

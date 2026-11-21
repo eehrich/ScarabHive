@@ -84,7 +84,7 @@ async def validate_client_request_id(client_request_id: str) -> str:
                 "the original run is still in flight"
             ),
         )
-    # A new run under an id that was stopped before (writer_jobs dispatches a run
+    # A new run under an id that was stopped before (a job queue dispatches a run
     # again under its id): that stop was the earlier run's (core/session_presence/).
     # Here and nowhere else -- the ids every other caller mints are new, and a stop
     # noted before their run registers is theirs.
@@ -149,8 +149,8 @@ def get_agent_with_overrides(ctx: AppContext, agent_name: Optional[str] = None,
     # EXPLICIT agent_name we must NOT silently fall back to the
     # default agent — that turns an "agent name typo" or a "plugin
     # not loaded" bug into a chat_agent run that returns HTTP 200,
-    # which downstream batch dispatchers (writer-jobs book_generation
-    # / fix) treat as success. Strict 404 instead, so the caller's
+    # which downstream batch dispatchers (a job queue's generation
+    # / fix jobs) treat as success. Strict 404 instead, so the caller's
     # job-row goes 'failed' with a useful error.
     if agent_name and agent_name != selected_agent.name:
         try:

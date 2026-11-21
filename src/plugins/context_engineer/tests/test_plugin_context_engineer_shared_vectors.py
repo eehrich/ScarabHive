@@ -2,9 +2,9 @@
 
 Why this exists: chromadb parks one System per persist directory in a
 process-global registry, each with its own tokio runtime (~6 descriptors,
-4 threads). context_engineer gave every session its own directory, so the
-writer host accumulated 229 runtimes and ran into the API's descriptor
-limit (30.08.2026). The vectors never needed separate directories — every
+4 threads). context_engineer gave every session its own directory, so one
+host accumulated 229 runtimes and ran into the API's descriptor
+limit. The vectors never needed separate directories — every
 entry carries its session_id and every query filters on it — so all
 sessions now share one store, and nothing ever deleted a session directory
 before, so a sweep removes them after ``session_data_ttl_days``.

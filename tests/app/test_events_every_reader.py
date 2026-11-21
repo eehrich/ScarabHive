@@ -184,7 +184,7 @@ async def test_a_request_is_found_running_on_the_agent_that_runs_it():
 
     manager = BackgroundJobManager()
     registered = agent_running("on-a-registered-agent")
-    registry = SimpleNamespace(list=lambda: ["book"], get=lambda name: registered)
+    registry = SimpleNamespace(list=lambda: ["reporter"], get=lambda name: registered)
     manager.set_agent_registry(registry, default_agent=agent_running("on-the-default-agent"))
 
     assert await manager.is_request_active_anywhere("on-a-registered-agent")

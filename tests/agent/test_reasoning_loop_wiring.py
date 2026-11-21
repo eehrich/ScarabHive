@@ -40,8 +40,8 @@ FINAL = {"type": "final", "assistant": {"role": "assistant", "content": "done"}}
 def healthy_text(chars: int) -> str:
     out, index = [], 0
     while sum(len(line) for line in out) < chars:
-        out.append(f"Step {index}: scene {index % 37} still needs beat "
-                   f"B{index % 91:02d} checked against {index * 7 % 1000} words.\n")
+        out.append(f"Step {index}: scene {index % 37} still needs rule "
+                   f"R{index % 91:02d} checked against {index * 7 % 1000} words.\n")
         index += 1
     return "".join(out)
 
@@ -435,7 +435,7 @@ def long_period_text(unit_chars: int = 13_006, repeats: int = 34) -> str:
     and not a round number: see LONG_PERIOD in test_reasoning_loop.py — a round
     period lets every stride see the loop alike and pins nothing.
     """
-    words = ["Szene", "Absatz", "Figur", "Motiv", "Wendung", "Kapitel",
+    words = ["Szene", "Absatz", "Figur", "Motiv", "Wendung", "Thema",
              "Dialog", "Bild", "Satz", "Klang"]
     unit, index = [], 0
     while sum(len(part) for part in unit) < unit_chars:

@@ -47,7 +47,7 @@ class FakeAgent:
 @pytest.fixture
 def server():
     return TaskSwitchServer(
-        "v6_workflow", MagicMock(), ToolServerConfig(type="task_switch", enabled=True))
+        "workflow", MagicMock(), ToolServerConfig(type="task_switch", enabled=True))
 
 
 def _set_context_source() -> str:

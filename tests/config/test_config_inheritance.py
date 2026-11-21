@@ -1,6 +1,6 @@
 """Tests for server configuration inheritance.
 
-Tests the ability to define a base server (e.g., writer_agent) and have
+Tests the ability to define a base server (e.g., content_agent) and have
 other servers inherit from it via type reference.
 """
 from __future__ import annotations
@@ -40,28 +40,28 @@ def config_with_inheritance():
             ),
             servers={
                 # Base server that others inherit from
-                "writer_agent": ToolServerConfig(
+                "content_agent": ToolServerConfig(
                     type="basic_agent",
                     enabled=True,
-                    description="Base writer agent",
+                    description="Base content agent",
                     agent_config=AgentConfig(
                         llm_profile=["normal", "think"],
                         max_steps=100,
                         hooks={"enabled": True, "overrides": {"some_hook": {"enabled": True}}},
                     )
                 ),
-                # Server that inherits from writer_agent
-                "character_designer": ToolServerConfig(
-                    type="writer_agent",  # Inherits from writer_agent
+                # Server that inherits from content_agent
+                "persona_designer": ToolServerConfig(
+                    type="content_agent",  # Inherits from content_agent
                     enabled=True,
-                    description="Character designer agent",
+                    description="Persona designer agent",
                     agent_config=AgentConfig(
                         max_steps=50,  # Override max_steps
                     )
                 ),
-                # Another server inheriting from writer_agent
-                "story_designer": ToolServerConfig(
-                    type="writer_agent",
+                # Another server inheriting from content_agent
+                "outline_designer": ToolServerConfig(
+                    type="content_agent",
                     enabled=True,
                     agent_config=AgentConfig(
                         llm_profile="think",  # Override llm_profile
@@ -93,7 +93,7 @@ def config_with_chain_inheritance():
                     enabled=True,
                     agent_config=AgentConfig(max_steps=100)
                 ),
-                "writer_agent": ToolServerConfig(
+                "content_agent": ToolServerConfig(
                     type="base_agent",  # Inherits from base_agent
                     enabled=True,
                     agent_config=AgentConfig(
@@ -101,8 +101,8 @@ def config_with_chain_inheritance():
                         hooks={"enabled": True},
                     )
                 ),
-                "character_designer": ToolServerConfig(
-                    type="writer_agent",  # Inherits from writer_agent -> base_agent
+                "persona_designer": ToolServerConfig(
+                    type="content_agent",  # Inherits from content_agent -> base_agent
                     enabled=True,
                     agent_config=AgentConfig(max_steps=50)
                 ),
@@ -164,16 +164,16 @@ class TestResolveServerInheritance:
         assert config_dict["type"] == "basic_agent"
 
     def test_single_level_inheritance(self, config_with_inheritance):
-        """Test single-level inheritance (character_designer -> writer_agent)."""
+        """Test single-level inheritance (persona_designer -> content_agent)."""
         final_type, config_dict = _resolve_server_inheritance(
-            "character_designer", config_with_inheritance
+            "persona_designer", config_with_inheritance
         )
         
         # Should resolve to basic_agent
         assert final_type == "basic_agent"
         assert config_dict["type"] == "basic_agent"
         
-        # Should inherit hooks from writer_agent
+        # Should inherit hooks from content_agent
         assert config_dict["agent_config"]["hooks"]["enabled"] is True
         
         # Should have overridden max_steps
@@ -182,16 +182,16 @@ class TestResolveServerInheritance:
     def test_multi_level_inheritance(self, config_with_chain_inheritance):
         """Test multi-level inheritance chain."""
         final_type, config_dict = _resolve_server_inheritance(
-            "character_designer", config_with_chain_inheritance
+            "persona_designer", config_with_chain_inheritance
         )
         
         # Should resolve through chain to basic_agent
         assert final_type == "basic_agent"
         
-        # Should have max_steps=50 (from character_designer)
+        # Should have max_steps=50 (from persona_designer)
         assert config_dict["agent_config"]["max_steps"] == 50
         
-        # Should have hooks from writer_agent
+        # Should have hooks from content_agent
         assert config_dict["agent_config"]["hooks"]["enabled"] is True
 
     def test_circular_inheritance_detection(self, config_with_circular_inheritance):
@@ -213,16 +213,16 @@ class TestGetMcpConfigByName:
 
     def test_inherited_config(self, config_with_inheritance):
         """Test that get_tool_server_config resolves inheritance."""
-        result = get_tool_server_config("character_designer", config_with_inheritance)
+        result = get_tool_server_config("persona_designer", config_with_inheritance)
         
         assert result is not None
         # Type should be resolved to basic_agent
         assert result.type == "basic_agent"
-        # Description should be from character_designer
-        assert result.description == "Character designer agent"
-        # max_steps should be 50 (from character_designer)
+        # Description should be from persona_designer
+        assert result.description == "Persona designer agent"
+        # max_steps should be 50 (from persona_designer)
         assert result.agent_config.max_steps == 50
-        # hooks should be inherited from writer_agent
+        # hooks should be inherited from content_agent
         assert result.agent_config.hooks is not None
         assert result.agent_config.hooks.enabled is True
 
@@ -236,11 +236,11 @@ class TestGetMcpConfigByName:
 
     def test_base_server_itself(self, config_with_inheritance):
         """Test getting the base server config directly."""
-        result = get_tool_server_config("writer_agent", config_with_inheritance)
+        result = get_tool_server_config("content_agent", config_with_inheritance)
         
         assert result is not None
         assert result.type == "basic_agent"
-        assert result.description == "Base writer agent"
+        assert result.description == "Base content agent"
         assert result.agent_config.max_steps == 100
 
     def test_nonexistent_server(self, config_with_inheritance):
@@ -251,21 +251,21 @@ class TestGetMcpConfigByName:
     def test_each_config_object_resolves_its_own_entries(self, config_with_inheritance):
         """A second config next to the first (a fresh load from disk beside the live one) gets its own values."""
         edited = config_with_inheritance.model_copy(deep=True)
-        edited.plugins.servers["writer_agent"].agent_config.max_steps = 7
-        edited.plugins.servers["character_designer"].agent_config.max_steps = 8
+        edited.plugins.servers["content_agent"].agent_config.max_steps = 7
+        edited.plugins.servers["persona_designer"].agent_config.max_steps = 8
 
-        assert get_tool_server_config("character_designer", config_with_inheritance).agent_config.max_steps == 50
-        assert get_tool_server_config("story_designer", config_with_inheritance).agent_config.max_steps == 100
-        assert get_tool_server_config("character_designer", edited).agent_config.max_steps == 8
-        assert get_tool_server_config("story_designer", edited).agent_config.max_steps == 7
-        assert get_tool_server_config("story_designer", config_with_inheritance).agent_config.max_steps == 100
+        assert get_tool_server_config("persona_designer", config_with_inheritance).agent_config.max_steps == 50
+        assert get_tool_server_config("outline_designer", config_with_inheritance).agent_config.max_steps == 100
+        assert get_tool_server_config("persona_designer", edited).agent_config.max_steps == 8
+        assert get_tool_server_config("outline_designer", edited).agent_config.max_steps == 7
+        assert get_tool_server_config("outline_designer", config_with_inheritance).agent_config.max_steps == 100
 
 
 class TestInheritanceIntegration:
     """Integration tests for inheritance in realistic scenarios."""
 
-    def test_writer_agent_inheritance_scenario(self):
-        """Test realistic writer agent inheritance scenario."""
+    def test_content_agent_inheritance_scenario(self):
+        """Test realistic content agent inheritance scenario."""
         config = AgentSystemConfig(
             plugins=PluginsConfig(
                 plugin_dirs=["src/plugins"],
@@ -279,7 +279,7 @@ class TestInheritanceIntegration:
                     )
                 ),
                 servers={
-                    "writer_agent": ToolServerConfig(
+                    "content_agent": ToolServerConfig(
                         type="basic_agent",
                         enabled=True,
                         agent_config=AgentConfig(
@@ -289,24 +289,24 @@ class TestInheritanceIntegration:
                                 "enabled": True,
                                 "overrides": {
                                     "context_summarizer.summarize_context": {"enabled": False},
-                                    "writer_context_summarizer.summarize_context": {"enabled": True},
+                                    "content_summarizer.summarize_context": {"enabled": True},
                                 }
                             }
                         )
                     ),
-                    "character_designer": ToolServerConfig(
-                        type="writer_agent",
+                    "persona_designer": ToolServerConfig(
+                        type="content_agent",
                         enabled=True,
-                        description="Character specialist",
+                        description="Persona specialist",
                         agent_config=AgentConfig(
                             max_steps=50,
-                            system_template="config/agents_writer/prompts/character_designer.md",
+                            system_template="config/agents_content/prompts/persona_designer.md",
                         )
                     ),
-                    "scene_writer": ToolServerConfig(
-                        type="writer_agent",
+                    "section_writer": ToolServerConfig(
+                        type="content_agent",
                         enabled=True,
-                        description="Scene writer",
+                        description="Section writer",
                         agent_config=AgentConfig(
                             llm_profile="think",
                             max_steps=200,
@@ -316,23 +316,23 @@ class TestInheritanceIntegration:
             )
         )
         
-        # Test character_designer
-        char_config = get_tool_server_config("character_designer", config)
-        assert char_config.type == "basic_agent"
-        assert char_config.description == "Character specialist"
-        assert char_config.agent_config.max_steps == 50
-        assert char_config.agent_config.system_template == "config/agents_writer/prompts/character_designer.md"
-        # Should inherit hooks from writer_agent
-        assert char_config.agent_config.hooks.enabled is True
-        assert "writer_context_summarizer.summarize_context" in char_config.agent_config.hooks.overrides
+        # Test persona_designer
+        persona_config = get_tool_server_config("persona_designer", config)
+        assert persona_config.type == "basic_agent"
+        assert persona_config.description == "Persona specialist"
+        assert persona_config.agent_config.max_steps == 50
+        assert persona_config.agent_config.system_template == "config/agents_content/prompts/persona_designer.md"
+        # Should inherit hooks from content_agent
+        assert persona_config.agent_config.hooks.enabled is True
+        assert "content_summarizer.summarize_context" in persona_config.agent_config.hooks.overrides
         
-        # Test scene_writer
-        scene_config = get_tool_server_config("scene_writer", config)
-        assert scene_config.type == "basic_agent"
-        assert scene_config.agent_config.llm_profile == "think"
-        assert scene_config.agent_config.max_steps == 200
+        # Test section_writer
+        section_config = get_tool_server_config("section_writer", config)
+        assert section_config.type == "basic_agent"
+        assert section_config.agent_config.llm_profile == "think"
+        assert section_config.agent_config.max_steps == 200
         # Should also inherit hooks
-        assert scene_config.agent_config.hooks.enabled is True
+        assert section_config.agent_config.hooks.enabled is True
 
 
 class TestListMergeSyntax:
@@ -410,7 +410,7 @@ class TestListMergeSyntax:
         base = {
             "agent_config": {
                 "tools": {
-                    "allowed": ["w_sam/*", "datetime/*", "todo/*"],
+                    "allowed": ["doc_sam/*", "datetime/*", "todo/*"],
                 }
             }
         }
@@ -418,16 +418,16 @@ class TestListMergeSyntax:
             "agent_config": {
                 "tools": {
                     "allowed": [
-                        "!w_sam/*",        # Remove w_sam
-                        "+w_sam_gemini/*", # Add gemini version
+                        "!doc_sam/*",        # Remove doc_sam
+                        "+doc_sam_gemini/*", # Add gemini version
                     ],
                 }
             }
         }
         result = _deep_merge_dict(base, override)
         
-        assert "w_sam/*" not in result["agent_config"]["tools"]["allowed"]
-        assert "w_sam_gemini/*" in result["agent_config"]["tools"]["allowed"]
+        assert "doc_sam/*" not in result["agent_config"]["tools"]["allowed"]
+        assert "doc_sam_gemini/*" in result["agent_config"]["tools"]["allowed"]
         assert "datetime/*" in result["agent_config"]["tools"]["allowed"]
         assert "todo/*" in result["agent_config"]["tools"]["allowed"]
 
@@ -539,7 +539,7 @@ class TestListMergeSyntax:
         assert result["agent_config"]["llm_profile_advanced"] == ["profile_c"]
 
     def test_realistic_gemini_batch_scenario(self):
-        """Test realistic scenario like book_architect_gemini_batch."""
+        """Test realistic scenario like report_architect_gemini_batch."""
         parent_config = {
             "type": "basic_agent",
             "enabled": True,
@@ -548,9 +548,9 @@ class TestListMergeSyntax:
                 "max_steps": 500,
                 "tools": {
                     "allowed": [
-                        "writer_content/*",
-                        "writer_path/*",
-                        "w_sam/*",
+                        "doc_content/*",
+                        "doc_path/*",
+                        "doc_sam/*",
                         "datetime/*",
                         "todo/*",
                     ],
@@ -559,31 +559,31 @@ class TestListMergeSyntax:
             }
         }
         child_override = {
-            "type": "book_architect",
+            "type": "report_architect",
             "agent_config": {
                 "llm_profile": "gemini-pro-batch",
                 "tools": {
                     "allowed": [
-                        "!w_sam/*",        # Remove standard w_sam
-                        "+w_sam_gemini/*", # Add gemini version
+                        "!doc_sam/*",        # Remove standard doc_sam
+                        "+doc_sam_gemini/*", # Add gemini version
                     ],
-                    "blocked": ["+w_sam/*"]  # Also block it explicitly
+                    "blocked": ["+doc_sam/*"]  # Also block it explicitly
                 }
             }
         }
         
         result = _deep_merge_dict(parent_config, child_override)
         
-        # w_sam should be removed from allowed
-        assert "w_sam/*" not in result["agent_config"]["tools"]["allowed"]
-        # w_sam_gemini should be added
-        assert "w_sam_gemini/*" in result["agent_config"]["tools"]["allowed"]
+        # doc_sam should be removed from allowed
+        assert "doc_sam/*" not in result["agent_config"]["tools"]["allowed"]
+        # doc_sam_gemini should be added
+        assert "doc_sam_gemini/*" in result["agent_config"]["tools"]["allowed"]
         # Other parent tools should remain
-        assert "writer_content/*" in result["agent_config"]["tools"]["allowed"]
+        assert "doc_content/*" in result["agent_config"]["tools"]["allowed"]
         assert "datetime/*" in result["agent_config"]["tools"]["allowed"]
         
-        # blocked should have w_sam
-        assert "w_sam/*" in result["agent_config"]["tools"]["blocked"]
+        # blocked should have doc_sam
+        assert "doc_sam/*" in result["agent_config"]["tools"]["blocked"]
         
         # llm_profile should be overridden
         assert result["agent_config"]["llm_profile"] == "gemini-pro-batch"

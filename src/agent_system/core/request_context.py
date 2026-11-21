@@ -35,7 +35,7 @@ current_run_user: ContextVar[Optional[str]] = ContextVar("current_run_user", def
 #: calls do. None outside an agent run.
 current_run_session: ContextVar[Optional[str]] = ContextVar("current_run_session", default=None)
 #: The agent of that run, set and reset beside current_run_session: such a model call hands the session's
-#: template vars (a book's id) on to the tools its run calls through the gateway (plugins/coding_cli).
+#: template vars (a record's id) on to the tools its run calls through the gateway (plugins/coding_cli).
 current_run_agent: ContextVar[Optional[Any]] = ContextVar("current_run_agent", default=None)
 #: The tool bindings of the agent run this code runs in ({tool pattern: {parameter: value}},
 #: servers/agent/components/tool_bindings.py), set and reset beside current_run_session -- None for a run
@@ -120,7 +120,7 @@ def release_request_user_tree(request_id: str) -> None:
 #: the chat follows like any run (api/woken_runs.py), and ``agent-cli chat`` for a turn
 #: whose status and typed lines it shows (cli_utils/chat/turn.py ``_execute_turn``).
 #: Nothing else is: the openai_api plugin, agent-run, a one-shot agent-cli, a
-#: run woken in a process of its own (--woken) and the writer's dispatches read
+#: run woken in a process of its own (--woken) and a job queue's dispatches read
 #: the stream as programs. A hook that would ask a person (tool_approval) asks
 #: only under such a run, see ``status_forwarding.attended_stream_of``. Insertion-ordered
 #: and capped like the user map; a start sets the entry either way, so an id

@@ -166,7 +166,7 @@ LIST_LIMIT = 200
 
 
 #: Cross-process guard file, one per bundle root. It lives IN the bundle on
-#: purpose: services run under different accounts (agent-api, writer worker,
+#: purpose: services run under different accounts (agent-api, a job worker,
 #: a developer's CLI), and their temp directories differ — a lock outside the
 #: bundle would silently fail to be the same lock.
 LOCK_FILENAME = ".okf.lock"
@@ -221,7 +221,7 @@ async def _exclusive(root: Path, fn: Callable[[], Any]) -> Any:
       single turn and spawned sub-agents all run as tasks on one event loop, so
       today's safety rests only on there being no ``await`` between the read and
       the write. Measured: insert one, and 11 of 12 log entries vanish.
-    * the **file lock** covers other processes — agent-api, the writer worker
+    * the **file lock** covers other processes — agent-api, a job worker
       and a developer's CLI share ``data/okf``. Measured: two processes
       appending concurrently lose half the entries (and on Windows ``os.replace``
       raises outright while the other holds the file).
@@ -884,7 +884,7 @@ class OkfServer(SchemaBasedToolServer):
         every index links its child-directory indexes with the subtree
         concept count. Before 2026-08-19 the root call indexed one level
         and silently dropped everything deeper: a bundle organised into
-        subdirectories (writer_library: /buecher, /achsen, …) produced a
+        subdirectories (a library: /topics, /axes, …) produced a
         near-empty root index that read like an empty library.
         """
         status = _status_of(params)

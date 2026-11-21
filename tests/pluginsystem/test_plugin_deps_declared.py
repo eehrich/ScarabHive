@@ -105,7 +105,7 @@ def _plugin_dirs() -> list[Path]:
 
     A missing plugin.toml is not a reason to skip: it means the package
     declares nothing, so its third-party imports are exactly the ones at risk
-    (writer_publish imported numpy with no manifest at all). Scanning it with
+    (one package imported numpy with no manifest at all). Scanning it with
     an empty declaration set is what makes "no manifest" safe rather than
     invisible.
     """
@@ -227,7 +227,7 @@ def test_scan_covers_packages_without_a_manifest():
     """A package with no plugin.toml must be scanned, not skipped.
 
     The enumeration used to require a manifest, so a package without one was
-    invisible — writer_publish imported numpy at module level for years and no
+    invisible — a package imported numpy at module level for years and no
     guard saw it. It has a manifest now, which is exactly why this needs its
     own test: with every offender declared, reverting the enumeration would
     leave the suite green and the hole open.

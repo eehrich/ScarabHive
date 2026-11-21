@@ -231,7 +231,7 @@ writer, in a minute or two; captures wait in the queue meanwhile. That
 move is one-way: code from before can neither write to the file nor
 start on it afterwards, so every process on it restarts together. If the
 move fails, nothing changes, the retention strips the old payloads where
-they are until a start succeeds, and writer-costs waits.)
+they are until a start succeeds, and a cost report over the tree waits.)
 
 The file stops growing at its largest size and reuses the freed space; it
 does not shrink. @{b}Prune and reclaim disk space@{ub} in the panel runs

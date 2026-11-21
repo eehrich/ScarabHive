@@ -81,8 +81,8 @@ class SubAgentContextInjector:
         #   enabled: true
         #   phase_variable: "workflow_phase"
         #   phase_agents:
-        #     planning: [story_designer, story_reviewer]
-        #     characters: [character_designer, character_reviewer]
+        #     planning: [plan_designer, plan_reviewer]
+        #     interfaces: [api_designer, api_reviewer]
         phase_filtering = phase_filtering_config or {}
         self.phase_filtering_enabled = phase_filtering.get("enabled", False)
         self.phase_variable = phase_filtering.get("phase_variable", "workflow_phase")

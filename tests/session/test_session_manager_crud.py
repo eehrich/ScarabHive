@@ -857,27 +857,27 @@ class TestResolveSessionRef:
 
     @pytest.mark.asyncio
     async def test_the_same_title_many_times_means_the_newest(self, session_manager):
-        """A pipeline writes hundreds of "Bewerte Kapitel 3" -- the one the
+        """A pipeline writes hundreds of "Bewerte Abschnitt 3" -- the one the
         person means is the one they last worked in."""
-        await self._titled(session_manager, "Bewerte Kapitel 3", "new1",
+        await self._titled(session_manager, "Bewerte Abschnitt 3", "new1",
                            updated_at="2026-09-24T10:00:00+00:00")
-        await self._titled(session_manager, "Bewerte Kapitel 3", "old1",
+        await self._titled(session_manager, "Bewerte Abschnitt 3", "old1",
                            updated_at="2026-09-01T10:00:00+00:00")
 
-        assert await session_manager.resolve_session_ref("u", "Bewerte Kapitel 3") == "new1"
+        assert await session_manager.resolve_session_ref("u", "Bewerte Abschnitt 3") == "new1"
 
     @pytest.mark.asyncio
     async def test_the_others_with_the_same_title_are_named(self, session_manager):
         """So the caller can say it took the newest of several."""
-        await self._titled(session_manager, "Bewerte Kapitel 3", "new1",
+        await self._titled(session_manager, "Bewerte Abschnitt 3", "new1",
                            updated_at="2026-09-24T10:00:00+00:00")
-        await self._titled(session_manager, "Bewerte Kapitel 3", "old1",
+        await self._titled(session_manager, "Bewerte Abschnitt 3", "old1",
                            updated_at="2026-09-01T10:00:00+00:00")
         await self._titled(session_manager, "Anderes", "other1")
         others: list = []
 
         assert await session_manager.resolve_session_ref(
-            "u", "Bewerte Kapitel 3", others=others) == "new1"
+            "u", "Bewerte Abschnitt 3", others=others) == "new1"
         assert others == ["old1"]
 
     @pytest.mark.asyncio
@@ -936,7 +936,7 @@ class TestResolveSessionRef:
     async def test_a_name_nobody_gave_resolves_to_nothing(self, session_manager):
         await self._titled(session_manager, "FPGA Quartus", "xyz789")
 
-        assert await session_manager.resolve_session_ref("u", "Amiga") is None
+        assert await session_manager.resolve_session_ref("u", "Zeppelin") is None
         assert await session_manager.resolve_session_ref("u", "   ") is None
 
     @pytest.mark.asyncio

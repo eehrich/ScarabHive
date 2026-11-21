@@ -52,7 +52,7 @@ async def test_a_new_session_starts_from_nothing_on_the_agents_template_vars(set
     agent, _manager, service = setup
     tracker = agent._session_tracker
     tracker.set_session_messages("s-new", [ChatMessage(role="user", content="left over in this process")])
-    tracker.set_session_template_vars("s-new", {"workflow_phase": "drafting", "book_id": 7})
+    tracker.set_session_template_vars("s-new", {"workflow_phase": "drafting", "record_id": 7})
     assert tracker.start_session("s-new") is False, "fixture: the leftover must count as started"
 
     existed = await service.open_for_run(agent, "alice", "s-new", "turbo")

@@ -61,7 +61,7 @@ def test_a_manifest_name_does_not_rename_a_plugin():
 
 
 def test_a_library_plugin_is_not_a_type():
-    """A manifest without an entrypoint module (coder, writer_publish: agents
+    """A manifest without an entrypoint module (coder: agents
     and skills, no tool server) is skipped by discovery -- the catalog skips it
     the same way, or config inheritance would resolve against a type that
     cannot be built."""

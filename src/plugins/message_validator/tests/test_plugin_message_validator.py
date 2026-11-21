@@ -1396,7 +1396,7 @@ class TestToolResponseJsonValidation:
         """Test that non-object JSON (array, string, etc) in tool response is OK.
         
         Tool responses can legitimately be JSON arrays or strings, not just objects.
-        This is valid for tools like writer_content that return paginated JSON as strings.
+        This is valid for tools like docs_content that return paginated JSON as strings.
         """
         messages = [
             ChatMessage(role="user", content="Get data"),

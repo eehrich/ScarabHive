@@ -2,7 +2,7 @@
 
 Five entry points used to assemble the process each in their own way
 (``build_app``, ``InitializationService``, ``ToolServerIntegration.initialize`` and
-four writer tools), and each of them repeated the same twelve steps:
+four tools of a plugin), and each of them repeated the same twelve steps:
 discover, merge the server config, call the factory with the right signature,
 register in BOTH registries, then post-process an agent instance (shared
 registry, metadata, description, visibility, self tool descriptions).
@@ -104,8 +104,8 @@ class ServerDecl:
         """True when this declaration builds an Agent for sure.
 
         Only the direct ``type: agent`` is certain without building; a plugin
-        factory may return an agent or a plain server (writer_issues does both,
-        by ``config.mode``).
+        factory may return an agent or a plain server (a plugin can do both,
+        by its ``config.mode``).
         """
         return self.factory is None and self.type == "agent"
 
@@ -115,7 +115,7 @@ class ServerDecl:
 
         It is a contract about the constructor -- config and an LLM client,
         no I/O, no thread, no socket -- and therefore a promise per type, not
-        per class: `writer_pipeline_v4` and `writer_story_designer` build
+        per class: a pipeline plugin's types build
         Agents as well, and their ``__init__`` has not been read yet. What
         the flag buys is that such a server may be built on first use instead
         of at start; ``materialize`` refuses to register a type that claims it
@@ -370,7 +370,7 @@ class Runtime:
           * a direct ``type: agent`` gets no ``apply_to`` either and keeps
             ``Agent.__init__``'s (False, False), whatever its metadata says.
           * a non-lazy plugin type may or may not build an Agent
-            (``writer_pipeline_v4`` does, ``writer_issues`` decides by
+            (a pipeline plugin does, another one decides by
             config) -- ``is_agent`` is not knowable without the constructor.
 
         ``lazy`` is the one declaration that is provably safe: it is a plugin

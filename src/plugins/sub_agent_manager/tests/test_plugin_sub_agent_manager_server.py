@@ -965,14 +965,14 @@ class TestSystemPromptIntegration:
         from plugins.sub_agent_manager.schemas import SubAgentMetadata
         from datetime import datetime, UTC
         
-        system_prompt_id = "sub_scene_writer_042"
+        system_prompt_id = "sub_code_writer_042"
         
         # Mock DB lookup (simulating completed sub-agent)
         mock_manager = AsyncMock()
         mock_manager.list_sub_sessions = AsyncMock(return_value=[
             SubAgentMetadata(
                 instance_id=system_prompt_id,
-                agent_type="scene_writer",
+                agent_type="code_writer",
                 created_at=datetime.now(UTC),
                 last_used=datetime.now(UTC),
                 status="active",
@@ -1378,7 +1378,7 @@ class TestAllowAdvancedModelGate:
 
 class TestAdvancedCreateOnlyAgents:
     """advanced_create_only_agents: for listed agent types the caller's
-    use_advanced_model counts on `create` only. Built for the v6 idea writers,
+    use_advanced_model counts on `create` only. Built for panel writers
     whose advanced chain is the premium model - the moderator's prompt asks
     for advanced continues (synthesis, stuck), and each would be a premium
     call over a 100k+ context. Unlisted types keep today's behaviour."""
@@ -3034,8 +3034,8 @@ class TestTheRunningSlotKnowsItsHolder:
 class TestListDoesNotDeclareALiveSubAgentDead:
     """`list` heals state a crash left behind: a sub-agent that looks like it runs but has no task
     here is marked interrupted, and that is written over its metadata. This process is not the only
-    one that runs sub-agents, though -- a woken coordinator runs in its own, the API runs beside the
-    writer's worker -- so the question is whether ANY process has it in hand."""
+    one that runs sub-agents, though -- a woken coordinator runs in its own, the API runs beside a
+    job worker -- so the question is whether ANY process has it in hand."""
 
     RECORD = {"instance_id": "sub_live", "agent_type": "slow_agent", "status": "active",
               "created_at": "2026-09-18T06:00:00Z", "last_used": "2026-09-18T06:01:00Z",

@@ -296,19 +296,19 @@ class TestToolResultStore:
     # ── Regression: short_id collision across tool_ prefixed IDs ──────────
 
     def test_short_ids_unique_for_tool_prefixed_ids(self, temp_db_path):
-        """Tool-call IDs like 'tool_writer_content_book_*' must NOT collapse to
+        """Tool-call IDs like 'tool_docs_content_record_*' must NOT collapse to
         the same TR_xxx reference (previous bug: first 8 chars of the prefix
-        collided, so every writer-tool result shared id 'TR_tool_wri')."""
+        collided, so every docs-tool result shared id 'TR_tool_doc')."""
         store = ToolResultStore(temp_db_path)
         ids = [
-            "tool_writer_content_book_001",
-            "tool_writer_content_book_002",
-            "tool_writer_content_series_001",
-            "tool_writer_workflow_set_context_001",
+            "tool_docs_content_record_001",
+            "tool_docs_content_record_002",
+            "tool_docs_content_series_001",
+            "tool_docs_workflow_set_context_001",
         ]
         refs = [
             json.loads(store.store_and_reference(
-                tool_call_id=tcid, tool_name="writer_content", content=f"c-{tcid}",
+                tool_call_id=tcid, tool_name="docs_content", content=f"c-{tcid}",
             ))["ref_id"]
             for tcid in ids
         ]
@@ -320,14 +320,14 @@ class TestToolResultStore:
         for non-'call_' tool_call_ids (the broken case in the original bug report)."""
         store = ToolResultStore(temp_db_path)
         ref = json.loads(store.store_and_reference(
-            tool_call_id="tool_writer_content_book_42",
-            tool_name="writer_content",
-            content="full book payload",
+            tool_call_id="tool_docs_content_record_42",
+            tool_name="docs_content",
+            content="full record payload",
         ))
         entry = store.retrieve(ref["ref_id"])
         assert entry is not None
-        assert entry.content == "full book payload"
-        assert entry.id == "tool_writer_content_book_42"
+        assert entry.content == "full record payload"
+        assert entry.id == "tool_docs_content_record_42"
 
     def test_retrieve_roundtrip_call_prefix(self, temp_db_path):
         """Existing 'call_xxx' tool IDs must keep working after the fix."""
@@ -344,7 +344,7 @@ class TestToolResultStore:
         via the legacy prefix-match path (root cause of the wrong-data loop)."""
         store = ToolResultStore(temp_db_path)
         store.store_and_reference(
-            tool_call_id="tool_writer_content_book_001",
+            tool_call_id="tool_docs_content_record_001",
             tool_name="x", content="X",
         )
         assert store.retrieve("TR_0000000000") is None
@@ -378,11 +378,11 @@ class TestToolResultStore:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        legacy_id = "tool_writer_content_book_legacy"
+        legacy_id = "tool_docs_content_record_legacy"
         conn.execute(
             "INSERT INTO tool_results (id, tool_name, content, content_hash, "
             "token_count, timestamp, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (legacy_id, "writer_content", "legacy payload", "deadbeef", 5,
+            (legacy_id, "docs_content", "legacy payload", "deadbeef", 5,
              "2026-05-17T15:55:00", "default"),
         )
         conn.commit()

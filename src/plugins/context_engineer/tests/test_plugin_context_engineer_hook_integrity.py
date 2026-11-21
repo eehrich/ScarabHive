@@ -540,13 +540,13 @@ class TestTheBlockBehindTheSystemPrompt:
         run = TestHysteresis()._run_messages(8)
         await plugin._handle_store_fact("the deploy target is api1", session_id="facts")
         await self._call(plugin, 150_000, monkeypatch, run)
-        await plugin._handle_store_fact("the database is books.db", session_id="facts")
+        await plugin._handle_store_fact("the database is records.db", session_id="facts")
         held = await self._call(plugin, 155_000, monkeypatch, run)
         layer_one = await self._call(plugin, 180_000, monkeypatch, run)   # stores, front untouched
 
         assert "api1" in self._block(held), "fixture: the block does not list the facts"
         assert 1 in layer_one.metadata["layers_applied"], "fixture: Layer 1 did not run"
-        assert "books.db" not in self._block(held) + self._block(layer_one), (
+        assert "records.db" not in self._block(held) + self._block(layer_one), (
             "a stored fact rewrote the front of the prompt without a rewrite there")
 
     @pytest.mark.asyncio
@@ -555,26 +555,26 @@ class TestTheBlockBehindTheSystemPrompt:
             self, plugin, monkeypatch, rewrite):
         """context_summarizer runs after this hook and may take the store_fact call with it."""
         await self._call(plugin, 50_000, monkeypatch, self._chat(20))
-        await plugin._handle_store_fact("the database is books.db", session_id="facts")
+        await plugin._handle_store_fact("the database is records.db", session_id="facts")
         same = await self._call(plugin, 50_000, monkeypatch, self._chat(21))
         summarized = (self._chat(3) if rewrite == "shorter" else
                       [ChatMessage(role="user", content="summary of the first half"),
                        *self._chat(21)[1:]])
         after = await self._call(plugin, 50_000, monkeypatch, summarized)
 
-        assert "books.db" not in self._block(same), "fixture: the block changed without a rewrite"
-        assert "books.db" in self._block(after), (
+        assert "records.db" not in self._block(same), "fixture: the block changed without a rewrite"
+        assert "records.db" in self._block(after), (
             "the store_fact call left the conversation and the block still hides the fact")
 
     @pytest.mark.asyncio
     async def test_messages_leaving_the_view_show_the_fact(self, plugin, monkeypatch):
         await self._call(plugin, 50_000, monkeypatch, self._chat(20))
-        await plugin._handle_store_fact("the database is books.db", session_id="facts")
+        await plugin._handle_store_fact("the database is records.db", session_id="facts")
         pruned = await self._call(plugin, 150_000, monkeypatch, self._chat(21),
                                   max_messages=20, max_messages_prune_to=20)
 
         assert pruned.metadata["messages_pruned"] > 0, "fixture: nothing was pruned"
-        assert "books.db" in self._block(pruned)
+        assert "records.db" in self._block(pruned)
 
     @pytest.mark.asyncio
     async def test_the_block_is_the_last_turn_and_leaves_the_prefix_alone(
@@ -603,7 +603,7 @@ class TestTheBlockBehindTheSystemPrompt:
 
         # a fact arrives, and the front is rewritten anyway -- the two
         # conditions under which the block is allowed to say something new
-        await plugin._handle_store_fact("the database is books.db", session_id="facts")
+        await plugin._handle_store_fact("the database is records.db", session_id="facts")
         rewritten = [ChatMessage(role="user", content="summary of the first half"),
                      *carried[1:]]
         second = await self._call(plugin, 50_000, monkeypatch, rewritten)
@@ -614,8 +614,8 @@ class TestTheBlockBehindTheSystemPrompt:
         # by content, not by identity: the hook rebuilds messages that reach it
         # as dicts, so the carried block is an equal object, not the same one
         assert blocks[0].content == old_block.content
-        assert "books.db" not in blocks[0].content
-        assert "books.db" in blocks[-1].content
+        assert "records.db" not in blocks[0].content
+        assert "records.db" in blocks[-1].content
         assert second.context.messages[-1] is blocks[-1]
 
     @pytest.mark.asyncio

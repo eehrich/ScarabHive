@@ -75,7 +75,7 @@ class TestTheFlagIsReadFromTheManifest:
 
     def test_a_type_that_says_nothing_is_not_lazy(self, tmp_path):
         """Opt-in, not opt-out: `basic_agent` is an Agent factory and so are
-        `writer_pipeline_v4` and `writer_story_designer`, whose constructors
+        the pipeline agents of further plugin roots, whose constructors
         have not been read yet. Being an agent is not the promise."""
         root = tmp_path / "plugins"
         _plugin_dir(root, "silent_probe", "", AGENT_PLUGIN)

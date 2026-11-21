@@ -280,14 +280,14 @@ class TestAnImaginedRootIsReadFromTheBase:
     def test_a_data_directory_elsewhere_is_found_too(self, tmp_path, same_drive, monkeypatch):
         from agent_system import paths
         monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "elsewhere"))
-        (tmp_path / "elsewhere" / "books").mkdir(parents=True)
-        (tmp_path / "elsewhere" / "books" / "a.md").write_text("inside")
-        sandbox = PathSandbox.from_config(["data/books"], base=tmp_path / "project")
-        assert sandbox.resolve(f"{IMAGINED}/data/books/a.md") == (tmp_path / "elsewhere" / "books" / "a.md").resolve()
-        assert sandbox.describe_roots() == "data/books"
+        (tmp_path / "elsewhere" / "reports").mkdir(parents=True)
+        (tmp_path / "elsewhere" / "reports" / "a.md").write_text("inside")
+        sandbox = PathSandbox.from_config(["data/reports"], base=tmp_path / "project")
+        assert sandbox.resolve(f"{IMAGINED}/data/reports/a.md") == (tmp_path / "elsewhere" / "reports" / "a.md").resolve()
+        assert sandbox.describe_roots() == "data/reports"
         # A root that is the base is ".", also inside the data directory: ssh_control joins a relative
         # path to its root, and data/ssh_control/files nested there.
-        own = PathSandbox.from_config(["data/books"], base=tmp_path / "elsewhere" / "books")
+        own = PathSandbox.from_config(["data/reports"], base=tmp_path / "elsewhere" / "reports")
         assert own.describe_roots() == "."
 
 

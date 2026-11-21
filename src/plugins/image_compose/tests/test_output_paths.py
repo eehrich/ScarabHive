@@ -95,9 +95,9 @@ async def test_a_bare_name_is_refused_by_the_sandbox_not_silently_relocated(serv
 
 
 async def test_a_path_into_another_agents_tree_is_refused(server):
-    result = await render(server, output_path="data/writer/covers/sneak.png")
+    result = await render(server, output_path="data/other_agent/covers/sneak.png")
     assert result["status"] == "error" and "output_path" in result["error"]
-    assert not (server.project_root / "data" / "writer").exists()
+    assert not (server.project_root / "data" / "other_agent").exists()
 
 
 async def test_layers_dir_may_not_be_the_directory_the_composite_goes_to(server, workspace):
@@ -118,12 +118,12 @@ async def test_an_absolute_path_inside_the_sandbox_is_taken_as_given(server, wor
 
 
 async def test_an_unconfined_instance_still_writes_where_it_is_told(tmp_path):
-    """The writer's cover pipeline: no sandbox, project-relative paths --
+    """A caller with its own paths: no sandbox, project-relative paths --
     exactly what it passed before, landing exactly where it did."""
     config = ToolServerConfig(type="image_compose", enabled=True, fonts_dir=str(tmp_path / "fonts"))
     srv = PLUGIN_FACTORY(name="images", system_config=AgentSystemConfig(), server_config=config)
     srv.project_root = tmp_path
-    result = await render(srv, output_path="data/writer/covers/book.png")
+    result = await render(srv, output_path="data/other_agent/covers/cover.png")
     assert result["status"] == "success", result
-    assert Path(result["output_path"]) == tmp_path / "data" / "writer" / "covers" / "book.png"
-    assert (tmp_path / "data" / "writer" / "covers" / "book.png").is_file()
+    assert Path(result["output_path"]) == tmp_path / "data" / "other_agent" / "covers" / "cover.png"
+    assert (tmp_path / "data" / "other_agent" / "covers" / "cover.png").is_file()

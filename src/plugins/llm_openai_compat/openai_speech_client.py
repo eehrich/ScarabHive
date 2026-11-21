@@ -211,7 +211,7 @@ class OpenAISpeechTTSClient(TTSClient):
                     # Everything below 400 used to count as success, and the
                     # body was never checked: a redirect or an empty 200 went
                     # into the WAV header as "audio" and only turned up as
-                    # noise in the finished chapter. The Gemini client has
+                    # noise in the finished recording. The Gemini client has
                     # refused zero-length audio all along.
                     raise await self._failed(
                         url, started,

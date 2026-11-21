@@ -74,7 +74,7 @@ def compiled(env: PromptSandbox, source: str) -> Any:
 
 #: Repo-level shared prompt library. Partials placed here are includable from
 #: ANY prompt, which is how the same rule can live in one file instead of being
-#: copy-pasted into every pipeline's prompts (v4 / v5b / v6 ...).
+#: copy-pasted into every pipeline's prompts.
 SHARED_PROMPT_DIR = Path("config/prompts")
 
 def strip_prompt_comments(source: str, origin: str = "prompt") -> str:

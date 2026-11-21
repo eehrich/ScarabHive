@@ -1,11 +1,11 @@
 """No code names the data directory itself -- it goes through agent_system.paths.
 
 The data directory is configurable (AGENT_DATA_DIR, paths.data_dir). A new
-``"data/writer/x.db"`` default, a ``ROOT / "data" / ...`` join or a
+``"data/reports/x.db"`` default, a ``ROOT / "data" / ...`` join or a
 ``Path("data")`` would quietly keep writing to the old place once it is moved:
 an empty database next to the real one, every query reading zero rows. This
 scans the source (AST, not grep: docstrings and comments may mention the
-path) and fails on each such spelling. Write ``data_path("writer", "x.db")``
+path) and fails on each such spelling. Write ``data_path("reports", "x.db")``
 for a default, ``resolve_data_path(value)`` for a value from configuration,
 the environment or a database row.
 
@@ -87,7 +87,7 @@ def test_the_scanner_sees_every_spelling():
     """A scanner that finds nothing would pass this whole file vacuously."""
     source = '''
 """data/in/a/docstring is fine"""
-a = "data/writer/books.db"
+a = "data/reports/records.db"
 b = ROOT / "data" / "x"
 c = Path("data")
 d = os.path.join(root, "data", "x")

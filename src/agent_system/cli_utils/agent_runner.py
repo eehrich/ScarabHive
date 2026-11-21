@@ -85,7 +85,7 @@ async def create_and_register_agent(
 ) -> Agent:
     """The agent *agent_name*: the registered one, or built from the merged
     config and registered -- servers/agent/entry.py, the one factory the API
-    and agent-cli use. Kept for agent-run and the writer's audio plugins.
+    and agent-cli use. Kept for agent-run and plugins' own commands.
 
     Raises NotAnAgent (a ValueError, with the agents there are) for a tool
     server's name, an unknown one, or a registered server that is no agent.

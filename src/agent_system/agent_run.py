@@ -345,7 +345,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         if any(sorted_attachments.values()):
             # Checked against the model this run will use -- the --llm override
             # wins. AttachmentRejected is a ValueError: the handler below says
-            # it and exits 1 -- publish_pipeline and the writer runners read
+            # it and exits 1 -- scripted callers read
             # the code.
             from .utils.multimodal_processor import message_with_attachments
             task_input = message_with_attachments(request, sorted_attachments, llm_override, agent)
@@ -408,7 +408,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 # lenient: a non-JSON tool value must not fail a finished run.
                 print(dumps_lenient(result, indent=2))
             # Every error of the loop ends the run, as in agent-cli: exit 1, or the caller
-            # (publish_pipeline) counts a crashed run as done.
+            # (a scripted pipeline) counts a crashed run as done.
             if result.get("errors"):
                 sys.exit(1)
 

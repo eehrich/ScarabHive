@@ -347,7 +347,7 @@ class TestWhatTheRequestStandsOn:
         Without a slot of its own the wake -- that run's whole task -- then
         falls out of the set while its own turn is still being worked on."""
         messages = self._conversation(woken=True) + [
-            {"role": "user", "content": "v6 fragt: wie weit bist du?",
+            {"role": "user", "content": "the coordinator asks: how far along are you?",
              "injected_by": "debate_forum_direct"}]
 
         assert _request_user_indices(messages) == {2, 6, 7}

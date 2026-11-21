@@ -129,10 +129,10 @@ class TestAgentFollowsTheReload:
         agent = _agent()
         assert asyncio.run(agent.list_tools()), "fixture: the agent offers itself"
         entry = _entry()
-        entry.description = "Writes the chapter summaries"
+        entry.description = "Writes the section summaries"
         changes = agent.reload_config(entry, system_config=_system())
-        assert asyncio.run(agent.list_tools())[0].description == "Writes the chapter summaries"
-        assert changes["description"]["new"] == "Writes the chapter summaries", "applied, but reported as unchanged"
+        assert asyncio.run(agent.list_tools())[0].description == "Writes the section summaries"
+        assert changes["description"]["new"] == "Writes the section summaries", "applied, but reported as unchanged"
 
     def test_loop_detection_is_derived_again(self):
         agent = _agent()

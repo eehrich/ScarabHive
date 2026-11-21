@@ -11,8 +11,9 @@ repeating finished work, and pauses on breakpoints and watchpoints. A panel show
 machine as a graph, where it can be edited, run and debugged. An authoring agent with its
 own skill writes machines.
 
-The long-term goal is to express writer v6 and later writer v4 as such machines. v6 is
-today an LLM coordinator following a "strict ritual" in its prompt. As a machine, its
+The long-term goal is to express existing pipelines as such machines: first an LLM
+coordinator that follows a "strict ritual" in its prompt, later a large code-orchestrated
+pipeline. As a machine, its
 control flow becomes code you can read, validate, test and debug, and the agents stay the
 leaves.
 
@@ -29,13 +30,13 @@ this document.
 |---|---|---|---|
 | D1 | Own small interpreter, no workflow library | python-statemachine, transitions, sismic, Burr, LangGraph, pydantic-graph, Temporal, Prefect, DBOS | Measured for this plugin and for earlier workflow code in this repository. Every library leaves at least one of three things to us: our own keys in the YAML, resume without repeating finished agent calls, and pause/edit at step boundaries. The heavier ones bring 38–104 transitive packages. Libraries are used around the core: pydantic, ruamel.yaml, networkx, jsonschema, elkjs. |
 | D2 | YAML with a version key (`stategraph: 1`), validated by pydantic models; the JSON schema is generated from them | JSON; Python DSL; SCXML | YAML is what the repo uses for agents and config. ruamel keeps comments on round trip, and LLMs write YAML reliably. SCXML has no agent concepts. |
-| D3 | A **subset of UML 2.5 state machines** (§3.1) | flat graph (n8n, Dify); ASL `Next` | The user asked for UML conformance, and v4 needs hierarchy four levels deep. The subset is stated explicitly, so nobody expects what it leaves out. |
+| D3 | A **subset of UML 2.5 state machines** (§3.1) | flat graph (n8n, Dify); ASL `Next` | The user asked for UML conformance, and a large pipeline to be migrated needs hierarchy four levels deep. The subset is stated explicitly, so nobody expects what it leaves out. |
 | D4 | Guards, effects, entry/exit actions and template expressions are **real Python** | Jinja, simpleeval, CEL | Python is the platform. Machine code is trusted like plugin code. Every stategraph tool that saves, runs or debugs a machine requires the admin role (§8.3). All code is compiled and name-checked at validation time. |
 | D5 | One templating rule, for a closed list of data fields: `{{ expr }}` holds a Python expression, and a value that is exactly `{{ expr }}` keeps its type | Jinja templates | One expression language everywhere. |
 | D6 | Reuse through **parametrised submachines** imported from other files; composite states for grouping | text includes; inheritance (`extends` with overrides) | Composition keeps every file self-describing: the graph you see is the graph that runs. Inheritance hides the effective graph across files, and text includes break line numbers and validation. A submachine is a box in the editor and a frame in the debugger. |
 | D7 | Durability by **deterministic replay** of a step journal (the Temporal model) | snapshot/restore of the configuration | Replay handles nesting, parallel branches, map items and submachines uniformly and never repeats a finished activity. It also gives a what-if fork on the machine's own state; external state is not rolled back (§5.6). It requires pure guards and actions, and the engine checks that with input and context hashes (§5.4). |
 | D8 | Agents: the registered agent's own `run_events` on an instance session (a sub-session of the run's); tools via `dispatch_tool_call` of a dedicated runner agent; decisions via `create_decisions_from_profile` | `AgentCaller` on a SAM (built first, replaced 2026-09-26) | The SAM path reached the SAM's tool through the runner's `call_tool`, which a runner that never runs cannot resolve: every agent activity failed with "Unknown tool". It also kept a second list of agents next to the machine file, and its vars sat on the one run session that parallel calls shared (a race). Now the machine file names its agents (validated: configured and enabled) and each instance has its own session. The runner's tool allowlist stays the boundary for tools. |
-| D9 | Activity kinds are a **registry**; other plugins add kinds without touching the engine | a closed union | Extensibility is a requirement, and v4 migration needs code nodes and new kinds. |
+| D9 | Activity kinds are a **registry**; other plugins add kinds without touching the engine | a closed union | Extensibility is a requirement, and migrating a code-orchestrated pipeline needs code nodes and new kinds. |
 | D10 | Editor: own SVG canvas + vendored **elkjs** (EPL-2.0) for compound auto-layout; YAML edits happen server-side and keep comments | AntV X6, JointJS, diagram-js, Drawflow | The panel rules forbid CDNs and build steps. X6 (583 KB) and diagram-js (needs a bundler) bring an object model we would have to mirror. Our graphs are small (tens of states), SVG styled with kit tokens works in both themes, and ELK lays out nested states. |
 | D11 | Debugger primitives follow DAP names: breakpoints (enter/exit/error, with condition), watchpoints (expression, break on change), pause/continue/step/run_to/terminate, evaluate, set, fork | step-through only | LangGraph, Burr, Temporal and n8n converged on this set. DAP names keep a VS Code adapter possible. |
 
@@ -139,7 +140,7 @@ def writer_task(ctx, params):
 | `id` | name | yes | Machine id, unique across all machine roots. The file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
 | `notes` | name → text | | Free text for the reader: each note is drawn on the panel's canvas, where its place is kept in the layout. The engine never reads it. |
-| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the first writable root, else the plugin folder that holds its `machines/` directory. |
+| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Review/Drafts`). Empty: the folder of its origin -- "My machines" for the first writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
 | `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `notes`, `python`, `imports`, `group`, `machines`, `agent`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
@@ -147,7 +148,7 @@ def writer_task(ctx, params):
 | `events` | name → `{description, data}` | | The named events this machine accepts (§3.4). A trigger that is neither `done`, `error` nor declared here is an error. `data` is an optional JSON schema for the payload; one that is not a valid JSON schema is SG001. |
 | `context` | name → JSON | | The machine's variables with their initial values. They are plain JSON, not templates. |
 | `vars` | name → template | | Agent template vars (§3.9) for every agent this machine spawns. Submachines inherit them. |
-| `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. v6's Verbote/Klischees) in one place. |
+| `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. a shared list of rules) in one place. |
 | `limits` | `{max_steps, timeout, concurrency, max_cost}` | | `max_steps` (default 1000) bounds the dispatches of each frame of this machine. `timeout` bounds the running time of a whole run; it is honoured on the root machine only. `concurrency` bounds the leaf activities (agent, tool, decide, call, emit, callback -- every activity that is not a composite) of the whole run that run at once -- also in parallel branches, map items and submachines; the others wait for their turn before they start (a crash meanwhile finds them not started). A call's own `sg.tool()` runs within the call's turn. Root machine only. `max_cost` bounds the USD the whole run may spend (`run.cost`): once it is reached, the next agent, decide or call activity (or retry attempt) fails with `budget_exceeded` instead of starting; the one that crossed it finishes, `finally` activities and `sg.tool()` calls are not stopped. Root machine only. |
 | `resume` | `manual` \| `auto` | | `auto`: the API resumes an interrupted run of this machine by itself, once its owner's lease is gone -- not a run its caller handed `live` objects (only the caller can hand them again). Default `manual`: only a caller (its run key) or an operator resumes it. The root machine's counts. |
 | `resources` | name → `{open, fork, close, description}` | | External state that belongs to each frame of this machine (§2.8). |
@@ -212,7 +213,7 @@ common keys.
 | Key | Meaning |
 |---|---|
 | `retry` | `attempts` counts the total tries (default 1). `backoff` is a duration, or `{initial, factor, max}`. `errors` lists the error types to retry (unknown names get SG110); the default is every type except `cancelled`, `interrupted`, `timeout`, `template_failed`, `params_invalid`, `not_serialisable`, `unmocked`, `no_backend`, `config`, `tool_denied`, `budget_exceeded`. A composite (`machine`, `parallel`, `map`) retries by running its children again, so two more rules apply. It is never retried once an activity inside it raised `interrupted`, whether that error ended the attempt, was handled inside a submachine, or was journaled next to another branch's failure -- except a `finally` or `close` of a frame inside it (§5.5; naming `interrupted` gets SG110). And a type from the default-excluded list in the error's chain of unhandled causes (`error.cause`, its `cause`, ...) excludes the composite too, unless `errors` names that type; a cause the submachine handled itself is not in that chain. The engine is the only retry layer: an agent activity runs its agent once per attempt. |
-| `timeout` | Deadline of **one attempt**. On expiry the attempt is cancelled (for an agent: its run's request first, so the agent stops; the attempt ends when it has stopped, at most the stop grace later -- §5.8) and error `timeout` is raised. A timeout is not retried unless `errors` lists it. An agent activity has no timeout by default: v6 panels run 20+ minutes. |
+| `timeout` | Deadline of **one attempt**. On expiry the attempt is cancelled (for an agent: its run's request first, so the agent stops; the attempt ends when it has stopped, at most the stop grace later -- §5.8) and error `timeout` is raised. A timeout is not retried unless `errors` lists it. An agent activity has no timeout by default: a panel of agents can run 20+ minutes. |
 | `idempotent` | Whether a resumed run may start this activity again if it was in flight at the crash (§5.5). Default `true`, except `tool`: `false`. |
 | `description` | Free text. |
 
@@ -315,8 +316,8 @@ takes any name, and the run decides.
   - Each instance is its own **frame**, with its own `ctx`, step counter and visit counts.
     Data flows in only through `params` and out only through the final `output`, so there
     is no hidden coupling. Parameters are deep-copied at binding (§3.6).
-  - A submachine can be used any number of times with different parameters (the v6 ritual
-    appears 20 times, one line each), inside `parallel` and `map`, and nested to any depth.
+  - A submachine can be used any number of times with different parameters (a coordinator's
+    ritual appears 20 times, one line each), inside `parallel` and `map`, and nested to any depth.
   - Import cycles are refused.
 - **No inheritance, no text includes** (D6). A variant is a parameter, or a submachine for
   the part that varies.
@@ -375,7 +376,7 @@ resources:
   store:
     open:  {call: namespace_for, args: {origin: "{{ run.origin }}"}}
     fork:  {call: copy_namespace, args: {source: "{{ fork_source }}"}}
-    close: {tool: v6_story_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
+    close: {tool: notes_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
 vars:
   json_namespace: "{{ resources.store }}"
 ```
@@ -566,7 +567,7 @@ SG106 warns about the obvious violations.
 
 ### 3.9 Agent template vars
 
-v6 steers its agents through session template vars: prompt branches, store namespaces and
+A coordinator steers its agents through session template vars: prompt branches, store namespaces and
 shared prompt blocks. stategraph makes them first-class.
 
 - The effective vars of an agent activity are merged in this order, each layer over the
@@ -845,8 +846,8 @@ flight at the crash.
   again either: a retry of an enclosing composite would start it under the next attempt's
   keys, so a composite inside which an activity raised `interrupted` is never retried --
   handled or not, and whatever `retry.errors` says. An interrupted `finally` or `close` does not
-  count: it belongs to that attempt's frame, and the retry's frame has its own ending. For writer
-  tools that create things (a story row), the error path reconciles, e.g. by looking the object
+  count: it belongs to that attempt's frame, and the retry's frame has its own ending. For
+  tools that create things (a database row), the error path reconciles, e.g. by looking the object
   up by `run.id`.
 - **A retry's backoff** rewrites the `started` row before it sleeps: attempt n+1 and
   `backoff_until`, the time it is due. Nothing is in flight then, so a resume inside the backoff
@@ -1051,7 +1052,7 @@ src/plugins/stategraph/
 ### 7.2 Machine roots
 
 - `data/stategraph/machines` is writable and not versioned.
-- `src/plugins*/*/machines` is versioned; writer machines live next to their plugin.
+- `src/plugins*/*/machines` is versioned; a plugin's machines live next to it.
 - The first root that has an id wins; by default the writable root comes first.
 - A shipped folder named in `writable_machine_dirs` (a developer's local config, never a server's:
   a pull would meet its edits) is edited in place; its machines keep their plugin's folder and stay
@@ -1213,7 +1214,7 @@ Machines contain Python and run agents and tools.
   read-only.
 - **Runs belong to their user.** `get_run`, `control_run` and `send_event` (tools and REST)
   answer another user's run as missing (404) unless the asker is an admin or auth is off; a run
-  of nobody (no `user_id`: the writer's, a schedule's without a user) is an admin's, and the
+  of nobody (no `user_id`: a job queue's, a schedule's without a user) is an admin's, and the
   process's own code's, which calls without a user (`server.sees_run`). A reader who may not save
   and run machines gets no traceback and no absolute `file` path from the read-only tools. Whoever resumes or terminates
   a run only triggers it: it runs as its row's user (§5.8). A fork is a new run of the forking
@@ -1262,49 +1263,50 @@ Machines contain Python and run agents and tools.
 6. Hand over.
 
 The skill teaches the format, the Python and purity rules, reuse by submachines, and
-patterns: review loop, retry with feedback, fan-out/join, human approval, and the v6
+patterns: review loop, retry with feedback, fan-out/join, human approval, and a coordinator's
 ritual.
 
 ---
 
-## 10. Mapping writer v6
+## 10. Mapping an LLM coordinator
 
-The coordinator ritual becomes one submachine `v6_ritual(phase, aufgabe, target_doc)`:
+The first migration target is a coordinator agent that runs a design pipeline through a
+"strict ritual" in its prompt. The ritual becomes one submachine `ritual(phase, task, target_doc)`:
 
-1. `vars: {phase, aufgabe}` replaces `set_context`.
-2. The panel (agent `v6_story_panel`) runs with `parse: parse_marker`. A missing marker
-   line goes back to the same instance as feedback.
+1. `vars: {phase, task}` replaces `set_context`.
+2. The panel agent runs with `parse: parse_marker`. A missing marker line goes back to the
+   same instance as feedback.
 3. `merge_doc` (tool). On `tool_failed` the machine returns to the panel with the store
    error as feedback, bounded by `max_visits`.
 4. `delete_keys` (tool, guarded).
 5. Checkpoint (tool).
 
-The top level is the S0–S24 list of the research, with:
+The top level is the coordinator's step list, with:
 
-- `check_brief` as a choice, then forum bootstrap and corpus hints;
-- the synopsis steps as ritual instances;
-- the judge (agent plus a guard on the `STRUKTUR-FIXES` block), then the audits;
-- the milestone loop as `map` with `concurrency: 1` over the milestones;
-- the drift loop, at most 2 rounds;
-- the chapter plan with a deterministic check (call);
-- the story row: created as `idea` (a call whose tool call is `idempotent`: a second `idea` row
-  after a crash is harmless), then the issue events, and only in the last step set to `developed`
-  (`hand_over`) -- the status v4 and the job chain pick a story up by.
+- a brief check as a choice, then a forum bootstrap;
+- the drafting steps as ritual instances;
+- a judge (agent plus a guard on its fixes block), then the audits;
+- a milestone loop as `map` with `concurrency: 1` over the milestones;
+- a drift loop, at most 2 rounds;
+- a plan with a deterministic check (call);
+- the result row: created as `idea` (a call whose tool call is `idempotent`: a second `idea` row
+  after a crash is harmless), then its events, and only in the last step set to `developed`
+  (`hand_over`) -- the status the next stage of the pipeline picks it up by.
 
-Genre and audience tags become one `decide: questions` with a noul per tag. The machine
-returns `story_id` as typed output. `write_key` comes from `inject_params`. The panel
-moderator stays an agent until a machine version of it has been measured against it.
+Tags become one `decide: questions` with a noul per tag. The machine returns the row's id as
+typed output. `write_key` comes from `inject_params`. The panel moderator stays an agent until a
+machine version of it has been measured against it.
 
-v4 follows as a strangler. First the phases become `call` activities that wrap the
-existing mixin methods, and the entry router becomes a choice. Then the smaller loops (3a/3b,
-repair) become composites. `_score_chapter_impl` stays one call until its exits are
-covered by tests.
+A code-orchestrated pipeline follows as a strangler. First its phases become `call` activities
+that wrap the existing methods, and the entry router becomes a choice. Then the smaller loops
+become composites. A scoring step with many exits stays one call until its exits are covered by
+tests.
 
-**The v6 migration added four constructs** (built 2026-09-26, with the machine that needed them):
+**The migration added four constructs** (built 2026-09-26, with the machine that needed them):
 
 1. **The agent facade** -- `type: stategraph_machine` (`src/plugins/stategraph_machine`, class
    `plugins.stategraph.facade.MachineAgent`). A server entry names one machine
-   (`machine: v6_story`); SAM spawns, AgentCaller and writer_jobs' `/events` address it like any
+   (`machine: design_flow`); SAM spawns, AgentCaller and a job queue's `/events` address it like any
    agent. Or the machine's own file offers it: an `agent:` block (`{name, description, input,
    task_param, on_wait, params, promote, visibility, category}`, all defaulted; `visibility` private,
    `category` none) stands for
@@ -1329,14 +1331,14 @@ covered by tests.
      `{"event", "data", "frame"}` -- and the run goes on to its end or next wait. A wait no process holds
      (a restart, agent-cli) is resumed first and answered there; a reply a guard discards is asked again with
      the guards; as another agent's tool (`call`) there is no conversation, and a wait blocks. `block` (the default) waits for the
-     end, as writer_jobs needs. A request that does not fit the params is told what the machine takes.
+     end, as a job queue needs. A request that does not fit the params is told what the machine takes.
    - The same request id again from a new session attaches, resumes, or answers the ended run's
      outcome again: its output, its failure, its cancel. Only a failure that is transient
      (`timeout`, `agent_failed`, `decision_failed`, `internal`, `diverged` as the
      error or an unhandled cause, §5.7; not `interrupted`: a new run would repeat every finished
      non-idempotent activity) goes on where it failed (§5.7 `run_key`): a duplicate delivery gets the old
      answer, a retry after a provider failure the same run, rewound.
-   - Failures are `error` events, never a `final` (writer_jobs counts any `final` as success).
+   - Failures are `error` events, never a `final` (a job queue may count any `final` as success).
 2. **`finally:`** (§2.8, §3.10).
 3. **`resources:`** (§2.8): `open`/`fork`/`close`; hashes take resource values as tokens (§5.4).
 4. **`sg.tool()`** (§2.8): journaled inner tool calls of a `call` activity.
@@ -1345,13 +1347,11 @@ Two smaller extensions came with them: `vars` may be one template that renders t
 machine passes its whole var set per call), and a cancel that reaches the run's token terminates the
 run (§5.8).
 
-**The machine.** `v6_story.yaml` is S0-S24 with the
-ritual as the submachine `v6_ritual.yaml`; its companion modules hold the parsing, the checks and the
-DB transfer. Its facade entry is `v6_story_machine`. Where it deliberately differs from the
-coordinator's prompt, and what the mapping found wrong in today's v6, is in
-`writer_pipeline_v6/docs/v6_machine.md`. v4 and writer_jobs still call the coordinator; switching
-is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
-`WRITER_STORY_DESIGN_DISPATCH_AGENT_NAME`).
+**The machine.** The coordinator's steps became one machine file with the ritual as a
+submachine; its companion modules hold the parsing, the checks and the DB transfer, and a facade
+entry offers it as an agent. Where it deliberately differs from the coordinator's prompt is
+documented next to the machine, in its plugin. Its callers still call the coordinator; switching
+is configuration only (the agent name they dispatch to and their SAM's `allowed_agents`).
 
 ---
 
@@ -1364,9 +1364,9 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
   with node where `jsc` is missing (`tests/js/node_jsc.mjs` gives node jsc's `print`, `load` and
   `readFile`, so one test source serves both), not in a browser. The first real browser session
   is a manual check in both themes.
-- **The v6 machine has not run live yet.** It is tested against a simulated v6 world (store
-  semantics, forum, story row, agents as fakes, a crash and resume in the beats); its first run
-  with real panels is a manual step, best with a breakpoint after the worlds.
+- **The migrated coordinator machine has not run live yet.** It is tested against a simulated world (store
+  semantics, forum, result row, agents as fakes, a crash and resume in the middle); its first run
+  with real panels is a manual step, best with a breakpoint after the first drafting steps.
 - **Cost.** An agent activity reports its LLM calls' tokens and cost, its sub-agents' included (their
   events reach the run's stream), priced per call by the core's rule; LLM calls a tool makes on its own
   are not in it. `run.cost` is readable in expressions. `limits.max_cost` (root machine only): once `run.cost`

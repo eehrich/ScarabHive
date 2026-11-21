@@ -250,9 +250,9 @@ class AudioOpsServer(SchemaBasedToolServer):
             Resolved Path object with {session_id} substituted if applicable.
             
         Example:
-            Template: "data/writer/audio/temp/{session_id}"
+            Template: "data/audio/temp/{session_id}"
             Session ID: "abc123"
-            Result: Path("data/writer/audio/temp/abc123")
+            Result: Path("data/audio/temp/abc123")
         """
         if "{session_id}" not in self._storage_path_template:
             # No template - return base path
@@ -296,7 +296,7 @@ class AudioOpsServer(SchemaBasedToolServer):
         filename = filename.replace("\\", "/")
         
         # If filename contains the storage path, strip it to get just the filename
-        # This handles cases where ComfyUI returns full paths like "data/writer/audio/temp/file.flac"
+        # This handles cases where ComfyUI returns full paths like "data/audio/temp/file.flac"
         # Check both base storage path and effective storage path
         for storage in [effective_storage, self._storage_path_base]:
             storage_str = str(storage).replace("\\", "/")
@@ -1660,7 +1660,7 @@ class AudioOpsServer(SchemaBasedToolServer):
         Vectorised via numpy: builds a per-sample factor envelope and applies
         `out = a1 * (1-f) + a2 * f` over the whole buffer at once. Avoids the
         O(N) Python loop over 10ms chunks (millions of iterations for
-        book-length audio).
+        hours-long audio).
 
         Args:
             audio1: First AudioSegment
@@ -2049,7 +2049,7 @@ class AudioOpsServer(SchemaBasedToolServer):
         Vectorised via numpy: builds a per-sample gain envelope (converted from
         dB to linear factor) and applies it in one multiplication. Avoids the
         O(N) Python loop over 10ms chunks (millions of iterations for
-        book-length audio).
+        hours-long audio).
 
         Args:
             audio: AudioSegment

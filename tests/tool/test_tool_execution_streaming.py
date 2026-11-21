@@ -238,8 +238,8 @@ class TestMalformedToolArguments:
     Arguments can read as a list, a string or a number instead of a dict. The
     downstream code calls params.get(...), which crashed with AttributeError.
 
-    Triggering case observed in production: v5b_synopsis_moderator posting a
-    ~15KB synopsis as tool argument, which was read as a list.
+    Triggering case observed in production: a moderator agent posting a
+    ~15KB document as tool argument, which was read as a list.
     """
 
     @pytest.mark.asyncio
@@ -353,14 +353,14 @@ class TestMalformedArgumentsAreRejectedNotRepaired:
     """Arguments that are not valid JSON go back to the model; the tool never runs.
 
     2026-09-11: json-repair read a spliced token stream ("... und erkenn" +
-    "idas Schuld ...", "background": "...") as one string, the write went
-    through with status ok, and the garbage stood in the story document.
+    "te Daten ...", "background": "...") as one string, the write went
+    through with status ok, and the garbage stood in the stored document.
     """
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("raw", [
-        '{"doc": "synopsis", "data": {"background": "und erkenn"idas Schuld", "age": 3}}',
-        '{"doc": "synopsis", "data": {"background": "cut off',
+        '{"doc": "outline", "data": {"background": "und erkenn"te Daten", "age": 3}}',
+        '{"doc": "outline", "data": {"background": "cut off',
     ], ids=["spliced-string", "cut-off"])
     async def test_the_tool_is_not_called_and_the_model_gets_a_parse_error(
             self, manager_with_streaming, mock_registry, raw):
@@ -405,10 +405,10 @@ class TestAToolResultAlwaysReachesTheModel:
         # "invocation failed: Object of type set is not JSON serializable"
         # instead of the result (tool_script failure report, 2026-09-11).
         mock_registry.get.return_value.call_with_status = AsyncMock(
-            return_value={"status": "ok", "seen": {"B01"}})
+            return_value={"status": "ok", "seen": {"R01"}})
         manager, forwarder = manager_with_streaming
 
         tool_messages = await _messages_of(manager, forwarder, '{"x": 1}', "set_result_test")
 
         assert len(tool_messages) == 1
-        assert "B01" in tool_messages[0].content
+        assert "R01" in tool_messages[0].content

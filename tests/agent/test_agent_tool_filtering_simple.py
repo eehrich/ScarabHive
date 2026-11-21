@@ -84,8 +84,8 @@ async def test_blocked_tools_returned_with_allowed():
     
     # AgentConfig with both allowed and blocked tools
     tool_config = ToolConfig(
-        allowed=["writer_graph/*", "web_scraper/*"],
-        blocked=["writer_graph/writer_graph_batch_link"]
+        allowed=["doc_graph/*", "web_scraper/*"],
+        blocked=["doc_graph/doc_graph_batch_link"]
     )
     agent_config = AgentConfig(llm_profile="default", tools=tool_config)
     server_config = ToolServerConfig(type="basic_agent", enabled=True, agent_config=agent_config)
@@ -98,7 +98,7 @@ async def test_blocked_tools_returned_with_allowed():
     
     # Blocked patterns should be returned for later application
     assert blocked_patterns is not None
-    assert "writer_graph/writer_graph_batch_link" in blocked_patterns
+    assert "doc_graph/doc_graph_batch_link" in blocked_patterns
 
 
 @pytest.mark.asyncio

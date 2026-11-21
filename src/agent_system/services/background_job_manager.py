@@ -92,7 +92,7 @@ class BackgroundJob:
     task: asyncio.Task[Any]
     # The run's events, the newest of them (create_job bounds it), for every reader alike:
     # each reads from its own place (``follow``) and nobody takes anything out. A queue
-    # handed each event to ONE reader -- a second tab, or the chat beside writer_jobs' own
+    # handed each event to ONE reader -- a second tab, or the chat beside a job queue's own
     # stream, took every other event, the answer among them.
     events: deque[Any] = field(default_factory=deque)
     status: JobStatus = JobStatus.RUNNING
@@ -126,8 +126,8 @@ class BackgroundJob:
         return self.status not in (JobStatus.RUNNING, JobStatus.CANCELLED) and not self.answered
     # A mirror of a run someone else collects (POST /run): pages follow it like any job, but
     # the answer went to that caller, not through here -- so once it is over, the status
-    # endpoint does not offer it as proof that the run finished (writer_jobs' reconcile
-    # takes a finished job's status as "done" and would bury a book run it should resume).
+    # endpoint does not offer it as proof that the run finished (a job queue's reconcile
+    # takes a finished job's status as "done" and would bury a long run it should resume).
     mirror: bool = False
     # How many events the run has sent, counted from the first. NOT the buffer's length: the
     # buffer drops its oldest when it fills, and this keeps counting. Event number n (from 0)
@@ -214,7 +214,7 @@ class BackgroundJobManager:
         self._cleanup_task: Optional[asyncio.Task[None]] = None
         # Optional registry of MCP-registered agent servers. cancel_job
         # walks it so a request that lives on a sub-agent (e.g.
-        # linear_book, v5b_story_designer) is cancelled on the SERVER
+        # a configured agent other than the default) is cancelled on the SERVER
         # that actually owns it, not just the default agent. Without
         # this the agent's per-server _request_manager flag never
         # flips and the agent keeps running until completion despite
@@ -266,12 +266,12 @@ class BackgroundJobManager:
     async def _cleanup_old_jobs(self) -> None:
         """Finished jobs past COMPLETED_JOB_TTL keep only how their run ended.
 
-        The job itself stays until the process ends: writer_jobs asks for it long after.
-        A story_design retry reconnects under the same id and reads the run's answer, and
+        The job itself stays until the process ends: a job queue asks for it long after.
+        Its retry reconnects under the same id and reads the run's answer, and
         reconcile takes a stale run's status from it -- with the job gone, the retry
         started the whole run again. What is let go is the rest of its event buffer.
         ponytail: records are kept for good, each with its task and its final answer; drop
-        them by age once their number matters, but not before writer_jobs' longest retry
+        them by age once their number matters, but not before a job queue's longest retry
         backoff.
         """
         now = time.time()
@@ -442,8 +442,8 @@ class BackgroundJobManager:
            agent's own loop never sees the cancellation even after
            the token is set (2026-06-27 regression: ``/api/requests/
            {rid}/cancel`` had been calling cancel only on the
-           DEFAULT global agent, missing every linear_book /
-           v5b_story_designer / cover_artist request). The default
+           DEFAULT global agent, missing every request to another
+           configured agent). The default
            agent is then tried as belt-and-suspenders for caller paths
            that bypassed the registry.
 
@@ -465,7 +465,7 @@ class BackgroundJobManager:
             tracked).
         """
         # Somebody stopped it -- the web chat's Stop, an admin, a deleted session,
-        # writer_jobs. Noted first: the run may be past the point where the
+        # a job queue. Noted first: the run may be past the point where the
         # layers below reach it (its finalize), and its session is let go marked
         # all the same, so nothing starts it again by itself (core/session_presence/).
         from ..core.session_presence import note_stop
@@ -532,7 +532,7 @@ class BackgroundJobManager:
             return False
 
         # Walk the registry first — that's where sub-agent servers
-        # (linear_book, v5b_*, cover_artist, ...) register themselves.
+        # (every configured agent but the default) register themselves.
         if self._agent_registry is not None:
             for name, srv in self._registered_agents(_Agent):
                 try:
@@ -638,13 +638,13 @@ class BackgroundJobManager:
         session-tracker fallback used to consult only the DEFAULT
         agent's tracker — the exact per-agent blind spot the
         2026-06-27 cancel regression had on the cancel side: a
-        ``/run?agent_name=linear_book`` request registers in
-        linear_book's ``_request_manager``, so the default agent's
+        ``/run?agent_name=drafter`` request registers in
+        drafter's ``_request_manager``, so the default agent's
         tracker reports it inactive and the endpoint answered
         ``unknown/no_active_run`` for a run that was actively
-        grinding. The writer-side reconcile pass consumed that as
+        grinding. A job queue's reconcile pass consumed that as
         "BackgroundJob gone" and re-queued the job for resume —
-        double-running a multi-hour book_generation.
+        double-running a multi-hour job.
 
         Checks, in order:
           1. BackgroundJobManager's own jobs (RUNNING only),

@@ -1155,7 +1155,7 @@ class SessionManager:
 
         An existing id always wins over a title that looks like one. Then an
         exact title -- where several sessions carry the same one (a pipeline
-        writes hundreds of "Bewerte Kapitel 3"), the most recently updated is
+        writes hundreds of "Score section 3"), the most recently updated is
         meant, because that is the one its person worked in. A prefix counts
         only when it names exactly ONE session: ``--session build`` creates a
         session called "build" unless a single stored title starts that way,

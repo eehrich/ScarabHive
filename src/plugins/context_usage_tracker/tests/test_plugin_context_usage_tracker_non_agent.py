@@ -354,7 +354,7 @@ class TestItDoesNotDiluteTheStatistics:
     async def test_audio_tokens_do_not_land_on_the_context_line(self, hooks):
         """The case that made this a guard rather than a comment.
 
-        A book run synthesises hundreds of times. Each of those rows carries
+        A long narration run synthesises hundreds of times. Each of those rows carries
         real tokens and no conversation, so a context series that takes them
         reads as a context that collapsed.
         """

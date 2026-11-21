@@ -309,7 +309,7 @@ class TestCalls:
 
 
 class TestSessionVars:
-    """A tool reads its session's template vars (a project, a book) from the agent that runs it -- through the
+    """A tool reads its session's template vars (a project, a ticket) from the agent that runs it -- through the
     gateway that is the runner, which knows nothing of the issuing run's session."""
 
     @staticmethod

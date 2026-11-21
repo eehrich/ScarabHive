@@ -306,7 +306,7 @@ async def test_context_vars_inheritance():
         # Add context_vars to parent
         parent_data = await session_manager.load_session(user_id, parent_session_id)
         parent_data["context_vars"] = {
-            "book_id": "42",
+            "project_id": "42",
             "workflow_phase": "planning"
         }
         await session_manager.save_session(parent_data)
@@ -316,7 +316,7 @@ async def test_context_vars_inheritance():
         parent_agent.name = "parent_agent"
         parent_agent.agent_config = AgentConfig(
             llm_profile="test_profile",
-            template_vars={"book_id": "42", "workflow_phase": "planning"}
+            template_vars={"project_id": "42", "workflow_phase": "planning"}
         )
         
         # Create sub-session
@@ -334,7 +334,7 @@ async def test_context_vars_inheritance():
         # Load sub-session and verify context_vars inherited
         sub_data = await session_manager.load_session(user_id, sub_session_id)
         assert "context_vars" in sub_data, "Sub-session should have context_vars"
-        assert sub_data["context_vars"]["book_id"] == "42"
+        assert sub_data["context_vars"]["project_id"] == "42"
         assert sub_data["context_vars"]["workflow_phase"] == "planning"
         
         # Verify parent link
@@ -368,14 +368,14 @@ async def test_context_vars_loaded_into_agent_template_vars():
             user_id=user_id,
             session_id=sub_session_id,
             title="Sub Session",
-            agent_name="continuity_guardian",
+            agent_name="consistency_checker",
             llm_profile="test_profile"
         )
         
         # Add context_vars (simulating inheritance from parent)
         sub_data = await session_manager.load_session(user_id, sub_session_id)
         sub_data["context_vars"] = {
-            "book_id": "17",
+            "project_id": "17",
             "workflow_phase": "structure"
         }
         await session_manager.save_session(sub_data)
@@ -399,13 +399,13 @@ async def test_context_vars_loaded_into_agent_template_vars():
         
         # Verify context_vars were loaded into session_tracker (NOT agent_config)
         session_vars = mock_agent._session_tracker.get_session_template_vars(sub_session_id)
-        assert session_vars.get("book_id") == "17", \
-            f"book_id should be '17', got: {session_vars}"
+        assert session_vars.get("project_id") == "17", \
+            f"project_id should be '17', got: {session_vars}"
         assert session_vars.get("workflow_phase") == "structure", \
             f"workflow_phase should be 'structure', got: {session_vars}"
         
         # Verify agent_config.template_vars is NOT modified (session isolation)
-        assert mock_agent.agent_config.template_vars.get("book_id") is None, \
+        assert mock_agent.agent_config.template_vars.get("project_id") is None, \
             "agent_config.template_vars should NOT be modified (race condition with singletons)"
 
 
@@ -418,9 +418,9 @@ async def test_phase_filtering_shows_correct_agents():
     mock_manager = MagicMock(spec=SubAgentManager)
     async def mock_list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
         return [
-            {"instance_id": "sub_1", "agent_type": "story_designer", "status": "active"},
-            {"instance_id": "sub_2", "agent_type": "character_designer", "status": "active"},
-            {"instance_id": "sub_3", "agent_type": "structure_builder", "status": "active"},
+            {"instance_id": "sub_1", "agent_type": "plan_designer", "status": "active"},
+            {"instance_id": "sub_2", "agent_type": "api_designer", "status": "active"},
+            {"instance_id": "sub_3", "agent_type": "schema_builder", "status": "active"},
         ]
     mock_manager.list_sub_sessions = AsyncMock(side_effect=mock_list_sub_sessions)
     
@@ -436,14 +436,14 @@ async def test_phase_filtering_shows_correct_agents():
         "enabled": True,
         "phase_variable": "workflow_phase",
         "phase_agents": {
-            "planning": ["story_designer", "story_reviewer"],
-            "characters": ["character_designer", "character_reviewer"],
-            "structure": ["structure_builder", "continuity_guardian"],
+            "planning": ["plan_designer", "plan_reviewer"],
+            "interfaces": ["api_designer", "api_reviewer"],
+            "structure": ["schema_builder", "consistency_checker"],
         }
     }
     
-    allowed_agents = ["story_designer", "story_reviewer", "character_designer", 
-                      "character_reviewer", "structure_builder", "continuity_guardian"]
+    allowed_agents = ["plan_designer", "plan_reviewer", "api_designer", 
+                      "api_reviewer", "schema_builder", "consistency_checker"]
     
     injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config, status_of=stored_status)
     
@@ -475,13 +475,13 @@ async def test_phase_filtering_shows_correct_agents():
     
     content = injected[0].content
     
-    # Should show "Phase `planning` - Available agents: story_designer, story_reviewer"
+    # Should show "Phase `planning` - Available agents: plan_designer, plan_reviewer"
     assert "Phase `planning`" in content
-    assert "story_designer" in content
-    assert "story_reviewer" in content
+    assert "plan_designer" in content
+    assert "plan_reviewer" in content
     
     # Should NOT show agents from other phases in the "Available agents" line
-    assert "character_designer" not in content.split("Available agents:")[1].split("\n")[0]
+    assert "api_designer" not in content.split("Available agents:")[1].split("\n")[0]
 
 
 @pytest.mark.asyncio
@@ -491,7 +491,7 @@ async def test_phase_filtering_disabled_shows_all_allowed():
     
     mock_manager = MagicMock(spec=SubAgentManager)
     async def mock_list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
-        return [{"instance_id": "sub_1", "agent_type": "story_designer", "status": "active"}]
+        return [{"instance_id": "sub_1", "agent_type": "plan_designer", "status": "active"}]
     mock_manager.list_sub_sessions = AsyncMock(side_effect=mock_list_sub_sessions)
     
     # Hook config
@@ -506,7 +506,7 @@ async def test_phase_filtering_disabled_shows_all_allowed():
         "enabled": False
     }
     
-    allowed_agents = ["story_designer", "story_reviewer", "character_designer"]
+    allowed_agents = ["plan_designer", "plan_reviewer", "api_designer"]
     
     injector = SubAgentContextInjector(mock_manager, "w_sam", hook_config, allowed_agents, phase_filtering_config, status_of=stored_status)
     
@@ -530,7 +530,7 @@ async def test_phase_filtering_disabled_shows_all_allowed():
     
     # Should show all allowed_agents since phase_filtering is disabled
     assert "Available agents:" in content
-    assert "story_designer" in content
+    assert "plan_designer" in content
 
 
 @pytest.mark.asyncio
@@ -545,7 +545,7 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
     server_config.max_nesting_depth = 3
     server_config.max_sub_agents_per_type = 3
     server_config.default_wait_timeout = 3600
-    server_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
+    server_config.allowed_agents = ["plan_designer", "api_designer", "code_writer"]
     server_config.blocked_agents = []
     server_config.hook_config = {}
     # Phase filtering config at top-level
@@ -553,8 +553,8 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
         "enabled": True,
         "phase_variable": "workflow_phase",
         "phase_agents": {
-            "planning": ["story_designer"],
-            "content": ["scene_writer"],
+            "planning": ["plan_designer"],
+            "content": ["code_writer"],
         }
     }
     
@@ -580,16 +580,16 @@ async def test_server_phase_filtering_blocks_wrong_phase_agent():
     
     # Should return planning agents
     phase_allowed = server._get_phase_allowed_agents(params)
-    assert phase_allowed == ["story_designer"]
+    assert phase_allowed == ["plan_designer"]
     
-    # story_designer should be allowed
-    assert server._is_agent_allowed_for_phase("story_designer", phase_allowed) is True
+    # plan_designer should be allowed
+    assert server._is_agent_allowed_for_phase("plan_designer", phase_allowed) is True
     
-    # scene_writer should NOT be allowed (it's in content phase, not planning)
-    assert server._is_agent_allowed_for_phase("scene_writer", phase_allowed) is False
+    # code_writer should NOT be allowed (it's in content phase, not planning)
+    assert server._is_agent_allowed_for_phase("code_writer", phase_allowed) is False
     
-    # character_designer is in allowed_agents but not in any phase - blocked
-    assert server._is_agent_allowed_for_phase("character_designer", phase_allowed) is False
+    # api_designer is in allowed_agents but not in any phase - blocked
+    assert server._is_agent_allowed_for_phase("api_designer", phase_allowed) is False
 
 
 @pytest.mark.asyncio
@@ -749,15 +749,15 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     server_config.max_nesting_depth = 3
     server_config.max_sub_agents_per_type = 3
     server_config.default_wait_timeout = 3600
-    server_config.allowed_agents = ["story_designer", "character_designer", "scene_writer"]
+    server_config.allowed_agents = ["plan_designer", "api_designer", "code_writer"]
     server_config.blocked_agents = []
     server_config.hook_config = {}
     server_config.phase_filtering = {
         "enabled": True,
         "phase_variable": "workflow_phase",
         "phase_agents": {
-            "planning": ["story_designer"],
-            "content": ["scene_writer"],
+            "planning": ["plan_designer"],
+            "content": ["code_writer"],
             "_default": []
         }
     }
@@ -771,7 +771,7 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     mock_session_manager = MagicMock()
     mock_session_manager.find_session_owner_async = AsyncMock(return_value="test_user")
     mock_session_manager.load_session = AsyncMock(return_value={
-        "context_vars": {"workflow_phase": "planning", "book_id": "17"}
+        "context_vars": {"workflow_phase": "planning", "project_id": "17"}
     })
     
     # Mock session service with session_manager
@@ -785,8 +785,8 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
         phase = data["phase"]
         assert phase["variable"] == "workflow_phase"
         assert phase["current"] == "planning"
-        assert phase["agents"] == ["story_designer"]
-        assert phase["allowed_agents"] == ["story_designer", "character_designer", "scene_writer"]
+        assert phase["agents"] == ["plan_designer"]
+        assert phase["allowed_agents"] == ["plan_designer", "api_designer", "code_writer"]
 
         # a phase without agents of its own falls back to _default, and an empty _default to every allowed agent
         mock_session_manager.load_session.return_value = {"context_vars": {"workflow_phase": "review"}}
@@ -794,9 +794,9 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
         assert phase["current"] == "review" and phase["agents"] == phase["allowed_agents"]
 
         # a non-empty _default is what such a phase gets
-        server.phase_agents = {"planning": ["story_designer"], "_default": ["scene_writer"]}
+        server.phase_agents = {"planning": ["plan_designer"], "_default": ["code_writer"]}
         phase = (await factory.get_sub_agents(mock_request, session_id="test_session", current_user=VIEWER))["phase"]
-        assert phase["current"] == "review" and phase["agents"] == ["scene_writer"]
+        assert phase["current"] == "review" and phase["agents"] == ["code_writer"]
 
         # without a phase set, _default does not apply: the tool allows every agent then
         mock_session_manager.load_session.return_value = {"context_vars": {}}

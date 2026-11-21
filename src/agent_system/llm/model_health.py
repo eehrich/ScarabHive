@@ -83,7 +83,7 @@ class _Block:
 class ModelHealth:
     """The blocks of one process. Use the module's ``model_health``.
 
-    ponytail: per process. The writer's job workers run their own; a block
+    ponytail: per process. A job queue's workers run their own; a block
     seen by the API does not reach them. Share it (a table in a database both
     open) if cross-process 429s show up in the logs.
     """

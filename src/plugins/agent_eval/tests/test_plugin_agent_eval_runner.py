@@ -929,7 +929,7 @@ def test_a_tasks_tool_bindings_hold_the_run_of_its_agent(tmp_path, data_dir, mon
     from agent_system.llm import registry
     from plugins.agent_eval import child
 
-    bindings = {"zz_store/*": {"namespace": "eval_story"}}
+    bindings = {"zz_store/*": {"namespace": "eval_store"}}
     suite = runner.load_suite(_suite(tmp_path, f"""
         name: s
         agent: file_ops_test_agent

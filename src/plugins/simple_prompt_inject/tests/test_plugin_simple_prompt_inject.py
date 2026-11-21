@@ -224,7 +224,7 @@ class TestInjectPrompt:
         ctx = make_context([
             ChatMessage(role="user", content="analysiere X"),
             ChatMessage(role="assistant", content="fertig"),
-            ChatMessage(role="user", content="v6 fragt: wie weit bist du?",
+            ChatMessage(role="user", content="the coordinator asks: how far along are you?",
                         injected_by="debate_forum_direct"),
         ])
 
@@ -905,7 +905,7 @@ def _task_start(text="Oft gelesen: Akten."):
     return {"prompt_text": text, "injection_position": "task_start", "role": "user"}
 
 
-def _task(content="Schreibe Beat B01"):
+def _task(content="Schreibe Abschnitt A01"):
     return [ChatMessage(role="system", content="sys"), ChatMessage(role="user", content=content)]
 
 
@@ -924,7 +924,7 @@ class TestTaskStart:
         msgs = await _call(registry, _task())
 
         assert [m.role for m in msgs] == ["system", "user"]
-        assert msgs[1].content == "Oft gelesen: Akten.\n\n---\n\nSchreibe Beat B01"
+        assert msgs[1].content == "Oft gelesen: Akten.\n\n---\n\nSchreibe Abschnitt A01"
         assert msgs[1].injected_by is None, "a marked task is skipped by every turn counter"
 
     @pytest.mark.asyncio
@@ -1018,7 +1018,7 @@ class TestTaskStart:
 
     @pytest.mark.asyncio
     async def test_the_text_inside_the_task_is_the_tasks_own(self):
-        """The v4 tasks join their parts with this very separator: a part that
+        """Some pipelines join a task's parts with this very separator: a part that
         reads like the note is not the note, and a new text leaves it."""
         registry = await _registry(("hint", _task_start("{{ note }}")))
         task = "Teil 1\n\n---\n\nAlt.\n\n---\n\nTeil 2"

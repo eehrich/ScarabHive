@@ -382,16 +382,16 @@ test('the count, this chat\'s agent and its session reach the server', async () 
 
 test('the runs left out are counted, with the way to see them', async () => {
   const { chatModule, container } = load([], { answers: { '/api/sessions/listing':
-    listingOf(2, { left_out: 4562, most_left_out: { agent: 'v4_chapter_scorer', count: 1412 } }) } });
+    listingOf(2, { left_out: 4562, most_left_out: { agent: 'batch_section_scorer', count: 1412 } }) } });
   await chatModule.runCommand('sessions', '');
   const note = notesOf(container).join('\n');
-  assert.ok(note.includes('(4562 more on agents not meant for chat, most v4_chapter_scorer 1412 ' +
+  assert.ok(note.includes('(4562 more on agents not meant for chat, most batch_section_scorer 1412 ' +
     '-- /sessions all)'), note);
 });
 
 test('a listing whose every row was left out says so, not "No sessions yet."', async () => {
   const { chatModule, container } = load([], { answers: { '/api/sessions/listing':
-    listingOf(0, { left_out: 3, most_left_out: { agent: 'v4_chapter_scorer', count: 3 } }) } });
+    listingOf(0, { left_out: 3, most_left_out: { agent: 'batch_section_scorer', count: 3 } }) } });
   await chatModule.runCommand('sessions', '');
   const note = notesOf(container).join('\n');
   assert.ok(note.includes('(3 more on agents not meant for chat'), note);

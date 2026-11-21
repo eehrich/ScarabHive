@@ -1062,7 +1062,7 @@ class TestConcurrentWrites:
 
 
 class TestCrossProcessWrites:
-    """agent-api, the writer worker and a developer's CLI share data/okf. The
+    """agent-api, a job worker and a developer's CLI share data/okf. The
     asyncio lock does not reach across processes — only the file lock does, and
     only a real second process can show it."""
 

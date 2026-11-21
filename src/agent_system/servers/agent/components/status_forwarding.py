@@ -290,7 +290,7 @@ class StatusEventForwarder:
         # Above this run: the nearest run streaming now whose id it extends, and the
         # runs above that one. Settled now, not per event, because "above" is a
         # question of when as much as of ids: a stream begun later under an id this
-        # one extends is another run -- the writer dispatches a job again under its
+        # one extends is another run -- a job queue dispatches a job again under its
         # old id while a sub-agent of the old run is still at work, and neither that
         # sub-agent nor anything it starts afterwards is the new run's.
         nearest = max((f for f in _live_forwarders if _is_above(f, request_id)),

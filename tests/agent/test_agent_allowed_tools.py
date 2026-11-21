@@ -35,41 +35,41 @@ class TestToolSchemaBuilderAllowedPatterns:
 
     def test_is_tool_allowed_exact_match(self, schema_builder):
         """Test exact match pattern for allowed tools."""
-        tool_name = "writer_graph_batch_link"
-        server_name = "writer_graph"
-        allowed_patterns = ["writer_graph/writer_graph_batch_link"]
+        tool_name = "doc_graph_batch_link"
+        server_name = "doc_graph"
+        allowed_patterns = ["doc_graph/doc_graph_batch_link"]
 
         assert schema_builder._is_tool_allowed(tool_name, server_name, allowed_patterns)
 
     def test_is_tool_allowed_server_wildcard(self, schema_builder):
         """Test server/* wildcard pattern for allowed tools."""
-        tool_name = "writer_graph_batch_link"
-        server_name = "writer_graph"
-        allowed_patterns = ["writer_graph/*"]
+        tool_name = "doc_graph_batch_link"
+        server_name = "doc_graph"
+        allowed_patterns = ["doc_graph/*"]
 
         assert schema_builder._is_tool_allowed(tool_name, server_name, allowed_patterns)
 
     def test_is_tool_allowed_server_level(self, schema_builder):
         """Test server-level pattern (no slash) for allowed tools."""
-        tool_name = "writer_graph_batch_link"
-        server_name = "writer_graph"
-        allowed_patterns = ["writer_graph"]
+        tool_name = "doc_graph_batch_link"
+        server_name = "doc_graph"
+        allowed_patterns = ["doc_graph"]
 
         assert schema_builder._is_tool_allowed(tool_name, server_name, allowed_patterns)
 
     def test_is_tool_allowed_fnmatch_wildcard(self, schema_builder):
         """Test fnmatch wildcard pattern for allowed tools."""
-        tool_name = "writer_graph_batch_link"
-        server_name = "writer_graph"
-        allowed_patterns = ["writer_graph/*link"]
+        tool_name = "doc_graph_batch_link"
+        server_name = "doc_graph"
+        allowed_patterns = ["doc_graph/*link"]
 
         assert schema_builder._is_tool_allowed(tool_name, server_name, allowed_patterns)
 
     def test_is_tool_not_allowed(self, schema_builder):
         """Test tool that doesn't match any allowed pattern."""
-        tool_name = "writer_graph_batch_link"
-        server_name = "writer_graph"
-        allowed_patterns = ["writer_content/*"]
+        tool_name = "doc_graph_batch_link"
+        server_name = "doc_graph"
+        allowed_patterns = ["doc_content/*"]
 
         assert not schema_builder._is_tool_allowed(tool_name, server_name, allowed_patterns)
 
@@ -77,18 +77,18 @@ class TestToolSchemaBuilderAllowedPatterns:
         """Test applying allowed patterns to filter tool schemas."""
         # Create test data
         tools_schema = [
-            {"type": "function", "function": {"name": "writer_graph_batch_link"}},
-            {"type": "function", "function": {"name": "writer_graph_validate"}},
-            {"type": "function", "function": {"name": "writer_content_book"}},
+            {"type": "function", "function": {"name": "doc_graph_batch_link"}},
+            {"type": "function", "function": {"name": "doc_graph_validate"}},
+            {"type": "function", "function": {"name": "doc_content_report"}},
         ]
         tool_name_mapping = {
-            "writer_graph_batch_link": "writer_graph",
-            "writer_graph_validate": "writer_graph",
-            "writer_content_book": "writer_content",
+            "doc_graph_batch_link": "doc_graph",
+            "doc_graph_validate": "doc_graph",
+            "doc_content_report": "doc_content",
         }
-        usable_tools = ["writer_graph", "writer_content"]
-        display_tools = ["writer_graph_batch_link", "writer_graph_validate", "writer_content_book"]
-        allowed_patterns = ["writer_graph/writer_graph_batch_link", "writer_content/*"]
+        usable_tools = ["doc_graph", "doc_content"]
+        display_tools = ["doc_graph_batch_link", "doc_graph_validate", "doc_content_report"]
+        allowed_patterns = ["doc_graph/doc_graph_batch_link", "doc_content/*"]
 
         # Apply allowed patterns
         filtered_schema, filtered_mapping, filtered_usable, filtered_display = (
@@ -99,33 +99,33 @@ class TestToolSchemaBuilderAllowedPatterns:
 
         # Verify only allowed tools remain
         assert len(filtered_schema) == 2
-        assert filtered_schema[0]["function"]["name"] == "writer_graph_batch_link"
-        assert filtered_schema[1]["function"]["name"] == "writer_content_book"
+        assert filtered_schema[0]["function"]["name"] == "doc_graph_batch_link"
+        assert filtered_schema[1]["function"]["name"] == "doc_content_report"
 
-        assert "writer_graph_batch_link" in filtered_mapping
-        assert "writer_content_book" in filtered_mapping
-        assert "writer_graph_validate" not in filtered_mapping
+        assert "doc_graph_batch_link" in filtered_mapping
+        assert "doc_content_report" in filtered_mapping
+        assert "doc_graph_validate" not in filtered_mapping
 
-        assert "writer_graph_batch_link" in filtered_display
-        assert "writer_content_book" in filtered_display
-        assert "writer_graph_validate" not in filtered_display
+        assert "doc_graph_batch_link" in filtered_display
+        assert "doc_content_report" in filtered_display
+        assert "doc_graph_validate" not in filtered_display
 
     def test_apply_allowed_patterns_server_wildcard(self, schema_builder):
         """Test applying server/* pattern to allow all tools from a server."""
         # Create test data
         tools_schema = [
-            {"type": "function", "function": {"name": "writer_graph_batch_link"}},
-            {"type": "function", "function": {"name": "writer_graph_validate"}},
-            {"type": "function", "function": {"name": "writer_content_book"}},
+            {"type": "function", "function": {"name": "doc_graph_batch_link"}},
+            {"type": "function", "function": {"name": "doc_graph_validate"}},
+            {"type": "function", "function": {"name": "doc_content_report"}},
         ]
         tool_name_mapping = {
-            "writer_graph_batch_link": "writer_graph",
-            "writer_graph_validate": "writer_graph",
-            "writer_content_book": "writer_content",
+            "doc_graph_batch_link": "doc_graph",
+            "doc_graph_validate": "doc_graph",
+            "doc_content_report": "doc_content",
         }
-        usable_tools = ["writer_graph", "writer_content"]
-        display_tools = ["writer_graph_batch_link", "writer_graph_validate", "writer_content_book"]
-        allowed_patterns = ["writer_graph/*"]
+        usable_tools = ["doc_graph", "doc_content"]
+        display_tools = ["doc_graph_batch_link", "doc_graph_validate", "doc_content_report"]
+        allowed_patterns = ["doc_graph/*"]
 
         # Apply allowed patterns
         filtered_schema, filtered_mapping, filtered_usable, filtered_display = (
@@ -134,14 +134,14 @@ class TestToolSchemaBuilderAllowedPatterns:
             )
         )
 
-        # Verify only writer_graph tools remain
+        # Verify only doc_graph tools remain
         assert len(filtered_schema) == 2
-        assert filtered_schema[0]["function"]["name"] == "writer_graph_batch_link"
-        assert filtered_schema[1]["function"]["name"] == "writer_graph_validate"
+        assert filtered_schema[0]["function"]["name"] == "doc_graph_batch_link"
+        assert filtered_schema[1]["function"]["name"] == "doc_graph_validate"
 
-        assert "writer_graph_batch_link" in filtered_mapping
-        assert "writer_graph_validate" in filtered_mapping
-        assert "writer_content_book" not in filtered_mapping
+        assert "doc_graph_batch_link" in filtered_mapping
+        assert "doc_graph_validate" in filtered_mapping
+        assert "doc_content_report" not in filtered_mapping
 
 
 def test_build_schemas_with_allowed_patterns():
@@ -165,26 +165,26 @@ def test_build_schemas_with_allowed_patterns():
     
     # Create test data simulating what would be built from servers
     tools_schema = [
-        {"type": "function", "function": {"name": "writer_graph_batch_link", "description": "test"}},
-        {"type": "function", "function": {"name": "writer_graph_validate", "description": "test"}},
+        {"type": "function", "function": {"name": "doc_graph_batch_link", "description": "test"}},
+        {"type": "function", "function": {"name": "doc_graph_validate", "description": "test"}},
     ]
     tool_name_mapping = {
-        "writer_graph_batch_link": "writer_graph",
-        "writer_graph_validate": "writer_graph",
+        "doc_graph_batch_link": "doc_graph",
+        "doc_graph_validate": "doc_graph",
     }
-    usable_tools = ["writer_graph"]
-    display_tools = ["writer_graph_batch_link", "writer_graph_validate"]
+    usable_tools = ["doc_graph"]
+    display_tools = ["doc_graph_batch_link", "doc_graph_validate"]
     
     # Apply allowed patterns
     filtered_schema, filtered_mapping, filtered_usable, filtered_display = schema_builder._apply_allowed_patterns(
         tools_schema, tool_name_mapping, usable_tools, display_tools,
-        allowed_patterns=["writer_graph/writer_graph_batch_link"]
+        allowed_patterns=["doc_graph/doc_graph_batch_link"]
     )
     
     # Verify only allowed tool remains
     assert len(filtered_schema) == 1
-    assert filtered_schema[0]["function"]["name"] == "writer_graph_batch_link"
-    assert "writer_graph_batch_link" in filtered_mapping
-    assert "writer_graph_validate" not in filtered_mapping
-    assert "writer_graph_batch_link" in filtered_display
-    assert "writer_graph_validate" not in filtered_display
+    assert filtered_schema[0]["function"]["name"] == "doc_graph_batch_link"
+    assert "doc_graph_batch_link" in filtered_mapping
+    assert "doc_graph_validate" not in filtered_mapping
+    assert "doc_graph_batch_link" in filtered_display
+    assert "doc_graph_validate" not in filtered_display

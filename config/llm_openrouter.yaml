@@ -171,7 +171,7 @@ llm_system:
       max_tokens: 0
 
     # Non-thinking twin for mechanical text-in/text-out tasks (fallback of
-    # the writer nothink role). Same pattern as
+    # a nothink role). Same pattern as
     # openrouter-deepseek-flash-nothinking: reasoning off, capabilities off.
     openrouter-gpt-luna-nothinking:
       extends: openrouter-gpt-luna
@@ -302,8 +302,8 @@ llm_system:
         - deepinfra
         allow_fallbacks: false
 
-    # Newest DeepSeek Flash (alias). Used by the `think` profile and the
-    # writer thinking profile.
+    # Newest DeepSeek Flash (alias). Used by the `think` profile and
+    # other thinking profiles.
     # fp8 only and a fixed provider order, cheapest first: without `order`
     # OpenRouter spreads the calls over every fp8 endpoint, including ones at
     # 3-8x the price, and provider affinity then pins a run to whichever of

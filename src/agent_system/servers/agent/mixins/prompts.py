@@ -168,7 +168,7 @@ class PromptsMixin:
         marker on the session tracker, rebuilt as ``[leading systems from
         pre-hook] + compacted``. That reconstruction is wrong whenever a hook
         injects a system block — it is built from the messages BEFORE the
-        hooks ran, so it drops them; that is how the v5b synopsis moderator
+        hooks ran, so it drops them; that is how a moderator agent
         once looped 100× on ``context_engineer.recall()``. It was also
         unreachable: whoever sets that marker inside a hook returns a new list
         in the same round, and the tool path clears it in its own step.

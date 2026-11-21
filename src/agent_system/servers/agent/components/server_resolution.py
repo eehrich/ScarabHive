@@ -1,6 +1,6 @@
 """Shared server/tool-name resolution building blocks.
 
-Flat tool names (``v6_json_manage_json``) do not carry a separator between
+Flat tool names (``notes_json_manage_json``) do not carry a separator between
 server name and tool name, so resolving them requires a longest-prefix search
 over ``'_'``-joined segments. That loop — and the "local registry, then plugin
 registry" cascade — used to be copied across

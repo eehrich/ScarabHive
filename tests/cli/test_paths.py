@@ -4,7 +4,7 @@ Started outside the repository, agent-cli found no config at all: the path is
 relative, so `config/config.yaml` was looked for next to the person. Worse than
 the error was what it did NOT report -- the plugin configs name their databases
 as repository-relative strings, so a run in a foreign directory created
-`data/writer/books.db` there, empty, and every query against it read zero rows
+a plugin's database there, empty, and every query against it read zero rows
 without failing.
 """
 from __future__ import annotations

@@ -433,8 +433,8 @@ class LLMSystemConfig(BaseModel):
         # carrying its own name, because on 2026-09-05 one model removed from llm.yaml
         # produced 50 warnings nobody could tell apart (see
         # test_a_swallowed_llm_error_names_the_agent). Refusing the config instead
-        # would take the whole API down over one typo in one of 83 profiles, mid book
-        # run — that is a trade to be decided, not to be slipped in here.
+        # would take the whole API down over one typo in one of 83 profiles, mid
+        # pipeline run — that is a trade to be decided, not to be slipped in here.
         # Both checks walk the same two sections, so they walk them together.
         # A fifth non-chat seam is one row here rather than two more blocks —
         # which is how the decisions seam got a provider check and no profile

@@ -55,9 +55,9 @@ TESTS = Path(__file__).resolve().parent
 NAME = "sam_writer"
 USER = "ada"
 MARKUP = '<img src="x" onerror="window.parent.__xss = 1">'
-CONFIG = dict(max_sub_agents_per_type=10, info_max_limit=15, allowed_agents=["story_designer", "research_agent", "writer_agent"],
+CONFIG = dict(max_sub_agents_per_type=10, info_max_limit=15, allowed_agents=["plan_designer", "research_agent", "writer_agent"],
               phase_filtering={"enabled": True, "phase_variable": "workflow_phase",
-                               "phase_agents": {"planning": ["story_designer"], "_default": []}})
+                               "phase_agents": {"planning": ["plan_designer"], "_default": []}})
 
 
 def registry() -> ToolServerRegistry:

@@ -336,7 +336,7 @@ def _fill_params(
       user typed. This is the original source.
     * ``{{ var }}`` — a **context variable** of the session, the same value the
       prompt template renders. Needed for state that never appears in the user
-      text: v6 keeps its store namespace in ``json_namespace``, set once at
+      text: a coordinator keeps its store namespace in ``json_namespace``, set once at
       bootstrap and inherited by every sub-agent, whose task text is only
       "Aufgabe: World". Without this the rule could not name the store.
 
@@ -346,9 +346,9 @@ def _fill_params(
     * ``{{name}}`` must not be read as a group ``{name}`` in literal braces,
       so the context alternative comes first in the pattern.
     * A resolved value must never be scanned again. Two sequential passes did
-      exactly that, and the v6 coordinator puts the entire user task into
-      ``brief`` — a brief containing ``{sid}`` was then read as a group
-      reference and killed the rule with a warning naming a group that appears
+      exactly that: a coordinator puts the entire user task into ``brief``,
+      and a brief containing ``{sid}`` was then read as a group reference and
+      killed the rule with a warning naming a group that appears
       in no YAML. Worse, where a group happened to share the name, the context
       value was silently rewritten with user text.
 
@@ -397,7 +397,7 @@ def _fill_params(
             return _json_native(value)
 
         # ONE pass over both syntaxes. Two passes would re-scan the value a
-        # context var resolved to — and the v6 coordinator puts the whole user
+        # context var resolved to — and a coordinator may put the whole user
         # task into ``brief``, so a brief containing braces would be read as a
         # group reference and kill the rule with a warning naming a group that
         # appears in no YAML.

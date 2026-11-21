@@ -144,7 +144,7 @@ def _one_writer_per_path(written=lambda path, *rest: (path,)):
 
     The tool calls of one step run side by side (one task each): two replace_string_in_file on one
     file both read it, each wrote the file whole with its own edit, and both said success -- in a
-    one-shot run 1 of 5 edits stayed (measured: of 3 parallel edits one survives, 20 runs of
+    one-shot drafting run 1 of 5 edits stayed (measured: of 3 parallel edits one survives, 20 runs of
     20). A move or rename holds its target too: a create of that name checked "not there", the move
     landed, and the create's temp replaced it. Module-wide, not per instance: instances may share a
     tree. Several locks are taken in one order, so two calls never wait for each other's.

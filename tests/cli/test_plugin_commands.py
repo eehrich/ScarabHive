@@ -190,7 +190,7 @@ class TestCollection:
     @pytest.mark.parametrize("argument", ["query", "status", "user_id", "path"])
     def test_an_ordinary_argument_still_works(self, argument):
         """Counter-check with the near misses: `status` and `user_id` are read
-        as PLAIN tool parameters (todo, lessons_learned, writer_audio), not as
+        as PLAIN tool parameters (todo, lessons_learned, an audio plugin), not as
         runtime aliases. A denylist that swallows them blocks `/todo open`."""
         agent = _agent(commands=({**COMPACT, "argument": argument},), allowed=("*",))
         assert collect_plugin_commands(agent)[0].argument == argument

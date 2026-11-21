@@ -32,16 +32,16 @@ from agent_system.servers.agent.components.tool_execution import (
 
 MATCH_MATRIX = [
     # (tool_name, server_name, patterns, expected)
-    ("v6_json_manage_json", "v6_json", ["v6_json/*"], True),
-    ("v6_json_manage_json", "v6_json", ["v6_json"], True),
-    ("v6_json_manage_json", "v6_json", ["v6_json/v6_json_manage_json"], True),
-    ("v6_json_manage_json", "v6_json", ["other/*"], False),
-    ("v6_json_manage_json", "v6_json", ["v6_json_manage_json"], False),  # no slash = server-level
+    ("app_json_manage_json", "app_json", ["app_json/*"], True),
+    ("app_json_manage_json", "app_json", ["app_json"], True),
+    ("app_json_manage_json", "app_json", ["app_json/app_json_manage_json"], True),
+    ("app_json_manage_json", "app_json", ["other/*"], False),
+    ("app_json_manage_json", "app_json", ["app_json_manage_json"], False),  # no slash = server-level
     ("debate_forum_post_message", "debate_forum", ["debate_forum/*"], True),
-    ("writer_graph_batch_link", "writer_graph", ["*batch*"], True),
-    ("writer_graph_batch_link", "writer_graph", ["writer_graph/writer_graph_*"], True),
+    ("doc_graph_batch_link", "doc_graph", ["*batch*"], True),
+    ("doc_graph_batch_link", "doc_graph", ["doc_graph/doc_graph_*"], True),
     ("some_tool", "some", [], False),
-    ("v6_workflow_set_context", "v6_workflow", ["v6_workflow/v6_workflow_set_context"], True),
+    ("app_workflow_set_context", "app_workflow", ["app_workflow/app_workflow_set_context"], True),
 ]
 
 
@@ -132,39 +132,39 @@ class TestDispatchToolCall:
     @pytest.mark.asyncio
     async def test_allowed_tool_dispatches(self):
         srv = FakeServer(result={"status": "ok", "doc": "x"})
-        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        agent = make_agent({"app_json": srv}, allowed=["app_json/*"])
         result = await agent.dispatch_tool_call(
-            "v6_json_manage_json", {"operation": "list"}, session_id="s1")
+            "app_json_manage_json", {"operation": "list"}, session_id="s1")
         assert result == {"status": "ok", "doc": "x"}
         kind, tool, params = srv.calls[0]
         assert kind == "call_with_status"          # status wrapper preferred
-        assert tool == "v6_json_manage_json"       # flat name passed through
+        assert tool == "app_json_manage_json"       # flat name passed through
         assert params["_session_id"] == "s1"       # runtime injection
         assert params["_agent"] is agent
         assert params["_agent_name"] == "test_agent"
 
     @pytest.mark.asyncio
     async def test_not_allowed_tool_rejected(self):
-        agent = make_agent({"v6_json": FakeServer()}, allowed=["other/*"])
+        agent = make_agent({"app_json": FakeServer()}, allowed=["other/*"])
         with pytest.raises(ToolDispatchError, match="not in this agent's allowed"):
-            await agent.dispatch_tool_call("v6_json_manage_json", {})
+            await agent.dispatch_tool_call("app_json_manage_json", {})
 
     @pytest.mark.asyncio
     async def test_deny_all_when_no_allowlist(self):
         # Schema build shows zero tools without an allowlist; dispatch must too.
-        agent = make_agent({"v6_json": FakeServer()}, allowed=[])
+        agent = make_agent({"app_json": FakeServer()}, allowed=[])
         with pytest.raises(ToolDispatchError, match="not in this agent's allowed"):
-            await agent.dispatch_tool_call("v6_json_manage_json", {})
+            await agent.dispatch_tool_call("app_json_manage_json", {})
 
     @pytest.mark.asyncio
     async def test_blocked_tool_rejected_even_if_allowed(self):
         # The v1-design bug class: allowed by pattern but agent-level blocked.
         agent = make_agent(
-            {"v6_json": FakeServer()},
-            allowed=["v6_json/*"],
-            blocked=["v6_json/v6_json_manage_json"])
+            {"app_json": FakeServer()},
+            allowed=["app_json/*"],
+            blocked=["app_json/app_json_manage_json"])
         with pytest.raises(ToolDispatchError, match="blocked"):
-            await agent.dispatch_tool_call("v6_json_manage_json", {})
+            await agent.dispatch_tool_call("app_json_manage_json", {})
 
     @pytest.mark.asyncio
     async def test_unknown_tool_rejected(self):
@@ -184,8 +184,8 @@ class TestDispatchToolCall:
         short = FakeServer()
         long_ = FakeServer()
         agent = make_agent(
-            {"writer": short, "writer_graph": long_}, allowed=["writer_graph/*"])
-        await agent.dispatch_tool_call("writer_graph_batch_link", {})
+            {"doc": short, "doc_graph": long_}, allowed=["doc_graph/*"])
+        await agent.dispatch_tool_call("doc_graph_batch_link", {})
         assert long_.calls and not short.calls
 
     @pytest.mark.asyncio
@@ -200,9 +200,9 @@ class TestDispatchToolCall:
     async def test_caller_cannot_forge_runtime_params(self):
         # Script-supplied _session_id/_agent must be overwritten by injection.
         srv = FakeServer()
-        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        agent = make_agent({"app_json": srv}, allowed=["app_json/*"])
         await agent.dispatch_tool_call(
-            "v6_json_manage_json",
+            "app_json_manage_json",
             {"_session_id": "forged", "_agent": "forged", "operation": "list"},
             session_id="real")
         _, _, params = srv.calls[0]
@@ -212,9 +212,9 @@ class TestDispatchToolCall:
     @pytest.mark.asyncio
     async def test_request_id_forwarded(self):
         srv = FakeServer()
-        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        agent = make_agent({"app_json": srv}, allowed=["app_json/*"])
         await agent.dispatch_tool_call(
-            "v6_json_manage_json", {}, request_id="rid_ts01")
+            "app_json_manage_json", {}, request_id="rid_ts01")
         _, _, params = srv.calls[0]
         assert params["_request_id"] == "rid_ts01"
         assert params["request_id"] == "rid_ts01"
@@ -225,9 +225,9 @@ class TestDispatchToolCall:
         # call_with_status routes status and cancellation by params["request_id"];
         # a script-supplied one must neither survive nor win over the real id.
         srv = FakeServer()
-        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        agent = make_agent({"app_json": srv}, allowed=["app_json/*"])
         await agent.dispatch_tool_call(
-            "v6_json_manage_json",
+            "app_json_manage_json",
             {"operation": "list", "request_id": "forged", "requestId": "forged"},
             request_id=request_id)
         _, _, params = srv.calls[0]
@@ -242,9 +242,9 @@ class TestDispatchToolCall:
         # impersonate another agent (defeating json_store write protection).
         # dispatch_tool_call must strip caller-supplied _* keys first.
         srv = FakeServer()
-        agent = make_agent({"v6_json": srv}, allowed=["v6_json/*"])
+        agent = make_agent({"app_json": srv}, allowed=["app_json/*"])
         await agent.dispatch_tool_call(
-            "v6_json_manage_json",
+            "app_json_manage_json",
             {"operation": "merge", "_session_id": "victim", "_agent_name": "boss"},
             session_id=None)
         _, _, params = srv.calls[0]

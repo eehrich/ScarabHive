@@ -256,7 +256,7 @@ def test_every_allowed_sub_agent_exists():
     allowlist is not validated at load time, so a deleted or renamed agent
     stays in the list and only fails when something tries to spawn it —
     which, for a rarely used agent, may be never. Found this way:
-    `v4_beat_writer_v2`, deleted 2026-08-23 but still listed, and
+    an agent deleted 2026-08-23 but still listed, and
     `parallel_thinking_agent`, which never existed.
     """
     from agent_system.config.settings import load_settings
@@ -411,7 +411,7 @@ class TestStaleLlmParamKeysAreDroppedLoudly:
         The child sets no chain and keys its params to a profile of the chain
         it inherits. The load validated it against the model default instead,
         dropped the key as stale, and the merge afterwards had nothing to keep:
-        v4_beat_scorer's output cap was gone from get_tool_server_config, with
+        a scorer agent's output cap was gone from get_tool_server_config, with
         a warning naming the wrong chain. Here `b` is a profile of the parent's
         chain too, so the child's third key is valid as well.
         """

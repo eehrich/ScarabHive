@@ -101,7 +101,7 @@ class JsonStoreServer(SchemaBasedToolServer):
         # session (see ``_ns``). For a store whose ONLY purpose is a shared
         # workspace that default is wrong and invisible: the write reports
         # success and returns a doc id that nobody — not even its author, who
-        # reads WITH the namespace — can ever resolve. Observed on a v6 beat
+        # reads WITH the namespace — can ever resolve. Observed on a writing
         # panel: one writer omitted the namespace five times in a row, each
         # ~11 KB delta landing in its private session, five failed read-backs,
         # ~3 minutes and five LLM turns burnt before it happened to switch.
@@ -505,7 +505,7 @@ class JsonStoreServer(SchemaBasedToolServer):
         new, shared, or owned by the caller). Reads never pass through here.
 
         Ownership is per SESSION, deliberately not per agent-role: a panel runs
-        several sub-agents of the SAME type (e.g. three v6_synopsis_writer) in
+        several sub-agents of the SAME type (e.g. three draft writers) in
         one namespace, and role-based takeover would let them overwrite each
         other's documents — exactly the confused-writer clobbering this guards
         against.

@@ -353,14 +353,14 @@ class TestCoreMemoryEviction:
     async def test_a_minor_fact_never_pushes_out_a_major_one(self, tmp_path):
         memory = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=500)
         assert await memory.add_fact("the deploy target is the api1 host", importance=0.95)
-        assert await memory.add_fact("the database is books.db on disk", importance=0.95)
+        assert await memory.add_fact("the database is records.db on disk", importance=0.95)
         memory.max_tokens = memory._current_tokens  # full
 
         added = await memory.add_fact("the user likes green buttons a lot", importance=0.05)
 
         contents = [f.content for f in memory.facts]
         assert "the deploy target is the api1 host" in contents
-        assert "the database is books.db on disk" in contents
+        assert "the database is records.db on disk" in contents
         assert added is False
 
     @pytest.mark.asyncio
@@ -375,7 +375,7 @@ class TestCoreMemoryEviction:
     async def test_a_more_important_fact_does_make_room(self, tmp_path):
         memory = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=500)
         await memory.add_fact("the user likes green buttons a lot", importance=0.1)
-        await memory.add_fact("the database is books.db on disk", importance=0.5)
+        await memory.add_fact("the database is records.db on disk", importance=0.5)
         memory.max_tokens = memory._current_tokens  # full
 
         assert await memory.add_fact("the deploy target is the api1 host", importance=0.9)
@@ -398,7 +398,7 @@ class TestCoreMemoryEviction:
         for content, importance in [("the deploy target is the api1 host", 0.9),
                                     ("old minor fact about the colours", 0.2),
                                     ("new minor fact about the colours", 0.2),
-                                    ("the database is books.db on disk", 0.9)]:
+                                    ("the database is records.db on disk", 0.9)]:
             await memory.add_fact(content, importance=importance)
         budget = memory._current_tokens - memory._fact_tokens(memory.facts[1])
 
@@ -406,7 +406,7 @@ class TestCoreMemoryEviction:
 
         assert [f.content for f in reloaded.facts] == [
             "the deploy target is the api1 host", "new minor fact about the colours",
-            "the database is books.db on disk"]
+            "the database is records.db on disk"]
         assert reloaded._current_tokens <= budget
         again = CoreMemory(storage_path=tmp_path / "m.json", max_tokens=500)
         assert len(again.facts) == 3, "the trim was not saved"

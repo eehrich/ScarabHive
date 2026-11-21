@@ -127,10 +127,10 @@ async def test_an_id_is_handed_back_as_it_came(api, account, headers):
 async def test_a_name_nobody_gave_is_a_404_naming_it(api, headers):
     app, _ = api
 
-    response = await _get(app, headers, "/api/sessions/resolve?ref=Amiga")
+    response = await _get(app, headers, "/api/sessions/resolve?ref=Zeppelin")
 
     assert response.status_code == 404, response.text
-    assert "Amiga" in response.json()["detail"]
+    assert "Zeppelin" in response.json()["detail"]
 
 
 async def test_a_title_several_sessions_share_names_the_others(api, account, headers):
@@ -145,27 +145,27 @@ async def test_a_title_several_sessions_share_names_the_others(api, account, hea
 
 
 async def _chats_and_runs(manager, user):
-    for day, (sid, agent) in enumerate([("chat1", "coder"), ("run1", "v4_scorer"),
-                                        ("tool1", "sam_tool"), ("run2", "v4_scorer"),
+    for day, (sid, agent) in enumerate([("chat1", "coder"), ("run1", "batch_scorer"),
+                                        ("tool1", "sam_tool"), ("run2", "batch_scorer"),
                                         ("chat2", "coder")], start=10):
         await _record(manager, user, sid, f"2026-09-{day}T10:00:00+00:00", agent=agent)
 
 
 async def test_the_listing_leaves_the_pipeline_runs_out_and_counts_them(api, account, headers):
     app, manager = api
-    app.state.runtime = _runtime(coder="ui", v4_scorer="private", sam_tool="tool")
+    app.state.runtime = _runtime(coder="ui", batch_scorer="private", sam_tool="tool")
     await _chats_and_runs(manager, account[1])
 
     body = (await _get(app, headers, "/api/sessions/listing")).json()
 
     assert [s["session_id"] for s in body["sessions"]] == ["chat2", "chat1"], body
     assert body["total"] == 2 and body["left_out"] == 3
-    assert body["most_left_out"] == {"agent": "v4_scorer", "count": 2}
+    assert body["most_left_out"] == {"agent": "batch_scorer", "count": 2}
 
 
 async def test_this_chats_agent_and_session_stay_whatever_their_agent(api, account, headers):
     app, manager = api
-    app.state.runtime = _runtime(coder="ui", v4_scorer="private", sam_tool="tool")
+    app.state.runtime = _runtime(coder="ui", batch_scorer="private", sam_tool="tool")
     await _chats_and_runs(manager, account[1])
 
     body = (await _get(app, headers,
@@ -177,7 +177,7 @@ async def test_this_chats_agent_and_session_stay_whatever_their_agent(api, accou
 
 async def test_all_lists_every_one_and_a_count_cuts(api, account, headers):
     app, manager = api
-    app.state.runtime = _runtime(coder="ui", v4_scorer="private", sam_tool="tool")
+    app.state.runtime = _runtime(coder="ui", batch_scorer="private", sam_tool="tool")
     await _chats_and_runs(manager, account[1])
 
     everything = (await _get(app, headers, "/api/sessions/listing?count=ALL")).json()

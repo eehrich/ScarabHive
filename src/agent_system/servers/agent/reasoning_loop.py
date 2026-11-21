@@ -36,7 +36,7 @@ the minutes.
 
 The gap between 0.19 and the threshold is smaller than "zero false alarms"
 suggests. Synthetic probes at this geometry: a plan template with one varying
-number scores 0.39, a chapter template with a varying title 0.51, and a long
+number scores 0.39, a section template with a varying title 0.51, and a long
 fixed preamble followed by a short varying tail 0.59 — above the line. No real
 run came near that, but the threshold does not tolerate being lowered towards
 0.30, and a 60-character piece reacts to templates whose variable part is
@@ -75,7 +75,7 @@ threshold 0.5:
 THE EIGHT IS THE NUMBER THAT MATTERS, and it is not the 4.914 above: of 388
 healthy runs offered to the long window, 380 were never judged at all because
 it never filled. Its false-alarm side therefore rests on eight runs, and no
-threshold should be derived from it. All eight are writer scorers. This
+threshold should be derived from it. All eight are scorer agents of one pipeline. This
 detector runs on every streaming agent, but outside those four only five calls
 in 25 days thought long enough to fill the window at all (~51.500 reasoning
 tokens at a measured 3,4..3,9 characters per token) — and none of the five

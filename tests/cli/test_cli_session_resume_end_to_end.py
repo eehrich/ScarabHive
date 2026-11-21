@@ -662,7 +662,7 @@ class TestListingLeavesPipelineRunsOut:
             for i in range(3):
                 loop.run_until_complete(cli_env.manager.create_session(
                     user_id="cli_user", session_id=f"bench{i}",
-                    agent_name="v4_scorer_bench_42", llm_profile=STORED_PROFILE))
+                    agent_name="batch_scorer_bench_42", llm_profile=STORED_PROFILE))
         finally:
             loop.close()
         cli_env.manager.clear_cache()
@@ -692,7 +692,7 @@ class TestListingLeavesPipelineRunsOut:
         assert "Sessions for 'cli_user' (1 of 1):" in out, out
         assert " s1 " in out and "bench" not in out.split("(3 more")[0], out
         # dropped rows are said, with the way to see them -- or it reads as "that is all"
-        assert "(3 more on agents not meant for chat, most v4_scorer_bench_42 3" in out
+        assert "(3 more on agents not meant for chat, most batch_scorer_bench_42 3" in out
         assert "--list-sessions all" in out
 
     def test_the_session_being_continued_stays_whatever_its_agent(

@@ -180,8 +180,8 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
     A soft order does not hold. ``allow_fallbacks: false`` only keeps out
     backends OUTSIDE the list, so a list of two still rotates on a refusal
     (measured: 34 of 38 backend changes inside a run), and an entry without
-    any ``order`` is load-balanced freely by the gateway: one v6 coder call on
-    22.09.2026 went to a backend whose cache was cold and cost four times its
+    any ``order`` is load-balanced freely by the gateway: one pipeline call
+    went to a backend whose cache was cold and cost four times its
     neighbours. Hence one entry and no fallbacks -- a refusal reaches us
     instead of being routed around, and ``release_provider_pin`` then sends
     the retry out as the model entry is configured.

@@ -30,7 +30,7 @@ async def _create(sm, sid, agent_name, parent_id=None, context_vars=None):
 
 @pytest.mark.asyncio
 async def test_descendants_empty_when_no_children(sm):
-    await _create(sm, "root", "linear_book")
+    await _create(sm, "root", "report_pipeline")
     tree = await _build_descendants_context_vars(sm, tool_registry=None, user_id="user1", root_session_id="root")
     assert tree == []
 
@@ -38,12 +38,12 @@ async def test_descendants_empty_when_no_children(sm):
 @pytest.mark.asyncio
 async def test_descendants_two_levels(sm):
     """Hierarchical walk: root → child → grandchild, with vars at each level."""
-    await _create(sm, "root", "linear_book", context_vars={"book_id": "1"})
-    await _create(sm, "child_a", "v5b_story_designer", parent_id="root",
-                  context_vars={"phase": "synopsis", "debate_channel_id": "ch1"})
-    await _create(sm, "child_b", "v4_request_analyzer", parent_id="root", context_vars={})
-    await _create(sm, "grand_a", "v5b_synopsis_writer", parent_id="child_a",
-                  context_vars={"phase": "synopsis", "Stil_Autor": "Hesse"})
+    await _create(sm, "root", "report_pipeline", context_vars={"record_id": "1"})
+    await _create(sm, "child_a", "outline_designer", parent_id="root",
+                  context_vars={"phase": "outline", "debate_channel_id": "ch1"})
+    await _create(sm, "child_b", "request_analyzer", parent_id="root", context_vars={})
+    await _create(sm, "grand_a", "outline_writer", parent_id="child_a",
+                  context_vars={"phase": "outline", "style": "concise"})
 
     tree = await _build_descendants_context_vars(sm, tool_registry=None, user_id="user1", root_session_id="root")
 
@@ -51,21 +51,21 @@ async def test_descendants_two_levels(sm):
     by_sid = {n["session_id"]: n for n in tree}
     assert "child_a" in by_sid
     assert "child_b" in by_sid
-    assert by_sid["child_a"]["context_vars"] == {"phase": "synopsis", "debate_channel_id": "ch1"}
+    assert by_sid["child_a"]["context_vars"] == {"phase": "outline", "debate_channel_id": "ch1"}
     assert by_sid["child_b"]["context_vars"] == {}
 
     grand = by_sid["child_a"]["children"]
     assert len(grand) == 1
     assert grand[0]["session_id"] == "grand_a"
-    assert grand[0]["context_vars"]["Stil_Autor"] == "Hesse"
+    assert grand[0]["context_vars"]["style"] == "concise"
 
 
 @pytest.mark.asyncio
 async def test_descendants_skip_unrelated_sessions(sm):
     """Sessions whose parent_session is None or points elsewhere must not leak in."""
-    await _create(sm, "root", "linear_book")
+    await _create(sm, "root", "report_pipeline")
     await _create(sm, "other_root", "chat_agent")  # top-level, no parent
-    await _create(sm, "child_x", "v5b_story_designer", parent_id="other_root",
+    await _create(sm, "child_x", "outline_designer", parent_id="other_root",
                   context_vars={"x": "y"})
 
     tree = await _build_descendants_context_vars(sm, tool_registry=None, user_id="user1", root_session_id="root")

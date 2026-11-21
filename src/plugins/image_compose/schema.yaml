@@ -171,8 +171,8 @@ config:
       default: []
       description: >
         Write sandbox for the composite, its layer directory and the spec
-        file. Empty = unrestricted (the default; the writer's cover pipeline
-        relies on it). Non-empty = every written path must resolve inside one
+        file. Empty = unrestricted (the default; callers that pick their own
+        paths rely on it). Non-empty = every written path must resolve inside one
         of these directories; anything else is refused before it is created.
         Give an instance that a sub-agent drives its own directory here.
     overlap_check_enabled:

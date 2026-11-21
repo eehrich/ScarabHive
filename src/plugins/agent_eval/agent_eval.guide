@@ -328,9 +328,9 @@ decides what it changes.
 @{h2}A task's tool_bindings
 
 @{code}
-  - id: beat-phase-3
+  - id: review-phase-3
     input: "..."
-    tool_bindings: {"story_json/*": {namespace: eval_story}}
+    tool_bindings: {"shared_json/*": {namespace: eval_store}}
 @{body}
 
 In production an agent often runs inside its caller's tool bindings: the

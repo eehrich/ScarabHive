@@ -16,7 +16,7 @@ plugins:
         system_template: "./debate_panel_participant_prompt.md"
         tools:
           allowed:
-            # active for all writer agents, derived agents needs to add own tools it with +
+            # active for all panel agents, derived agents needs to add own tools it with +
             - "context_engineer/*"
             - "tavily_search/*"
             #- "sequential_thinking/*"

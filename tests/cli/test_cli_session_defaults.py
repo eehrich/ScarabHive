@@ -74,7 +74,7 @@ class TestUsableSessionDefaults:
             "known", "p_known")
 
     def test_an_agent_the_config_no_longer_defines_is_dropped(self):
-        assert usable_session_defaults("v5b_story_designer", "p_known",
+        assert usable_session_defaults("retired_designer", "p_known",
                                        self._config()) == (None, "p_known")
 
     def test_a_tool_server_is_not_an_agent(self):
@@ -107,7 +107,7 @@ class TestStoredSessionSettings:
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(
-                self._make(manager, "s1", "v6_synopsis_writer", "llm_writer_creative"))
+                self._make(manager, "s1", "draft_writer", "llm_creative"))
         finally:
             loop.close()
 
@@ -116,7 +116,7 @@ class TestStoredSessionSettings:
         # it back out of that cache would prove nothing about what was stored.
         reader = SessionManager(storage_path=str(manager.storage_path))
         assert stored_session_settings(reader, "u", "s1") == (
-            "v6_synopsis_writer", "llm_writer_creative")
+            "draft_writer", "llm_creative")
 
     def _with(self, manager, **fields):
         import asyncio

@@ -78,8 +78,8 @@ def _known_plugin_types() -> frozenset[str]:
     sys.modules). The catalog looks in the same directory discovery would use
     without arguments -- ONE directory, the importable ``plugins`` package,
     not the three in config.plugins.plugin_dirs. Widening that here is not a
-    free cleanup: `repair_pipeline` (type: writer_issues) inherits its
-    ``write_key`` from the sibling server because ``writer_issues`` is NOT in
+    free cleanup: a server whose type is a plugin of a further root inherits its
+    ``write_key`` from the sibling server because that type is NOT in
     this set, and would lose it (measured over all 219 servers: that one).
     """
     global _plugins_cache
@@ -130,7 +130,7 @@ def _resolve_server_inheritance(
     server_dict = server_config.model_dump(exclude_unset=True)
     typ = server_dict.get("type", "basic_agent")
     
-    # Check if server references itself (e.g., writer_content with type: writer_content)
+    # Check if server references itself (e.g., content_store with type: content_store)
     # This is not real inheritance, treat it as if type is a plugin
     if typ == server_name:
         # Check if it's a known plugin

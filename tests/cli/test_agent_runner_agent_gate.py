@@ -4,7 +4,7 @@ Two ways it used to say yes: the gate read ``server_config.agent_config`` from
 the MERGED config, and plugins.default_config carries one, so every tool
 server passed it. And a name already held by a tool server was registered
 over, taking that server out of the registry for the rest of the process --
-in ``agent-run`` and in the writer audio pipeline, which both build agents
+in ``agent-run`` and in a plugin's audio pipeline, which both build agents
 through this function.
 """
 from __future__ import annotations

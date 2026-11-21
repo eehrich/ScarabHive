@@ -253,12 +253,12 @@ async def run(
     if not client_request_id:
         client_request_id = request.query_params.get('request_id')
 
-    # Client-supplied request_id (writer-jobs worker et al.): lets the
+    # Client-supplied request_id (a job queue's worker et al.): lets the
     # caller key this run under an id IT already persisted, so its
     # later ``/api/requests/{rid}/status`` probes and
     # ``/api/requests/{rid}/cancel`` propagation actually match this
     # run. Without this, /run minted an id the caller never learns
-    # (the response body carries no request_id), so writer-side
+    # (the response body carries no request_id), so its
     # reconcile probes were guaranteed misses — reported
     # ``unknown/no_active_run`` for live runs (→ resume double-run)
     # and cancel propagation no-opped while the agent kept burning
@@ -282,7 +282,7 @@ async def run(
 
     # A run without a session creates one, as with files and on /events. The text-only run goes through
     # collect_final_result, which takes a missing id for a stateless call: a throwaway session, never saved.
-    # Its caller is headless (the writer's dispatches) and never learns the id: once saved, the session
+    # Its caller is headless (a job queue's dispatches) and never learns the id: once saved, the session
     # leaves the agent's tracker, which keeps what it holds for the life of the process.
     made_session = False
     if not session_id and not upload_files and task:

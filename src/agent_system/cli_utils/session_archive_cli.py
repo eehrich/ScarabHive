@@ -7,7 +7,7 @@ builds it the way a command-line process needs it and prints what it says.
 What a CLI process cannot see is the API process's running jobs, so the busy
 check here is the session PRESENCE lock -- the one guard that works across
 processes. A sweep started here therefore leaves a session alone that another
-process is running, which is the case that matters when a book is going.
+process is running, which is the case that matters when a long pipeline is going.
 """
 from __future__ import annotations
 

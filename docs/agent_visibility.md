@@ -95,12 +95,9 @@ rather than opening a group for itself:
 | Group | For |
 |---|---|
 | Assistant | general chat and tool-use agents |
-| Development | coding agents and their helpers (coder, gamedev, Godot, Amiga, Claude Code) |
-| tracker | tracker's runner and its agents: its run sessions get a folder of their own |
+| Development | coding agents and their helpers (coder, gamedev, Godot, Claude Code) |
 | Testing | test harnesses and their workers |
-| Writer | the book system's entry agents |
-| Writer sub-agents | the book system's helpers, judges and pipeline participants |
-| Video | the Papierkino video producers and their helpers |
+| Video | video producers and their helpers |
 | Media | images, 3D, ComfyUI |
 | Research | web research and knowledge bundles |
 | Automation | workflows: n8n, stategraph, scripted tool chains |

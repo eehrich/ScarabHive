@@ -23,7 +23,7 @@ def healthy(chars: int, seed: int = 0) -> str:
     while sum(len(line) for line in out) < chars:
         out.append(
             f"Step {index}: scene {index % 37} needs a check of the "
-            f"{'timeline' if index % 3 else 'wording'}, because beat B{index % 91:02d} "
+            f"{'timeline' if index % 3 else 'wording'}, because rule R{index % 91:02d} "
             f"promises {index * 7 % 1000} words and the draft holds "
             f"{index * 13 % 1000}.\n")
         index += 1
@@ -55,7 +55,7 @@ def long_period_loop(unit_chars: int = 503, repeats: int = 60) -> str:
     The unit itself is varied prose, so it has no periodicity of its own: the
     only repetition in this text is the loop.
     """
-    words = ["Szene", "Absatz", "Figur", "Motiv", "Wendung", "Kapitel",
+    words = ["Szene", "Absatz", "Figur", "Motiv", "Wendung", "Thema",
              "Dialog", "Bild", "Satz", "Klang"]
     unit, index = [], 0
     while sum(len(part) for part in unit) < unit_chars:

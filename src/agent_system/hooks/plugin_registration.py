@@ -366,8 +366,8 @@ async def register_bootstrapped_plugin_hooks(settings: Any | None = None) -> Lis
     """Register hooks for all plugins already loaded into the global plugin registry.
 
     The HTTP agent server registers plugin hooks via
-    ``ToolServerIntegration._register_plugin_hooks``. CLI subprocesses (e.g.
-    ``writer_audio produce``) only call ``bootstrap_servers`` and never get
+    ``ToolServerIntegration._register_plugin_hooks``. CLI subprocesses (e.g. a
+    plugin's own command) only call ``bootstrap_servers`` and never get
     hooks wired up, so listeners like the message debugger silently miss
     every LLM call made from the CLI.
 

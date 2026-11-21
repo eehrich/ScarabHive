@@ -45,7 +45,7 @@ def _hold(taken: dict[str, str] | None, name: str, root: str) -> None:
 def _register_shared_modules(path: Path, pkg_name: str, taken: dict[str, str] | None = None) -> None:
     """Register shared modules (non-plugin directories with __init__.py) in the package.
     
-    This allows relative imports like "from ..writer_core import X" to work
+    This allows relative imports like "from ..shared_core import X" to work
     when loading plugins via importlib.
     
     Args:
@@ -82,7 +82,7 @@ def _register_shared_modules(path: Path, pkg_name: str, taken: dict[str, str] | 
             continue
         _hold(taken, subdir.name, root)
         
-        # This is a shared module (like writer_core)
+        # This is a shared module (like shared_core)
         module_name = f"{pkg_name}.{subdir.name}"
         
         # Check if module is already properly loaded (has the key exports)
@@ -210,8 +210,8 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None,
             pkg_mod = types.ModuleType(pkg_name)
             pkg_mod.__path__ = [str(path.resolve())]
             sys.modules[pkg_name] = pkg_mod
-        # Register shared modules (like writer_core) that plugins depend on.
-        # This allows relative imports like "from ..writer_core import X".
+        # Register shared modules (like shared_core) that plugins depend on.
+        # This allows relative imports like "from ..shared_core import X".
         _register_shared_modules(path, pkg_name, taken)
     except Exception as e:
         logger.debug(f"Failed to prepare package structure for '{pkg_name}': {e}")

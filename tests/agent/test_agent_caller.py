@@ -114,12 +114,12 @@ def test_failed_as_content_is_counted_and_retried() -> None:
 
 def test_text_level_calls_count_transport_failures_too() -> None:
     """The count lives at the transport seam (_create/follow_up_text), not
-    in call(): text-level users — the v4 wrappers — must be covered, and a
+    in call(): text-level users — a pipeline's wrappers — must be covered, and a
     failed continue counts under ``follow_up`` (it used to count nowhere).
 
     Both seams now REFUSE the failure as well as counting it. The counting is
     the half that has to survive the refusal: it is what tells an unhealthy
-    run from a quiet one afterwards, and what distinguishes "the book was
+    run from a quiet one afterwards, and what distinguishes "the report was
     clean" from "the reviewer died".
     """
     agent = FakeAgent([
@@ -275,7 +275,7 @@ def test_concurrent_calls_feed_schema_errors_to_their_own_instance() -> None:
 
 
 class TestParseJsonValueRepairGuard:
-    """Review 2026-08-19 (v4 switch to the core parser): repair_json extracts
+    """Review 2026-08-19 (a pipeline's switch to the core parser): repair_json extracts
     dict-free number lists out of prose ("see items [1] and [2]") — accepting
     those as a result means no retry and a silent "0 findings"."""
 
@@ -298,9 +298,9 @@ class TestAFailureIsNeverAResult:
     ``status="completed"`` and puts the failure in ``result``, so the status
     check waves it through. The text callers have no retry
     (``_call_sub_agent`` is a single attempt) and write what they get --
-    ``phase_4_5_finalize`` into ``books.metadata["book_summary"]`` and the
-    series state, ``phase_3_prosa`` into ``chapters.metadata.$.summary``.
-    One 429 and the transport's complaint is a book's published summary.
+    a finalize step into a report's stored summary, a drafting step into
+    each section's summary.
+    One 429 and the transport's complaint is a report's published summary.
     """
 
     FAILURE = "Error: Agent execution failed: Error code: 429 - {'error': {'x': 1}}"
@@ -310,13 +310,13 @@ class TestAFailureIsNeverAResult:
         agent = FakeAgent([ok(self.FAILURE)])
 
         with pytest.raises(RuntimeError, match="did not answer"):
-            await caller(agent).call_text("v4_book_summarizer", "fasse zusammen")
+            await caller(agent).call_text("report_summarizer", "fasse zusammen")
 
     @pytest.mark.asyncio
     async def test_follow_up_text_refuses_it_too(self):
         agent = FakeAgent([ok("{}"), ok(self.FAILURE)])
         c = caller(agent)
-        await c.call_text("v4_x", "erst ein guter Lauf")
+        await c.call_text("agent_x", "erst ein guter Lauf")
 
         with pytest.raises(RuntimeError, match="did not answer"):
             await c.follow_up_text("inst-1", "und jetzt weiter")
@@ -327,7 +327,7 @@ class TestAFailureIsNeverAResult:
         is what a transient network fault deserves. Second attempt answers."""
         agent = FakeAgent([ok(self.FAILURE), ok('{"score": 1, "issues": []}')])
 
-        result = await caller(agent, retries=1).call("v4_x", "task", schema=Verdict)
+        result = await caller(agent, retries=1).call("agent_x", "task", schema=Verdict)
 
         assert result.score == 1
         assert len(agent.calls) == 2, "the failure was not retried"
@@ -338,14 +338,14 @@ class TestAFailureIsNeverAResult:
 
         The witness has to CONTAIN the marker without beginning with it, or
         the boundary is untested -- an earlier version used "Error codes are
-        covered in chapter 3.", which has no colon at all, and the mutation
-        "match the marker anywhere" stayed green. A chapter summary quoting a
+        covered in section 3.", which has no colon at all, and the mutation
+        "match the marker anywhere" stayed green. A section summary quoting a
         machine is the ordinary case, not a contrived one.
         """
-        summary = 'Kapitel 3: Der Funk meldet "Error: Kein Signal", und Nele stutzt.'
+        summary = 'Abschnitt 3: Der Funk meldet "Error: Kein Signal", und die Technik stutzt.'
         agent = FakeAgent([ok(summary)])
 
-        text = await caller(agent).call_text("v4_chapter_summarizer", "task")
+        text = await caller(agent).call_text("section_summarizer", "task")
 
         assert text == summary
 
@@ -353,7 +353,7 @@ class TestAFailureIsNeverAResult:
 class TestATransportFailureIsNotAFormatProblem:
     """A sub-agent that never answered hands its failure back AS its answer.
 
-    Measured on the server, book 77 (2026-09-04 21:21:45): a model burned
+    Measured on the server (2026-09-04 21:21:45): a model burned
     131_072 output tokens, 131_070 of them on reasoning, and produced nothing.
     ``_count_transport_failure`` logged "did NOT answer (transport/lifecycle,
     NOT a format problem)" -- and one millisecond later the parser logged

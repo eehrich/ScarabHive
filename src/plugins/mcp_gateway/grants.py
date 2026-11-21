@@ -47,7 +47,7 @@ class Grant:
     expires_at: float
     key: str                        # names the grant in logs, never the token
     cancel: CancellationToken = field(repr=False)
-    #: The template vars of the issuing run's session (a book's id): the gateway sets them for session_id in its
+    #: The template vars of the issuing run's session (a project's id): the gateway sets them for session_id in its
     #: runner, whose tools read them there, until the grant ends.
     session_vars: dict[str, Any] = field(default_factory=dict, repr=False)
     calls: int = 0

@@ -89,7 +89,7 @@ async def get_request_status(request_id: str, request: Request, ctx: AppContext 
     await _refuse_foreign_request(request_id, await ctx.enforce_endpoint_security(request))
     # A finished MIRROR (POST /run) answers as if there had been no job: its
     # caller had the answer, and "completed" with the job's keys is what the
-    # writer reconcile takes as proof that a book run is done. Not a detached
+    # reconcile of a job queue takes as proof that a long run is done. Not a detached
     # one (``"detach": true``): its answer is the job's ``result``, given here.
     if job and job.mirror and job.status != JobStatus.RUNNING and job.result is None:
         job = None
@@ -112,10 +112,10 @@ async def get_request_status(request_id: str, request: Request, ctx: AppContext 
 
     # Fallback to session tracker — checks the DEFAULT agent first
     # (cheap), then walks the agent registry so requests running on
-    # sub-agent servers (linear_book, v5b_story_designer,
-    # cover_artist, ...) are seen too. Without the walk this
+    # sub-agent servers (any agent other than the default) are
+    # seen too. Without the walk this
     # endpoint reported ``unknown/no_active_run`` for a /run that
-    # was actively grinding on a non-default agent — the writer
+    # was actively grinding on a non-default agent — a job queue's
     # reconcile pass consumed that as "run lost" and re-queued the
     # job for resume, double-running multi-hour generations. Same
     # per-agent blind-spot class as the 2026-06-27 cancel
@@ -138,15 +138,14 @@ async def get_request_status(request_id: str, request: Request, ctx: AppContext 
     # is no positive evidence the request finished successfully,
     # only that this process doesn't know about it (typical case:
     # agent-api restarted and the BackgroundJob died with it).
-    # The writer-side reconcile pass (producer.py
-    # _reconcile_agent_api_orphans) consumed that lie as success
+    # A job queue's reconcile pass consumed that lie as success
     # and marked the queue row 'done' → silent data loss
     # (2026-06-26 incident root cause). Frontend's poll loop
     # also treated it as a clean completion and rendered an
     # empty result.
     #
     # New contract: status='unknown', completed=false +
-    # error+reason so the writer-side reconcile leaves the row
+    # error+reason so a job queue's reconcile leaves the row
     # for the sweep (= Resume) and the WebUI lets the run go
     # instead of following it.
     return {
@@ -164,10 +163,10 @@ async def cancel_request(request_id: str, request: Request, force: bool = Query(
     """Cancel an active request by its ID.
 
     Delegates to ``BackgroundJobManager.cancel_job`` which is the
-    single source of truth for writer-side cancellation: it sets
+    single source of truth for cancellation: it sets
     the cancellation token, walks the agent registry to call
     ``cancel_request`` on the server that actually owns the
-    request (linear_book, v5b_story_designer, cover_artist, ...),
+    request (any configured agent, not only the default),
     falls back to the default agent for chat_agent-style requests,
     and force-cancels the asyncio task after the grace period.
 
@@ -175,7 +174,7 @@ async def cancel_request(request_id: str, request: Request, force: bool = Query(
     semantics. The 2026-06-27 cancel regression (sub-agent
     requests reported 'cancelled' but kept running) is closed
     there — every caller of this endpoint, the admin endpoint at
-    ``/admin/active-sessions/{rid}/cancel``, and the writer-jobs
+    ``/admin/active-sessions/{rid}/cancel``, and a job queue's
     propagation helper now use the same path.
 
     Args:

@@ -38,9 +38,9 @@ def test_removing_an_unknown_listener_is_harmless():
 
 
 def test_strip_server_prefix():
-    assert strip_server_prefix("writer", "writer_path_writer_x") == "path_writer_x"
-    assert strip_server_prefix("writer", "search") == "search"
-    assert strip_server_prefix("writer", "writer") == "writer"
+    assert strip_server_prefix("doc", "doc_path_doc_x") == "path_doc_x"
+    assert strip_server_prefix("doc", "search") == "search"
+    assert strip_server_prefix("doc", "doc") == "doc"
 
 
 def test_tool_defs_from_openai():

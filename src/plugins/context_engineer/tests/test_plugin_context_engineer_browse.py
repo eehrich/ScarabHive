@@ -51,7 +51,7 @@ def session(hooks):
             session_id=sid)
     parts["tool_store"].store_and_reference(
         tool_call_id="call_big",
-        tool_name="writer_content_batch_scene",
+        tool_name="docs_content_batch_scene",
         content="HEAD " + ("scene text " * 4000) + " Kapitel 3 marker " + ("tail " * 500),
         session_id=sid,
     )
@@ -655,7 +655,7 @@ class TestLayerOneHonoursTheExemption:
         body = "beliebige grosse Werkzeugausgabe " * 60
         out = await self._run_layer1(strat, [
             {"role": "user", "content": "mach was"},
-            {"role": "tool", "name": "writer_content_batch_scene",
+            {"role": "tool", "name": "docs_content_batch_scene",
              "tool_call_id": "call_2", "content": body},
         ])
 
@@ -812,7 +812,7 @@ class TestBrowsingReadsLikeAFile:
 
         # The session fixture stored `call_big` before these, so offset 0 must
         # land on it — the same end that offset 0 means for the history.
-        assert oldest["entries"][0]["tool"] == "writer_content_batch_scene"
+        assert oldest["entries"][0]["tool"] == "docs_content_batch_scene"
         assert "Ergebnis 4" in newest["entries"][0]["summary"]
 
 

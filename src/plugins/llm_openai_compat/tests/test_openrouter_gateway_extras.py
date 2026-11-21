@@ -184,10 +184,10 @@ class TestTheResponsesPayload:
         payload = self._payload(
             plugins=[{"id": "response-healing"}],
             prompt_cache_options={"mode": "explicit"},
-            safety_identifier="book-42")
+            safety_identifier="user-42")
         assert payload["plugins"] == [{"id": "response-healing"}]
         assert payload["prompt_cache_options"] == {"mode": "explicit"}
-        assert payload["safety_identifier"] == "book-42"
+        assert payload["safety_identifier"] == "user-42"
 
     def test_unset_means_absent(self):
         payload = self._payload()

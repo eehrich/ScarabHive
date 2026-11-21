@@ -234,7 +234,7 @@ class UsableToolsMixin:
         return found if found is not None else declared(await self.build_llm_tool_schemas())
 
     def _resolve_flat_tool_name(self: Agent, tool_name: str):
-        """Resolve a flat tool name (e.g. 'v6_json_manage_json') to
+        """Resolve a flat tool name (e.g. 'notes_json_manage_json') to
         (server, server_name). Returns (None, None) if nothing matches.
 
         Order: exact server-name match (config agents / single-name servers),

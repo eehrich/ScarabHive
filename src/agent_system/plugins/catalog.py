@@ -9,7 +9,7 @@ The catalog names a directory the way discovery does: by its FOLDER name. A
 manifest ``name`` field renames nothing (``todo`` ships one saying
 ``todo_management`` and is discovered as ``todo``), and a directory counts only
 when its entrypoint module exists AND names a factory -- a library-only plugin
-(``coder``, ``writer_publish``: manifest, no plugin.py) is not a type, and
+(``coder``: manifest, no plugin.py) is not a type, and
 neither is a module without ``PLUGIN_FACTORY``; discovery drops both.
 
 Whatever cannot be named without executing the module makes the catalog fall

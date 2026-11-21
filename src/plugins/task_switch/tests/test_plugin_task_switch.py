@@ -40,7 +40,7 @@ def mock_server_config_with_preconditions():
             "task_preconditions": {
                 "structure": {
                     "tool": "validation_tool",
-                    "params": {"book_id": "{{ book_id }}", "scope": "story"},
+                    "params": {"project_id": "{{ project_id }}", "scope": "plan"},
                     "gate_field": "summary.can_proceed",
                     "error_field": "summary.gate_reason"
                 },
@@ -77,12 +77,12 @@ def mock_agent():
 
 
 @pytest.fixture
-def mock_agent_with_book_id():
-    """Agent with book_id in template_vars for precondition testing."""
+def mock_agent_with_project_id():
+    """Agent with project_id in template_vars for precondition testing."""
     agent = MagicMock()
     agent.agent_config = AgentConfig(template_vars={
         "workflow_phase": "planning",
-        "book_id": "42"
+        "project_id": "42"
     })
     return agent
 
@@ -209,21 +209,21 @@ class TestPreconditions:
         assert vars["has_preconditions"] is False
 
     @pytest.mark.asyncio
-    async def test_task_without_precondition_succeeds(self, server_with_preconditions, mock_agent_with_book_id):
+    async def test_task_without_precondition_succeeds(self, server_with_preconditions, mock_agent_with_project_id):
         """Task without precondition should succeed directly."""
         # "planning" has no precondition
         result = await server_with_preconditions.set_task({
             "task_name": "planning",
-            "_agent": mock_agent_with_book_id
+            "_agent": mock_agent_with_project_id
         })
         assert result["status"] == "success"
         assert result["current_task"] == "planning"
 
     @pytest.mark.asyncio
-    async def test_precondition_gate_open(self, server_with_preconditions, mock_agent_with_book_id):
+    async def test_precondition_gate_open(self, server_with_preconditions, mock_agent_with_project_id):
         """Task with passing precondition should succeed."""
         # Mock the call_tool to return gate_open result
-        mock_agent_with_book_id.call_tool = AsyncMock(return_value={
+        mock_agent_with_project_id.call_tool = AsyncMock(return_value={
             "status": "success",
             "summary": {
                 "can_proceed": True,
@@ -233,22 +233,22 @@ class TestPreconditions:
         
         result = await server_with_preconditions.set_task({
             "task_name": "structure",
-            "_agent": mock_agent_with_book_id
+            "_agent": mock_agent_with_project_id
         })
         
         assert result["status"] == "success"
         assert result["current_task"] == "structure"
         # Verify tool was called with rendered params
-        mock_agent_with_book_id.call_tool.assert_called_once()
-        call_args = mock_agent_with_book_id.call_tool.call_args
+        mock_agent_with_project_id.call_tool.assert_called_once()
+        call_args = mock_agent_with_project_id.call_tool.call_args
         assert call_args[0][0] == "validation_tool"
-        assert call_args[0][1]["book_id"] == "42"  # Template var rendered
-        assert call_args[0][1]["scope"] == "story"
+        assert call_args[0][1]["project_id"] == "42"  # Template var rendered
+        assert call_args[0][1]["scope"] == "plan"
 
     @pytest.mark.asyncio
-    async def test_precondition_gate_closed(self, server_with_preconditions, mock_agent_with_book_id):
+    async def test_precondition_gate_closed(self, server_with_preconditions, mock_agent_with_project_id):
         """Task with failing precondition should be blocked."""
-        mock_agent_with_book_id.call_tool = AsyncMock(return_value={
+        mock_agent_with_project_id.call_tool = AsyncMock(return_value={
             "status": "success",
             "summary": {
                 "can_proceed": False,
@@ -258,7 +258,7 @@ class TestPreconditions:
         
         result = await server_with_preconditions.set_task({
             "task_name": "structure",
-            "_agent": mock_agent_with_book_id
+            "_agent": mock_agent_with_project_id
         })
         
         assert result["status"] == "blocked"
@@ -267,19 +267,19 @@ class TestPreconditions:
         assert result["gate_field"] == "summary.can_proceed"
         assert result["gate_value"] is False
         # Template vars should NOT be changed
-        assert mock_agent_with_book_id.agent_config.template_vars["workflow_phase"] == "planning"
+        assert mock_agent_with_project_id.agent_config.template_vars["workflow_phase"] == "planning"
 
     @pytest.mark.asyncio
-    async def test_precondition_gate_closed_with_status(self, server_with_preconditions, mock_agent_with_book_id):
+    async def test_precondition_gate_closed_with_status(self, server_with_preconditions, mock_agent_with_project_id):
         """Blocked task should report error via status callback."""
-        mock_agent_with_book_id.call_tool = AsyncMock(return_value={
+        mock_agent_with_project_id.call_tool = AsyncMock(return_value={
             "summary": {"can_proceed": False, "gate_reason": "Not ready"}
         })
         mock_status = AsyncMock()
         
         result = await server_with_preconditions.set_task({
             "task_name": "structure",
-            "_agent": mock_agent_with_book_id,
+            "_agent": mock_agent_with_project_id,
             "_status": mock_status
         })
         
@@ -288,20 +288,20 @@ class TestPreconditions:
         assert "Gate closed" in mock_status.error.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_precondition_tool_error(self, server_with_preconditions, mock_agent_with_book_id):
+    async def test_precondition_tool_error(self, server_with_preconditions, mock_agent_with_project_id):
         """Precondition tool error should block the task."""
-        mock_agent_with_book_id.call_tool = AsyncMock(side_effect=Exception("Tool failed"))
+        mock_agent_with_project_id.call_tool = AsyncMock(side_effect=Exception("Tool failed"))
         
         result = await server_with_preconditions.set_task({
             "task_name": "structure",
-            "_agent": mock_agent_with_book_id
+            "_agent": mock_agent_with_project_id
         })
         
         assert result["status"] == "blocked"
         assert "Tool failed" in result["reason"]
 
     @pytest.mark.asyncio
-    async def test_precondition_result_included(self, server_with_preconditions, mock_agent_with_book_id):
+    async def test_precondition_result_included(self, server_with_preconditions, mock_agent_with_project_id):
         """Blocked result should include the precondition tool's result."""
         tool_result = {
             "status": "success",
@@ -312,11 +312,11 @@ class TestPreconditions:
                 "required_approvals": 4
             }
         }
-        mock_agent_with_book_id.call_tool = AsyncMock(return_value=tool_result)
+        mock_agent_with_project_id.call_tool = AsyncMock(return_value=tool_result)
         
         result = await server_with_preconditions.set_task({
             "task_name": "structure",
-            "_agent": mock_agent_with_book_id
+            "_agent": mock_agent_with_project_id
         })
         
         assert result["status"] == "blocked"
@@ -341,16 +341,16 @@ class TestTemplateRendering:
     def test_render_simple_string(self, server_with_preconditions):
         """Simple {{ var }} should be replaced."""
         result = server_with_preconditions._render_template_value(
-            "{{ book_id }}",
-            {"book_id": "123"}
+            "{{ project_id }}",
+            {"project_id": "123"}
         )
         assert result == "123"
 
     def test_render_string_with_spaces(self, server_with_preconditions):
         """{{ var }} with spaces should work."""
         result = server_with_preconditions._render_template_value(
-            "{{  book_id  }}",
-            {"book_id": "456"}
+            "{{  project_id  }}",
+            {"project_id": "456"}
         )
         assert result == "456"
 
@@ -358,17 +358,17 @@ class TestTemplateRendering:
         """Missing variable should keep the template unchanged."""
         result = server_with_preconditions._render_template_value(
             "{{ missing_var }}",
-            {"book_id": "123"}
+            {"project_id": "123"}
         )
         assert result == "{{ missing_var }}"
 
     def test_render_dict(self, server_with_preconditions):
         """Dict values should be recursively rendered."""
         result = server_with_preconditions._render_template_value(
-            {"book_id": "{{ id }}", "scope": "story"},
+            {"project_id": "{{ id }}", "scope": "plan"},
             {"id": "42"}
         )
-        assert result == {"book_id": "42", "scope": "story"}
+        assert result == {"project_id": "42", "scope": "plan"}
 
     def test_render_list(self, server_with_preconditions):
         """List values should be recursively rendered."""
@@ -423,51 +423,51 @@ class TestSetContext:
     async def test_set_context_basic(self, server, mock_agent):
         """Basic context setting should work."""
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": "42"}
-        assert mock_agent.agent_config.template_vars["book_id"] == "42"
+        assert result["updated"] == {"project_id": "42"}
+        assert mock_agent.agent_config.template_vars["project_id"] == "42"
 
     @pytest.mark.asyncio
     async def test_set_context_multiple_vars(self, server, mock_agent):
         """Setting multiple context vars at once should work."""
         result = await server.set_context({
-            "book_id": "123",
-            "chapter_id": "456",
+            "project_id": "123",
+            "section_id": "456",
             "mode": "edit",
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": "123", "chapter_id": "456", "mode": "edit"}
-        assert mock_agent.agent_config.template_vars["book_id"] == "123"
-        assert mock_agent.agent_config.template_vars["chapter_id"] == "456"
+        assert result["updated"] == {"project_id": "123", "section_id": "456", "mode": "edit"}
+        assert mock_agent.agent_config.template_vars["project_id"] == "123"
+        assert mock_agent.agent_config.template_vars["section_id"] == "456"
         assert mock_agent.agent_config.template_vars["mode"] == "edit"
 
     @pytest.mark.asyncio
     async def test_set_context_returns_previous_values(self, server, mock_agent):
         """Should return previous values for changed vars."""
-        mock_agent.agent_config.template_vars["book_id"] = "old_value"
+        mock_agent.agent_config.template_vars["project_id"] = "old_value"
         result = await server.set_context({
-            "book_id": "new_value",
+            "project_id": "new_value",
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["previous"]["book_id"] == "old_value"
-        assert result["updated"]["book_id"] == "new_value"
+        assert result["previous"]["project_id"] == "old_value"
+        assert result["updated"]["project_id"] == "new_value"
 
     @pytest.mark.asyncio
     async def test_set_context_ignores_internal_params(self, server, mock_agent):
         """Internal params starting with _ should be ignored."""
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": mock_agent,
             "_status": AsyncMock(),
             "_session_id": "test123"
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": "42"}
+        assert result["updated"] == {"project_id": "42"}
         assert "_agent" not in mock_agent.agent_config.template_vars
         assert "_status" not in mock_agent.agent_config.template_vars
 
@@ -485,29 +485,29 @@ class TestSetContext:
         """Schema form: vars as JSON object string (robust against provider
         serializers that strip undeclared properties)."""
         result = await server.set_context({
-            "vars": '{"book_id": 42, "phase": "review"}',
+            "vars": '{"project_id": 42, "phase": "review"}',
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": 42, "phase": "review"}
-        assert mock_agent.agent_config.template_vars["book_id"] == 42
+        assert result["updated"] == {"project_id": 42, "phase": "review"}
+        assert mock_agent.agent_config.template_vars["project_id"] == 42
         assert mock_agent.agent_config.template_vars["phase"] == "review"
 
     @pytest.mark.asyncio
     async def test_set_context_vars_dict(self, server, mock_agent):
         """vars accepts a dict too (internal/test callers)."""
         result = await server.set_context({
-            "vars": {"book_id": 7},
+            "vars": {"project_id": 7},
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": 7}
+        assert result["updated"] == {"project_id": 7}
 
     @pytest.mark.asyncio
     async def test_set_context_vars_invalid_json(self, server, mock_agent):
         """Malformed JSON in vars must produce a clear error."""
         result = await server.set_context({
-            "vars": '{book_id: 42',
+            "vars": '{project_id: 42',
             "_agent": mock_agent
         })
         assert result["status"] == "error"
@@ -541,11 +541,11 @@ class TestSetContext:
         legacy branch -- _-keys/framework params in the vars payload must not
         end up as template_vars (they would otherwise inherit into all sub-agents)."""
         result = await server.set_context({
-            "vars": '{"_agent": "x", "request_id": "r", "book_id": 42}',
+            "vars": '{"_agent": "x", "request_id": "r", "project_id": 42}',
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": 42}
+        assert result["updated"] == {"project_id": 42}
         assert "_agent" not in mock_agent.agent_config.template_vars
         assert "request_id" not in mock_agent.agent_config.template_vars
 
@@ -556,18 +556,18 @@ class TestSetContext:
         vars wins on conflict."""
         result = await server.set_context({
             "vars": '{"phase": "review"}',
-            "book_id": 42,
+            "project_id": 42,
             "phase": "IGNORED-flat-loses-conflict",
             "_agent": mock_agent
         })
         assert result["status"] == "success"
-        assert result["updated"] == {"book_id": 42, "phase": "review"}
+        assert result["updated"] == {"project_id": 42, "phase": "review"}
 
     @pytest.mark.asyncio
     async def test_set_context_no_agent_error(self, server):
         """Should error when no agent provided."""
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": None
         })
         assert result["status"] == "error"
@@ -579,18 +579,18 @@ class TestSetContext:
         agent = MagicMock()
         agent.agent_config = AgentConfig(template_vars=None)
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": agent
         })
         assert result["status"] == "success"
-        assert agent.agent_config.template_vars["book_id"] == "42"
+        assert agent.agent_config.template_vars["project_id"] == "42"
 
     @pytest.mark.asyncio
     async def test_set_context_with_status(self, server, mock_agent):
         """Should call status.end when status provided."""
         mock_status = AsyncMock()
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": mock_agent,
             "_status": mock_status
         })
@@ -598,7 +598,7 @@ class TestSetContext:
         mock_status.end.assert_called_once()
         # Should contain info about what was set
         call_args = mock_status.end.call_args[0][0]
-        assert "book_id" in call_args
+        assert "project_id" in call_args
         assert "42" in call_args
     
     @pytest.mark.asyncio
@@ -611,7 +611,7 @@ class TestSetContext:
         mock_agent._session_tracker = None
         
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": mock_agent,
             "_status": mock_status
         })
@@ -641,12 +641,12 @@ class TestPreconditionWithSetContext:
 
     @pytest.mark.asyncio
     async def test_precondition_uses_context_from_set_context(self, server_with_preconditions):
-        """Precondition should use book_id set via set_context."""
-        # Create agent with empty book_id
+        """Precondition should use project_id set via set_context."""
+        # Create agent with empty project_id
         agent = MagicMock()
         agent.agent_config = AgentConfig(template_vars={
             "workflow_phase": "planning",
-            "book_id": ""  # Empty initially
+            "project_id": ""  # Empty initially
         })
         
         # Mock call_tool to capture what params were passed
@@ -658,31 +658,31 @@ class TestPreconditionWithSetContext:
         
         # First set the context
         await server_with_preconditions.set_context({
-            "book_id": "17",
+            "project_id": "17",
             "_agent": agent
         })
         
-        # Now try to switch task - precondition should use book_id=17
+        # Now try to switch task - precondition should use project_id=17
         result = await server_with_preconditions.set_task({
             "task_name": "structure",
             "_agent": agent
         })
         
         assert result["status"] == "success"
-        assert captured_params.get("book_id") == "17"
+        assert captured_params.get("project_id") == "17"
 
     @pytest.mark.asyncio
-    async def test_precondition_fails_with_empty_book_id(self, server_with_preconditions):
-        """Precondition should fail gracefully when book_id is empty."""
+    async def test_precondition_fails_with_empty_project_id(self, server_with_preconditions):
+        """Precondition should fail gracefully when project_id is empty."""
         agent = MagicMock()
         agent.agent_config = AgentConfig(template_vars={
             "workflow_phase": "planning",
-            "book_id": ""  # Empty - will cause validation to fail
+            "project_id": ""  # Empty - will cause validation to fail
         })
         
         async def mock_call_tool(tool_name, params):
-            # Simulate what production_status returns for empty book_id
-            return {"status": "error", "error": "book_id is required"}
+            # Simulate what a status tool returns for an empty project_id
+            return {"status": "error", "error": "project_id is required"}
         agent.call_tool = mock_call_tool
         
         result = await server_with_preconditions.set_task({
@@ -723,7 +723,7 @@ class TestContextPersistence:
         
         # Call set_context with session_id
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": agent,
             "_session_id": "test_session"
         })
@@ -735,7 +735,7 @@ class TestContextPersistence:
         mock_session_manager.save_session.assert_called_once()
         saved_data = mock_session_manager.save_session.call_args[0][0]
         assert "context_vars" in saved_data
-        assert saved_data["context_vars"]["book_id"] == "42"
+        assert saved_data["context_vars"]["project_id"] == "42"
 
     @pytest.mark.asyncio
     async def test_set_task_persists_to_session(self, server):
@@ -777,7 +777,7 @@ class TestContextPersistence:
         mock_agent._session_service.session_manager = mock_session_manager
         
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": mock_agent
             # No _session_id
         })
@@ -809,7 +809,7 @@ class TestContextPersistence:
         agent._session_tracker.get_session_metadata = MagicMock(return_value={"user_id": "test_user"})
         
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": agent,
             "_session_id": "test_session"
         })
@@ -819,7 +819,7 @@ class TestContextPersistence:
         # Both old and new keys should be present
         saved_data = mock_session_manager.save_session.call_args[0][0]
         assert saved_data["context_vars"]["existing_key"] == "existing_value"
-        assert saved_data["context_vars"]["book_id"] == "42"
+        assert saved_data["context_vars"]["project_id"] == "42"
 
     @pytest.mark.asyncio
     async def test_persist_creates_session_if_not_exists(self, server):
@@ -848,7 +848,7 @@ class TestContextPersistence:
         agent._session_tracker.set_session_template_vars = MagicMock()
         
         result = await server.set_context({
-            "book_id": "42",
+            "project_id": "42",
             "_agent": agent,
             "_session_id": "new_session"
         })
@@ -864,7 +864,7 @@ class TestContextPersistence:
         # Verify save_session was called with context_vars
         mock_session_manager.save_session.assert_called_once()
         saved_data = mock_session_manager.save_session.call_args[0][0]
-        assert saved_data["context_vars"]["book_id"] == "42"
+        assert saved_data["context_vars"]["project_id"] == "42"
 
 
 @pytest.mark.asyncio
@@ -896,7 +896,7 @@ async def test_a_rename_during_set_context_is_not_written_over(server, tmp_path)
     agent._session_service = service
     agent._session_tracker.get_session_metadata = MagicMock(return_value={"user_id": "u1"})
     manager.load_session = held_load
-    setting = asyncio.create_task(server.set_context({"book_id": "42", "_agent": agent, "_session_id": "s1"}))
+    setting = asyncio.create_task(server.set_context({"project_id": "42", "_agent": agent, "_session_id": "s1"}))
     await asyncio.wait_for(loaded.wait(), 5)
     manager.load_session = load
 
@@ -912,7 +912,7 @@ async def test_a_rename_during_set_context_is_not_written_over(server, tmp_path)
     await renaming
     record = await manager.load_session("u1", "s1", bypass_cache=True)
     assert record["title"] == "Neu"
-    assert record["context_vars"]["book_id"] == "42"
+    assert record["context_vars"]["project_id"] == "42"
 
 
 @pytest.mark.asyncio
@@ -930,7 +930,7 @@ async def test_persisted_is_false_when_nothing_was_written(server, tmp_path, too
     agent._session_service = SessionService(manager)
     agent._session_tracker.get_session_metadata = MagicMock(return_value={"user_id": "u1"})
     agent._session_tracker.get_session_template_vars = MagicMock(return_value={})
-    params = {"task_name": "analyze"} if tool == "set_task" else {"vars": '{"book_id": 42}'}
+    params = {"task_name": "analyze"} if tool == "set_task" else {"vars": '{"project_id": 42}'}
 
     written = await getattr(server, tool)({**params, "_agent": agent, "_session_id": "s1"})
     assert written["status"] == "success" and written["persisted"] is True
@@ -972,27 +972,27 @@ async def test_a_gate_without_a_tool_refuses_the_switch(mock_system_config, mock
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer", ["can_proceed", None, ["ok"]])
 async def test_a_gate_tool_that_answers_no_object_refuses_the_switch(
-        server_with_preconditions, mock_agent_with_book_id, answer):
+        server_with_preconditions, mock_agent_with_project_id, answer):
     """A gate tool whose answer is not a JSON object used to open the gate."""
-    mock_agent_with_book_id.call_tool = AsyncMock(return_value=answer)
+    mock_agent_with_project_id.call_tool = AsyncMock(return_value=answer)
 
     result = await server_with_preconditions.set_task(
-        {"task_name": "content", "_agent": mock_agent_with_book_id})
+        {"task_name": "content", "_agent": mock_agent_with_project_id})
 
     assert result["status"] == "blocked"
     assert result["reason"] == "Gate tool 'validation_tool' for task 'content' did not answer an object"
-    assert mock_agent_with_book_id.agent_config.template_vars["workflow_phase"] == "planning"
+    assert mock_agent_with_project_id.agent_config.template_vars["workflow_phase"] == "planning"
 
 
 @pytest.mark.asyncio
-async def test_set_context_refuses_the_task_variable(server_with_preconditions, mock_agent_with_book_id):
+async def test_set_context_refuses_the_task_variable(server_with_preconditions, mock_agent_with_project_id):
     """set_context set the task variable past allowed_tasks and every gate."""
     result = await server_with_preconditions.set_context(
-        {"vars": '{"workflow_phase": "content", "book_id": 7}', "_agent": mock_agent_with_book_id})
+        {"vars": '{"workflow_phase": "content", "project_id": 7}', "_agent": mock_agent_with_project_id})
 
     assert result == {"status": "error", "error":
                       "'workflow_phase' is the task variable: switch it with task_switch_set_task"}
-    assert mock_agent_with_book_id.agent_config.template_vars == {"workflow_phase": "planning", "book_id": "42"}
+    assert mock_agent_with_project_id.agent_config.template_vars == {"workflow_phase": "planning", "project_id": "42"}
     other = await server_with_preconditions.set_context(
-        {"vars": '{"current_task": "x"}', "_agent": mock_agent_with_book_id})
+        {"vars": '{"current_task": "x"}', "_agent": mock_agent_with_project_id})
     assert other["status"] == "success"

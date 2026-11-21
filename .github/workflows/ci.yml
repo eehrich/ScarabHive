@@ -17,7 +17,7 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"
-  # CPU-only PyTorch, for a checkout with requirements/private.txt (the writer's
+  # CPU-only PyTorch, for a checkout with requirements/private.txt (its
   # dependencies pull in torch): from PyPI torch on Linux brings several GB of
   # CUDA libraries that no test uses. requirements/all.txt needs no torch.
   TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu

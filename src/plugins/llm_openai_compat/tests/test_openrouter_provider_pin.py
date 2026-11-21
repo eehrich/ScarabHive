@@ -425,8 +425,8 @@ class TestTheAgentTypesBackend:
     """A run's first call starts where the agent type was served last.
 
     Its history names no backend yet, but the prompt it shares with every
-    other run of its type is cached there. Measured 22.09.2026 on the server,
-    first calls of v4/v6 runs: 57.8 % read from cache within 5 min of the
+    other run of its type is cached there. Measured on one deployment,
+    first calls of pipeline runs: 57.8 % read from cache within 5 min of the
     type's previous call on the same backend, 27.8 % on another; 22.5 % vs
     9.0 % within 30 min; past 30 min about 1 % either way.
     """
@@ -448,10 +448,10 @@ class TestTheAgentTypesBackend:
         assert sent["order"] == VERTEX_ONLY
 
     def test_the_backend_is_kept_per_agent_type_and_model(self):
-        backend_affinity.remember("v6_story_coordinator", "m", "StreamLake")
-        assert backend_affinity.recent("v6_story_coordinator", "m", None) == "StreamLake"
-        assert backend_affinity.recent("v6_story_panel", "m", None) is None
-        assert backend_affinity.recent("v6_story_coordinator", "other/model", None) is None
+        backend_affinity.remember("plan_coordinator", "m", "StreamLake")
+        assert backend_affinity.recent("plan_coordinator", "m", None) == "StreamLake"
+        assert backend_affinity.recent("review_panel", "m", None) is None
+        assert backend_affinity.recent("plan_coordinator", "other/model", None) is None
         assert backend_affinity.recent(None, "m", None) is None
 
     @pytest.mark.parametrize("minutes, elapsed, expected", [
@@ -474,7 +474,7 @@ class TestTheAgentTypesBackend:
             return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}], "openrouter_metadata": _meta(backend)})
 
         first = TestTheResponsesRoutes()._client()
-        first.set_app_title("v6_story_coordinator")
+        first.set_app_title("plan_coordinator")
         first._post = AsyncMock(return_value=served("Google AI Studio"))
         await first.chat_tools(list(self.FIRST_TURN), [])
         assert first._post.call_args.args[2]["provider"]["order"] == VERTEX_FIRST["order"]
@@ -482,12 +482,12 @@ class TestTheAgentTypesBackend:
         # Another run of the same type -- on a client of its own, as parallel
         # sub-agents, escalation and fallback get one.
         second = TestTheResponsesRoutes()._client()
-        second.set_app_title("v6_story_coordinator")
+        second.set_app_title("plan_coordinator")
         await second.chat_tools(list(self.FIRST_TURN), [])
         assert second._post.call_args.args[2]["provider"]["order"] == AI_STUDIO_ONLY
 
         other_type = TestTheResponsesRoutes()._client()
-        other_type.set_app_title("v6_story_panel")
+        other_type.set_app_title("review_panel")
         await other_type.chat_tools(list(self.FIRST_TURN), [])
         assert other_type._post.call_args.args[2]["provider"]["order"] == VERTEX_FIRST["order"]
 
@@ -505,7 +505,7 @@ class TestTheAgentTypesBackend:
         sent = []
         for backend in ("Google AI Studio", "Google"):
             client = _httpx()
-            client.set_app_title("v4_beat_scorer")
+            client.set_app_title("draft_scorer")
             with patch("httpx.AsyncClient") as mock_async_client:
                 mock_client = AsyncMock()
                 mock_client.post = AsyncMock(return_value=answer(backend))
@@ -519,7 +519,7 @@ class TestTheAgentTypesBackend:
         client = _httpx()
         await client._notify_post_response(
             {"model": client.model, "routing": {"selected": "Google AI Studio"}})
-        client.set_app_title("v4_beat_scorer")
+        client.set_app_title("draft_scorer")
         await client._notify_retry("openai_httpx", client.model, OPENROUTER, False, "429", 0, 2,
                                    response_data={"openrouter_metadata": _meta("Google AI Studio")})
         await client._notify_post_response(
@@ -558,8 +558,8 @@ class TestARefusalReleasesThePin:
         client = OpenAIResponsesClient(model="~google/gemini-flash-latest", api_key="k",
                                        base_url=OPENROUTER, provider_routing=routing,
                                        ssl_verify=False, max_retries=1, retry_backoff=0.0)
-        client.set_app_title("v6_beat_generator")
-        backend_affinity.remember("v6_beat_generator", client.model, "Google AI Studio")
+        client.set_app_title("draft_generator")
+        backend_affinity.remember("draft_generator", client.model, "Google AI Studio")
         sent = []
 
         async def post(_client, _url, payload, **_kwargs):
@@ -620,8 +620,8 @@ class TestARefusalReleasesThePin:
 
     async def test_the_chat_route_releases_on_404_too(self):
         client = _httpx()
-        client.set_app_title("v6_beat_generator")
-        backend_affinity.remember("v6_beat_generator", client.model, "Google AI Studio")
+        client.set_app_title("draft_generator")
+        backend_affinity.remember("draft_generator", client.model, "Google AI Studio")
         answers = [
             httpx.Response(404, json=self.NO_ENDPOINTS,
                            request=httpx.Request("POST", OPENROUTER + "/chat/completions")),
@@ -675,8 +675,8 @@ class TestARefusalReleasesThePin:
     ], ids=["http-429", "http-5xx", "body-429"])
     async def test_the_chat_route_retries_without_the_pin(self, refusal):
         client = _httpx()
-        client.set_app_title("v6_beat_generator")
-        backend_affinity.remember("v6_beat_generator", client.model, "Google AI Studio")
+        client.set_app_title("draft_generator")
+        backend_affinity.remember("draft_generator", client.model, "Google AI Studio")
         answers = [
             httpx.Response(refusal["status"],
                            request=httpx.Request("POST", OPENROUTER + "/chat/completions"),

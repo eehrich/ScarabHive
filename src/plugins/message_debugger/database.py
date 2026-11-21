@@ -85,7 +85,7 @@ LLM_REQUEST_INDEXES = (
     # covering indexes for the statistics (no full table scans)
     "CREATE INDEX IF NOT EXISTS idx_llm_requests_direction_duration ON llm_requests(direction, duration_ms)",
     "CREATE INDEX IF NOT EXISTS idx_llm_requests_error ON llm_requests(error) WHERE error IS NOT NULL AND error != ''",
-    # writer-costs walks the request tree of a root_request_id by equality and prefix; without it, minutes per story
+    # a cost report walks the request tree of a root_request_id by equality and prefix; without it, minutes per tree
     "CREATE INDEX IF NOT EXISTS idx_llm_requests_request_id ON llm_requests(request_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_requests_user ON llm_requests(user_id, timestamp_ms, agent_name, "
     "session_id, request_id, direction, provider, error) WHERE user_id IS NOT NULL",

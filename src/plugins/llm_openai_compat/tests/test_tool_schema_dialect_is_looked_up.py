@@ -97,8 +97,8 @@ def test_the_two_routes_keep_their_own_answer_for_a_tool_without_parameters(shou
 def test_an_undeclared_value_dies_at_construction_and_names_the_model(field, value):
     """One owner for key names, values AND the error text -- a typo must not buy a silent default."""
     with pytest.raises(ValueError) as error:
-        HTTPXOpenAIClient(model="book/launcher", api_key="test-key", base_url=OPENROUTER,
+        HTTPXOpenAIClient(model="acme/launcher", api_key="test-key", base_url=OPENROUTER,
                           **{field: value})
 
     assert field in str(error.value)
-    assert "book/launcher" in str(error.value), "the message must name the model entry that carries the typo"
+    assert "acme/launcher" in str(error.value), "the message must name the model entry that carries the typo"

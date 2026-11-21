@@ -270,7 +270,7 @@ async def test_save_session_race_creates_then_falls_back(session_service_env):
         user_id="user1",
         session_id="sub_agent_race_001",
         title="Sub-agent",
-        agent_name="v5b_moderator",
+        agent_name="debate_moderator",
         llm_profile="normal",
     )
     session["parent_session"] = {"session_id": "parent_xyz", "created_at": "2025-01-01T00:00:00Z"}
@@ -309,7 +309,7 @@ async def test_save_session_race_creates_then_falls_back(session_service_env):
             agent=agent,
             user_id="user1",
             session_id="sub_agent_race_001",
-            agent_name="v5b_moderator",
+            agent_name="debate_moderator",
             llm_profile="normal",
             was_new_session=False,
         )
@@ -332,12 +332,12 @@ async def test_save_session_existing_preserves_parent(session_service_env):
         user_id="user1",
         session_id="sub_normal_001",
         title="Sub-agent",
-        agent_name="v5b_moderator",
+        agent_name="debate_moderator",
         llm_profile="normal",
     )
     session["parent_session"] = {"session_id": "parent_abc"}
     session["depth"] = 3
-    session["context_vars"] = {"book_id": "42"}
+    session["context_vars"] = {"record_id": "42"}
     await sm.save_session(session)
 
     msgs = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "done"}]
@@ -347,7 +347,7 @@ async def test_save_session_existing_preserves_parent(session_service_env):
         agent=agent,
         user_id="user1",
         session_id="sub_normal_001",
-        agent_name="v5b_moderator",
+        agent_name="debate_moderator",
         llm_profile="normal",
         was_new_session=False,
     )
@@ -356,7 +356,7 @@ async def test_save_session_existing_preserves_parent(session_service_env):
     loaded = await sm.load_session("user1", "sub_normal_001")
     assert loaded["parent_session"]["session_id"] == "parent_abc"
     assert loaded["depth"] == 3
-    assert loaded["context_vars"]["book_id"] == "42"
+    assert loaded["context_vars"]["record_id"] == "42"
     assert len(loaded["messages"]) == 2
 
 
@@ -379,7 +379,7 @@ async def test_save_session_syncs_runtime_template_vars_into_context_vars(sessio
 
     # Simulate a plugin setting runtime template_vars during the run
     msgs = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "done"}]
-    agent = _make_mock_agent(msgs, runtime_template_vars={"workflow_phase": "review", "book_id": "99"})
+    agent = _make_mock_agent(msgs, runtime_template_vars={"workflow_phase": "review", "record_id": "99"})
 
     result = await svc.save_session(
         agent=agent,
@@ -393,7 +393,7 @@ async def test_save_session_syncs_runtime_template_vars_into_context_vars(sessio
 
     loaded = await sm.load_session("user1", "sync_001")
     assert loaded["context_vars"]["workflow_phase"] == "review"
-    assert loaded["context_vars"]["book_id"] == "99"
+    assert loaded["context_vars"]["record_id"] == "99"
 
 
 @pytest.mark.asyncio
@@ -407,20 +407,20 @@ async def test_save_session_runtime_vars_merge_overrides_existing(session_servic
         user_id="user1",
         session_id="merge_001",
         title="Test",
-        agent_name="v5b_story_designer",
+        agent_name="outline_designer",
         llm_profile="normal",
     )
-    session["context_vars"] = {"phase": "synopsis", "book_id": "1", "persisted_only": "x"}
+    session["context_vars"] = {"phase": "outline", "record_id": "1", "persisted_only": "x"}
     await sm.save_session(session)
 
     msgs = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "ok"}]
-    agent = _make_mock_agent(msgs, runtime_template_vars={"phase": "beats", "new_key": "y"})
+    agent = _make_mock_agent(msgs, runtime_template_vars={"phase": "steps", "new_key": "y"})
 
     result = await svc.save_session(
         agent=agent,
         user_id="user1",
         session_id="merge_001",
-        agent_name="v5b_story_designer",
+        agent_name="outline_designer",
         llm_profile="normal",
         was_new_session=False,
     )
@@ -428,8 +428,8 @@ async def test_save_session_runtime_vars_merge_overrides_existing(session_servic
 
     loaded = await sm.load_session("user1", "merge_001")
     cv = loaded["context_vars"]
-    assert cv["phase"] == "beats"          # runtime wins
-    assert cv["book_id"] == "1"            # persisted preserved (not in runtime)
+    assert cv["phase"] == "steps"          # runtime wins
+    assert cv["record_id"] == "1"            # persisted preserved (not in runtime)
     assert cv["persisted_only"] == "x"     # persisted preserved
     assert cv["new_key"] == "y"            # runtime adds new key
 
@@ -523,8 +523,8 @@ async def test_checkpoint_session_creates_new_when_missing(session_service_env):
     ]
     agent = _make_checkpoint_agent(
         msgs,
-        runtime_template_vars={"book_id": "42"},
-        metadata={"user_id": "user1", "agent_name": "linear_book", "llm_profile": "normal"},
+        runtime_template_vars={"record_id": "42"},
+        metadata={"user_id": "user1", "agent_name": "report_pipeline", "llm_profile": "normal"},
     )
 
     ok = await svc.checkpoint_session(agent, "user1", "ckpt_new")
@@ -533,7 +533,7 @@ async def test_checkpoint_session_creates_new_when_missing(session_service_env):
     loaded = await sm.load_session("user1", "ckpt_new")
     assert len(loaded["messages"]) == 1  # orphan trimmed
     assert loaded["messages"][0]["content"] == "kickoff"
-    assert loaded["context_vars"]["book_id"] == "42"
+    assert loaded["context_vars"]["record_id"] == "42"
 
 
 @pytest.mark.asyncio
@@ -695,16 +695,16 @@ def test_the_title_skips_a_note_a_plugin_injected():
 
     title = SessionService._extract_session_title(None, [
         {"role": "system", "content": "SYSTEM"},
-        {"role": "user", "content": "- **Schon oft gelesen**", "injected_by": "v4_oft_gelesen_inject"},
-        {"role": "user", "content": "Schreibe Szenen für Beat B01"},
+        {"role": "user", "content": "- **Schon oft gelesen**", "injected_by": "often_read_inject"},
+        {"role": "user", "content": "Schreibe Notizen für Punkt P01"},
     ])
-    assert title == "Schreibe Szenen für Beat B01"
+    assert title == "Schreibe Notizen für Punkt P01"
 
     # Written in front of the task (task_start), recorded in prefixed_by --
     # in a string and in the first text part of a list alike.
     prefix = "- **Schon oft gelesen**\n\n---\n\n"
-    for content in (prefix + "Schreibe Szenen",
-                    [{"type": "text", "text": prefix + "Schreibe Szenen"}, {"type": "image_url"}]):
+    for content in (prefix + "Schreibe Notizen",
+                    [{"type": "text", "text": prefix + "Schreibe Notizen"}, {"type": "image_url"}]):
         title = SessionService._extract_session_title(None, [
             {"role": "user", "content": content, "prefixed_by": {"hint": prefix}}])
-        assert title == "Schreibe Szenen", content
+        assert title == "Schreibe Notizen", content

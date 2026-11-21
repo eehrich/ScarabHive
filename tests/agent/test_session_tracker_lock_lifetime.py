@@ -1,7 +1,7 @@
 """A session's lock lives while somebody holds or waits on it, and no longer.
 
 SessionTracker kept one asyncio.Lock per session ever run -- a one-shot call's
-ephemeral session included, hundreds per book -- for the life of the process.
+ephemeral session included, hundreds per pipeline run -- for the life of the process.
 The lock now goes with the last request that holds or waits on it. What must not
 break: while anybody holds it, waits on it or owns the session, a new request
 meets the SAME lock; two locks for one session would let two runs write it at

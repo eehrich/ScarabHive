@@ -4,7 +4,7 @@ Those used to be one and the same. Every entry point was started from the
 repository root, so ``Path.cwd()`` answered both questions at once and nothing
 had to tell them apart. Started from anywhere else they come apart, and the
 code silently gets the wrong one of the two: a plugin config that says
-``data/writer/books.db`` is resolved by whoever opens it, so the database is
+``data/notes/notes.db`` is resolved by whoever opens it, so the database is
 created wherever the person happened to stand -- empty, and every query
 against it reads zero rows without ever failing.
 
@@ -119,8 +119,8 @@ def enter_project() -> Path:
 
 # --- The data directory -------------------------------------------------------
 #
-# Everything the system keeps -- sessions, databases, caches, the writer's
-# books -- lives under one directory, written as "data/..." in code and
+# Everything the system keeps -- sessions, databases, caches, what plugins
+# produce -- lives under one directory, written as "data/..." in code and
 # configuration alike. One setting moves all of it:
 #
 #   AGENT_DATA_DIR (environment)  >  paths.data_dir (config.yaml)  >  data
@@ -186,9 +186,9 @@ def configured_data_dir() -> Path | None:
 
 
 def data_path(*parts: str) -> Path:
-    """A path in the data directory: ``data_path("writer", "books.db")``.
+    """A path in the data directory: ``data_path("notes", "notes.db")``.
 
-    Relative when nothing is configured -- ``data/writer/books.db``, exactly
+    Relative when nothing is configured -- ``data/notes/notes.db``, exactly
     the literal it replaces. A site that must not depend on the working
     directory joins it onto PROJECT_ROOT: a configured directory is absolute
     and wins that join, the default gets anchored.

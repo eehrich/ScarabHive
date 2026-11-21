@@ -1399,10 +1399,10 @@ class TestSessionsCommand:
         agent this chat runs on ("a" here) stays, whatever its visibility."""
         from types import SimpleNamespace as NS
 
-        decls = {"coder": NS(visibility="ui"), "v4_scorer": NS(visibility="private"),
+        decls = {"coder": NS(visibility="ui"), "batch_scorer": NS(visibility="private"),
                  "a": NS(visibility="private")}
         seen = self._dispatch(monkeypatch, "/sessions", runtime=NS(describe=decls.get))
-        assert seen["shown"]("coder") and not seen["shown"]("v4_scorer")
+        assert seen["shown"]("coder") and not seen["shown"]("batch_scorer")
         assert seen["shown"]("a"), "the conversation being had was hidden from its own listing"
         assert seen["everything_hint"] == "/sessions all"
 
@@ -3148,8 +3148,8 @@ class TestVarsCommand:
         to the prompt strategy."""
         ctx, tracker = self._ctx_with_tracker()
         r, _out = _renderer(width=200)
-        asyncio.run(_handle_vars(ctx, r, "lang=de book_id=7"))
-        assert tracker.get_session_template_vars("s") == {"lang": "de", "book_id": "7"}
+        asyncio.run(_handle_vars(ctx, r, "lang=de record_id=7"))
+        assert tracker.get_session_template_vars("s") == {"lang": "de", "record_id": "7"}
 
     def test_unset_really_removes_it(self):
         """The tracker only ever updates, so without a clear first the old
@@ -4478,7 +4478,7 @@ def _completion_ctx(monkeypatch, **extra):
     }
     tracker = SimpleNamespace(
         get_session_messages=lambda sid: [],
-        get_session_template_vars=lambda sid: {"projekt": "auritale"},
+        get_session_template_vars=lambda sid: {"projekt": "demo"},
         set_session_metadata=lambda sid, meta: None)
     agent = SimpleNamespace(
         system_config=SimpleNamespace(
@@ -4697,7 +4697,7 @@ class TestCompletion:
 
         # TWO words behind the command: with one, "the last word" and "the
         # rest of the line" are the same string and the test measures nothing.
-        assert _completion_word("/vars projekt=auritale buch=B8") == "buch=B8"
+        assert _completion_word("/vars projekt=demo record=R8") == "record=R8"
         assert _completion_word("/model d") == "d"
 
     def test_resume_does_not_offer_another_agents_session(self, monkeypatch):
@@ -4998,7 +4998,7 @@ class TestRename:
         import agent_system.cli_utils.chat as chat
 
         ctx = _completion_ctx(monkeypatch)
-        ctx.session_title = "Bewerte\n  Kapitel 3"
+        ctx.session_title = "Bewerte\n  Abschnitt 3"
 
         loop = asyncio.new_event_loop()
         try:
@@ -5006,7 +5006,7 @@ class TestRename:
         finally:
             loop.close()
 
-        assert "Title: Bewerte Kapitel 3" in capsys.readouterr().out
+        assert "Title: Bewerte Abschnitt 3" in capsys.readouterr().out
 
     def test_a_bare_title_says_the_one_on_disk(self, monkeypatch, capsys):
         """ctx.session_title is dropped once a save wrote it -- the record

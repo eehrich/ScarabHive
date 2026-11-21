@@ -383,8 +383,8 @@ def build_task_input(args: Any, agent: Agent, llm_override: Any,
 
         # Checked against the model this run will use -- the --llm override
         # wins over the agent's default, one rule with the HTTP API and the
-        # chat. sys.exit(1), not return: a caller that checks the code -- the
-        # writer runners do -- read a refused run as a finished one with empty
+        # chat. sys.exit(1), not return: a caller that checks the code -- scripted
+        # runners do -- read a refused run as a finished one with empty
         # output.
         try:
             task_input = message_with_attachments(args.task, sorted_attachments, llm_override, agent)

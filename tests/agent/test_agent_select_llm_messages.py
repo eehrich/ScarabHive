@@ -9,7 +9,7 @@ There used to be a second input, the ``compacted_messages`` marker on the
 session tracker, and a rebuild of ``[leading systems from pre-hook] +
 compacted`` whenever it was set. That rebuild is built from the messages
 BEFORE the hooks ran, so it dropped every system block a hook had injected --
-how the v5b synopsis moderator once looped 100x on
+how a debate's moderator once looped 100x on
 ``context_engineer.recall()`` without ever seeing the pinned channel task.
 It was also unreachable: whoever sets that marker inside a hook returns a new
 list in the same round, and the tool path clears it in its own step. Both the
@@ -58,8 +58,8 @@ class TestHookReturnedANewList:
         assert selected[1].role == "system"
         assert "Pinned content" in selected[1].content
 
-    def test_b171_regression_pinned_role_system_survives(self, base_messages):
-        """Regression for B171/B172: the v5b synopsis moderator loop.
+    def test_moderator_regression_pinned_role_system_survives(self, base_messages):
+        """Regression: a moderator loop of a debate.
 
         debate_forum injects its pinned content with ``role=system``. The old
         rebuild dropped it, because it was assembled from the leading systems
@@ -69,7 +69,7 @@ class TestHookReturnedANewList:
         """
         pinned = ChatMessage(
             role="system",
-            content="## Debate Forum - Channel #3055\nStory-Idee: ...",
+            content="## Debate Forum - Channel #3055\nIdee: ...",
             injected_by="debate_forum",
         )
         modified = _msgs(

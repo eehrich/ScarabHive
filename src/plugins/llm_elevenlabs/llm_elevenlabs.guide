@@ -46,7 +46,7 @@ A voice with a reference sample is cloned: the sample goes to
 @{tt}POST /v1/voices/add@{utt} once, and the voice id it gets is kept in
 @{tt}data/cache/elevenlabs_clones.json@{utt}, keyed by the sample's
 SHA-256. Every later call with the same sample, in any process, speaks with
-that id -- a book does not create a voice per scene, each would take a slot
+that id -- a long narration does not create a voice per scene, each would take a slot
 of the account. If the account answers 404 for a cached id (the voice was
 deleted), the entry is dropped and the sample cloned again, once. A preset
 id that does not exist is an error, never a clone.

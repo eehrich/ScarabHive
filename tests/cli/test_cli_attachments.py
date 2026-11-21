@@ -363,8 +363,8 @@ class TestPathsThatBite:
 class TestAFailedAttachmentIsAFailedRun:
     """A file that exists but cannot be processed used to leave with exit 0.
 
-    Callers that read the exit code -- the writer runners and
-    publish_pipeline do -- took the empty stdout for a successful run.
+    Callers that read the exit code -- pipeline runners of
+    further plugins do -- took the empty stdout for a successful run.
     """
 
     def test_agent_cli_exits_non_zero_on_an_unreadable_image(self, booted,
@@ -586,13 +586,13 @@ class TestNoAttachmentErrorLeavesWithZero:
 class TestAFinishedRunAlwaysPrintsItsResult:
     """A tool value that is not plain JSON must not end a finished run with exit 1.
 
-    Live run 2026-09-11: a tool_script failure report carried a set. The story
-    was already written when agent-cli died in json.dumps of its --verbose
+    Live run 2026-09-11: a tool_script failure report carried a set. The work
+    was already done when agent-cli died in json.dumps of its --verbose
     output, and the runner saw exit 1. This class only reuses the
     two-entry-point harness above; it has nothing to do with attachments.
     """
 
-    SET_RESULT = {"status": "error", "variables": {"seen": {"B01"}}}
+    SET_RESULT = {"status": "error", "variables": {"seen": {"R01"}}}
 
     @classmethod
     def _agent_returning_a_set(cls, monkeypatch):
@@ -618,7 +618,7 @@ class TestAFinishedRunAlwaysPrintsItsResult:
         cli.main()
 
         assert booted.sent, "the agent was never called -- nothing measured"
-        assert "B01" in capsys.readouterr().out
+        assert "R01" in capsys.readouterr().out
 
     def test_agent_run(self, booted, monkeypatch, capsys):
         async def fake_request(agent, request, session_id, llm_override=None,
@@ -633,7 +633,7 @@ class TestAFinishedRunAlwaysPrintsItsResult:
         agent_run.main()
 
         assert booted.sent, "the agent was never called -- nothing measured"
-        assert "B01" in capsys.readouterr().out
+        assert "R01" in capsys.readouterr().out
 
 
 class TestTheCapabilityCheckSeesTheModelTheRunUses:
