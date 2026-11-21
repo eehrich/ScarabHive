@@ -33,6 +33,33 @@ class TestGetVectorBackend:
         assert backend1 == backend2
 
 
+def test_a_chromadb_that_does_not_import_is_not_chosen(monkeypatch):
+    """chromadb 1.5.0 is installed on Python 3.14 and fails at import: found by name, it was chosen,
+    and every store failed at its first use instead of falling back to sqlite-vec."""
+    import importlib.abc
+    import importlib.machinery
+    import sys
+    from agent_system.utils.vector_store import base
+    pytest.importorskip("sqlite_vec")
+
+    class Broken(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, name, path=None, target=None):
+            return importlib.machinery.ModuleSpec(name, self) if name == "chromadb" else None
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise RuntimeError("unable to infer type for attribute")
+
+    monkeypatch.delitem(sys.modules, "chromadb", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [Broken(), *sys.meta_path])
+    monkeypatch.setattr(base, "_CHROMADB_IMPORTS", None)
+    monkeypatch.setattr(base, "_VECTOR_BACKEND", None)
+
+    assert base.get_vector_backend() == "sqlite-vec"
+
+
 class TestGetAvailableOnnxProviders:
     """Tests for ONNX provider detection."""
 
@@ -556,8 +583,9 @@ class TestTheDefaultModelNeedsNoTorch:
 
     @pytest.fixture
     def fresh_models(self, monkeypatch):
-        from agent_system.utils.vector_store import embeddings
+        from agent_system.utils.vector_store import base, embeddings
         monkeypatch.setattr(embeddings, "_embedding_models", {})
+        monkeypatch.setattr(base, "_CHROMADB_IMPORTS", None)  # a test that blocks chromadb is asked again
         return embeddings
 
     @pytest.mark.timeout(600)  # on a clean machine the child downloads the model first
@@ -596,10 +624,33 @@ class TestTheDefaultModelNeedsNoTorch:
             model = sentence_transformers.SentenceTransformer("all-MiniLM-L6-v2", device="cpu", local_files_only=True)
         except OSError:  # not cached here: fetched once
             model = sentence_transformers.SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+        if model.max_seq_length != fresh_models._OnnxMiniLM.MAX_TOKENS:
+            pytest.skip("the cached all-MiniLM-L6-v2 lacks its sentence-transformers config (only the "
+                        "transformers files): loaded offline it is not the model, so no reference")
         reference = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
 
         np.testing.assert_allclose(onnx, reference, atol=1e-5)  # direction and unit length
         np.testing.assert_allclose(single, reference[1], atol=1e-5)  # the one-text path too
+
+    @pytest.mark.parametrize("cached, fetch_fails, expected", [
+        ("modules.json", False, [True]),           # the whole model cached: read offline
+        (None, False, [False]),                    # only the transformers files: fetched, not rebuilt as BERT
+        (None, True, [False, True]),               # and offline: the cached files, as before
+    ])
+    def test_a_partly_cached_model_is_fetched_not_rebuilt(self, fresh_models, monkeypatch,
+                                                          cached, fetch_fails, expected):
+        import huggingface_hub
+        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda repo, name: cached)
+        calls = []
+
+        def factory(name, device, local_files_only=False):
+            calls.append(local_files_only)
+            if fetch_fails and not local_files_only:
+                raise OSError("offline")
+            return name
+
+        assert fresh_models._sentence_transformer(factory, "some-model") == "some-model"
+        assert calls == expected
 
     def test_another_model_without_sentence_transformers_names_what_is_missing(self, fresh_models, monkeypatch):
         import sys

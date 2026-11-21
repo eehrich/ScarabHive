@@ -826,7 +826,7 @@ class FileSearchEngine:
             return
         # The caller holds `_index_lock` for the whole pass, so the bookkeeping
         # is changed by nobody else meanwhile.
-        self._index_built = self._built_once = True
+        self._built_once = True
         self._mended = {}
         self._pass_found = {}
         self._index_error = None
@@ -835,6 +835,8 @@ class FileSearchEngine:
         self._last_pass_started = start_time
         if store_ready:
             await asyncio.to_thread(self._save_state, True)
+        # After the save: whoever sees the index built finds its state on disk too.
+        self._index_built = True
         # Only now, at the end of a pass that ran through: a pass that died
         # left no stamps, so the next search runs one instead of trusting them.
         files = dict(self.file_mtimes)

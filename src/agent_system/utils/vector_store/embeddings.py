@@ -19,6 +19,8 @@ from typing import Any, List, Optional
 
 from filelock import FileLock, SoftFileLock, Timeout
 
+from .base import chromadb_imports
+
 logger = logging.getLogger(__name__)
 
 # Vector dimension for MiniLM-L6-v2 (default embedding model)
@@ -244,6 +246,32 @@ class _OnnxMiniLM:
         return vectors[0] if single else vectors
 
 
+def _sentence_transformer(factory: Any, model_name: str) -> Any:
+    """``factory(model_name)`` from the cache when the cache holds the whole model, else fetched.
+
+    A cache with only the transformers files (another loader fetched them) still loads offline, but
+    as a plain BERT: no sentence-transformers config, so 512 tokens instead of the model's own
+    length and no Normalize -- other vectors, without an error.
+    """
+    from huggingface_hub import try_to_load_from_cache
+    repo = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
+    try:
+        cached = try_to_load_from_cache(repo, "modules.json")
+    except ValueError:  # a local folder is no repo id (HFValidationError); the factory reads it
+        cached = None
+    if isinstance(cached, str):
+        try:
+            return factory(model_name, device="cpu", local_files_only=True)
+        except OSError:
+            pass
+    try:
+        return factory(model_name, device="cpu")
+    except OSError:
+        logger.warning("%s: its sentence-transformers config is not cached and cannot be fetched; "
+                       "loading the cached files without it", model_name)
+        return factory(model_name, device="cpu", local_files_only=True)
+
+
 def _load_embedding_model(model_name: str):
     """The embedding model *model_name*, loaded once for the lifetime of the process.
 
@@ -259,8 +287,7 @@ def _load_embedding_model(model_name: str):
     with _LOADING.setdefault(key, threading.Lock()):
         if key in _embedding_models:  # loaded while this caller waited
             return _embedding_models[key]
-        import importlib.util
-        if key in _ONNX_MODEL_NAMES and importlib.util.find_spec("chromadb") is not None:
+        if key in _ONNX_MODEL_NAMES and chromadb_imports():
             _embedding_models[key] = _OnnxMiniLM()
             logger.info(f"Embedding model loaded ({model_name}, ONNX)")
             return _embedding_models[key]
@@ -271,14 +298,7 @@ def _load_embedding_model(model_name: str):
                      else "sentence-transformers (pip install sentence-transformers); "
                           "only all-MiniLM-L6-v2 runs without it")
             raise ImportError(f"Embedding model {model_name!r} needs {needs}") from error
-        try:
-            _embedding_models[key] = SentenceTransformer(
-                model_name, device="cpu", local_files_only=True,
-            )
-        except OSError:
-            _embedding_models[key] = SentenceTransformer(
-                model_name, device="cpu",
-            )
+        _embedding_models[key] = _sentence_transformer(SentenceTransformer, model_name)
         logger.info(f"SentenceTransformer loaded ({model_name})")
         return _embedding_models[key]
 

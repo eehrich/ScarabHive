@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 
 # Cached backend detection
 _VECTOR_BACKEND: Optional[str] = None
+_CHROMADB_IMPORTS: Optional[bool] = None
+
+
+def chromadb_imports() -> bool:
+    """Whether chromadb is installed AND imports. Installed is not enough: 1.5.0 is there on
+    Python 3.14 and fails at import (its settings ran on pydantic v1)."""
+    global _CHROMADB_IMPORTS
+    if _CHROMADB_IMPORTS is None:
+        try:
+            import chromadb  # noqa: F401
+            _CHROMADB_IMPORTS = True
+        except ImportError:
+            _CHROMADB_IMPORTS = False
+        except Exception as error:  # installed, but broken in this Python
+            logger.warning("chromadb is installed but does not import here: %s", error)
+            _CHROMADB_IMPORTS = False
+    return _CHROMADB_IMPORTS
 
 
 def get_vector_backend() -> str:
@@ -37,7 +54,7 @@ def get_vector_backend() -> str:
 
     # Try ChromaDB first (works on all platforms with SegmentAPI workaround)
     import importlib.util
-    chroma_usable = importlib.util.find_spec("chromadb") is not None and (
+    chroma_usable = chromadb_imports() and (
         platform.system() != "Windows" or importlib.util.find_spec("hnswlib") is not None)
     if chroma_usable:
         _VECTOR_BACKEND = "chromadb"
@@ -50,10 +67,12 @@ def get_vector_backend() -> str:
     # Fallback to sqlite-vec
     if importlib.util.find_spec("sqlite_vec") is not None:
         _VECTOR_BACKEND = "sqlite-vec"
-        if importlib.util.find_spec("chromadb") is not None:
-            logger.info("Vector backend: sqlite-vec (chromadb's Windows mode needs hnswlib, which is not installed)")
-        else:
+        if importlib.util.find_spec("chromadb") is None:
             logger.info("Vector backend: sqlite-vec (fallback)")
+        elif not chromadb_imports():
+            logger.info("Vector backend: sqlite-vec (chromadb does not import, see the warning above)")
+        else:
+            logger.info("Vector backend: sqlite-vec (chromadb's Windows mode needs hnswlib, which is not installed)")
         return _VECTOR_BACKEND
     
     raise RuntimeError(
