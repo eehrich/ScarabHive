@@ -72,6 +72,50 @@ class TestADotIsWhereThePersonStands:
 
         assert server.validator.allowed_dirs == [(project / "src").resolve()]
 
+    def test_a_relative_path_names_a_file_where_the_person_stands(self, here_and_project):
+        """The shell of such an agent starts there too: read against the
+        checkout, "README.md" named a file outside every root and was refused."""
+        here, _ = here_and_project
+
+        server = _server(["."])
+
+        assert server.validator.validate_path("README.md") == (here / "README.md").resolve()
+
+    def test_data_stays_the_installations(self, here_and_project, monkeypatch):
+        """Prompts and skills name data/workspace and its like relatively."""
+        here, project = here_and_project
+        monkeypatch.setattr(paths, "configured_data_dir", lambda: None)
+        (project / "data" / "workspace").mkdir(parents=True)
+
+        server = _server([".", "data/workspace"])
+
+        assert server.validator.validate_path("data/workspace/a.py") == (
+            project / "data" / "workspace" / "a.py").resolve()
+        assert server.validator.describe_roots() == "., data/workspace"
+
+    def test_a_project_with_a_data_folder_of_its_own_still_gets_the_installations(
+            self, here_and_project, monkeypatch):
+        """The Godot tools and every other plugin read data/... as the
+        installation's; a second meaning here split the file tools from them."""
+        here, project = here_and_project
+        monkeypatch.setattr(paths, "configured_data_dir", lambda: None)
+        (here / "data" / "workspace").mkdir(parents=True)
+        (project / "data" / "workspace").mkdir(parents=True)
+
+        server = _server([".", "data/workspace"])
+
+        assert server.validator.validate_path("data/workspace/a.py") == (
+            project / "data" / "workspace" / "a.py").resolve()
+
+
+    def test_without_a_dot_a_relative_path_names_the_project(self, here_and_project):
+        here, project = here_and_project
+        (project / "src").mkdir()
+
+        server = _server(["src"])
+
+        assert server.validator.validate_path("src/a.py") == (project / "src" / "a.py").resolve()
+
     @pytest.mark.parametrize("spelling", ["./"] + ([".\\"] if sys.platform == "win32" else []))
     def test_every_spelling_of_the_dot_means_the_same(self, here_and_project, spelling):
         here, _ = here_and_project
@@ -79,6 +123,21 @@ class TestADotIsWhereThePersonStands:
         server = _server([spelling])
 
         assert server.validator.allowed_dirs == [here.resolve()]
+
+
+def test_started_in_the_project_a_configured_data_directory_still_wins(tmp_path, monkeypatch):
+    """Where the person stands IS the project (the web UI, a start in the
+    checkout): its own data folder must not shadow the configured one."""
+    project, elsewhere = tmp_path / "projekt", tmp_path / "daten"
+    (project / "data").mkdir(parents=True)
+    (elsewhere / "workspace").mkdir(parents=True)
+    monkeypatch.setattr(paths, "_launch_dir", None)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(paths, "configured_data_dir", lambda: elsewhere)
+
+    server = _server([".", str(elsewhere / "workspace")])
+
+    assert server.validator.validate_path("data/workspace/a.py") == (elsewhere / "workspace" / "a.py").resolve()
 
 
 def test_an_empty_list_allows_nothing(tmp_path, monkeypatch):

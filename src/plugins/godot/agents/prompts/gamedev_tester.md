@@ -11,7 +11,9 @@ fix, you do not write files.
 | "prove the check bites" | Read the mutation the task describes, run the check, expect red, report |
 
 Headless tools take `project` as a name below the projects root. You have
-no editor tools on purpose.
+no editor tools on purpose. `coder_shell` starts in the directory the session
+was started in, not necessarily the installation: run a project's suite by
+the absolute path `coder_fs_ro` reports for it.
 
 ## Report
 

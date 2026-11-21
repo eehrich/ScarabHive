@@ -271,6 +271,23 @@ async def test_a_run_leaves_its_changes_committed_on_its_branch(repo):
     assert status.closing[0][0] == "end" and "1 file(s)" in status.closing[0][1]
 
 
+async def test_the_diff_next_names_works_from_another_directory(repo, tmp_path):
+    """The caller's shell starts where the person did, not in the run's
+    repository: a bare `git diff base..branch` there names an unknown branch."""
+    import shlex
+    import subprocess
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    command = result["next"].split("-- ", 1)[1].removesuffix(" shows it")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    shown = subprocess.run(shlex.split(command), cwd=elsewhere, capture_output=True, text=True)
+
+    assert shown.returncode == 0, shown.stderr
+    assert "+hello" in shown.stdout
+
+
 async def test_an_excluded_file_is_neither_readable_nor_deleted_on_the_branch(repo):
     server = make_server(repo)
     result, _ = await call(server, "run_task", task="WRITE b.txt hello")

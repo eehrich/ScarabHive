@@ -21,9 +21,13 @@ plugins:
         - data/workspace/
         # Its own skills: the harness may correct the discipline it works by.
         - src/plugins/coder/skills/
-        # The repository itself. With `.` in the list the two entries above
-        # are contained in it, and so is this file: the coder can rewrite its
-        # own tool allowlist. Drop `src/` and `.` to get that boundary back.
+        # The installation's own code, and `.`: the directory the command was
+        # started in, which relative paths count against (data/... excepted).
+        # The API never moves, so in the web UI it is the directory the API
+        # runs in. Started in the checkout, `.` is the repository:
+        # the two entries above are contained in it, and so is this file -- the
+        # coder can rewrite its own tool allowlist. Started in another project,
+        # `.` is that project. Drop `src/` and `.` to get the boundary back.
         #
         # Search stays cheap all the same: overlapping roots are walked once,
         # and gitignored trees (data/sessions, data/message_debugger) are
@@ -148,13 +152,14 @@ plugins:
           - 'git clean -'
         allow_command_chains: true
       platform:
-        # The repository root: the base coder_fs resolves relative paths
-        # against, so one relative path names one file in both tools. Started
-        # in data/workspace, the shell read every path the file tools gave it
-        # one level too deep -- measured 12 wrong paths in 7 of 9 real coder
-        # sessions (data\workspace\data\workspace\dodge.html, `cd
-        # data/workspace/backlog` from inside data/workspace).
-        initial_cwd: "."
+        # Unset: the directory the command was started in -- the base coder_fs
+        # resolves relative paths against, since it allows ".", so one
+        # relative path names one file in both tools. `"."` here would be the
+        # repository even when the coder was started in another project.
+        # Started in data/workspace, the shell read every path the file tools
+        # gave it one level too deep -- measured 12 wrong paths in 7 of 9 real
+        # coder sessions (data\workspace\data\workspace\dodge.html).
+        initial_cwd: null
       limits:
         max_output_size_kb: 60
         default_timeout_seconds: 300

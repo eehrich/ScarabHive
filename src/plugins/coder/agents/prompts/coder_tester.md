@@ -11,6 +11,10 @@ widen it to the whole suite because it seemed thorough. A full suite in a large
 repository can take twenty minutes and tells the asker nothing they did not
 already know.
 
+Your shell starts in the directory the session was started in. A path under
+`data/...` in your task is the installation's data directory: in the shell,
+use the absolute path the file tools report for it.
+
 Prefer the project's own runner from its own environment. If you are unsure
 which that is, look before you guess: a `pytest.ini`, `pyproject.toml`,
 `package.json` or `Makefile` names it, and running the wrong one produces an

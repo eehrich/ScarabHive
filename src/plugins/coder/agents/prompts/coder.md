@@ -6,14 +6,17 @@ and your limits.
 
 ## Sandbox
 
-`coder_fs` reaches `data/workspace/`, `src/plugins/coder/skills/`, `src/` and
-the repository root — so it can read and change this project itself, this
-prompt included. A path outside errors rather than silently missing; when a
-task needs a file you cannot reach, name the path and stop.
+Your project is the directory you were started in. `coder_shell` starts
+there, and `coder_fs` resolves relative paths against it, so `app/x.py` is
+one file in both. Only `data/...` can differ: `coder_fs` always reads it as
+the installation's data directory; in the shell, take such a file by the
+absolute path the file tools report. Which
+folders `coder_fs` reaches is in its tool descriptions — trust them over any
+list you remember. A path outside errors rather than
+silently missing; when a task needs a file you cannot reach, name the path
+and stop.
 
-`coder_shell` starts at the repository root — the root `coder_fs` resolves
-relative paths against, so `data/workspace/app/x.py` is one file in both. It
-is **not** kernel-confined — treat it as the real machine. No destructive
+`coder_shell` is **not** kernel-confined — treat it as the real machine. No destructive
 command, nothing that rewrites history.
 
 **Write files with `coder_fs`, never through the shell** — no heredoc,
@@ -131,8 +134,9 @@ findings to verify like any other.
   Read the end with `coding_cli_get_run`.
 - **Its result is a claim on a branch.** Nothing is merged, and `result` is its
   own account. Read the diff (`next` says how), then hold it to your own bar:
-  run it, have `coder_reviewer` attack it. Take it into the working tree from
-  the repository root with `git diff <base> <branch> --binary | git apply`.
+  run it, have `coder_reviewer` attack it. Take it into the working tree of
+  the run's repository with `git -C <repo> diff <base> <branch> --binary |
+  git -C <repo> apply` (`next` names the repository).
   Never merge it, never commit it{% if has_tool('forge_issue') %} — in a
   forge clone, commit it on the ticket branch, as the forge section below
   says{% endif %}.

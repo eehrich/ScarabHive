@@ -50,9 +50,14 @@ it there are no roles, and anyone who reaches the API can start them.
 @{h2}What it reaches
 
 The file tools reach @{tt}data/workspace/@{utt}, @{tt}src/@{utt} and the
-repository root -- the coder works on this project itself, and can change
-its own configuration. The shell starts in the repository root, so one
-relative path names the same file in both. The shell is not sandboxed: it
+directory the command was started in. Started in the checkout -- and in the
+web UI, the directory the API runs in -- that is the repository: the coder
+works on this project itself, and can change its own configuration. Started
+in another project, it works there. The shell starts in that same directory
+and relative paths count from it in both tools -- only @{tt}data/...@{utt}
+always names the installation's data directory in the file tools, as in
+every other plugin -- so one relative path names the
+same file in both. The shell is not sandboxed: it
 runs what an admin could run there, and its blacklist (@{tt}rm -rf /@{utt},
 @{tt}git push@{utt}, @{tt}git reset --hard@{utt}, @{tt}git checkout --@{utt},
 @{tt}git clean -@{utt} and a few more) is a guard against typos, not a
@@ -208,7 +213,7 @@ sandbox.
 @{h2}The project's own instructions
 
 All four agents read the project's @{tt}AGENTS.md@{utt} from the
-repository root and keep that version for the session; see
+directory the command was started in and keep that version for the session; see
 @{" Project Instructions " link project_instructions/main}.
 
 @{h2}The workspace searched before the first answer
@@ -402,7 +407,7 @@ so it repeats it. See
 
 @{table}
 Key | Value | Default in code
-platform.initial_cwd | . | --
+platform.initial_cwd | null (where the command was started) | where the command was started
 security.blacklist | rm -rf /, dd if=, mkfs, chmod 777, git push, git reset --hard, git checkout --, git clean - | none
 security.allow_command_chains | true | true
 limits.max_output_size_kb | 60 | 60

@@ -120,7 +120,8 @@ logs are large). Skill on demand: @{tt}godot-conventions@{utt}. Models:
 @{tt}or-gpt-full@{utt}; at most 80 steps.
 
 @{tt}coder_fs@{utt} is the coder's instance: it reaches
-@{tt}data/workspace/@{utt} and, as shipped, the whole checkout.
+@{tt}data/workspace/@{utt} and the directory the command was started in --
+started in the checkout, that is the whole checkout.
 
 @{h2}gamedev_tester
 

@@ -6,13 +6,12 @@ and they disagreed on three points:
 
 * **What a relative path counts against.** ``media_ops`` captured a base at
   startup, ``file_ops`` resolved against whatever the process working
-  directory happened to be at call time. Both call sites still pass
-  ``Path.cwd()`` — there is nothing better to pass, ``AgentSystemConfig`` has
-  no project root — so this does NOT yet make the boundary independent of the
-  working directory. What it does buy: the base is captured ONCE, at
-  construction. A ``chdir`` at runtime used to move ``file_ops``' boundary
-  under it; now it cannot. Making the base something other than the cwd is a
-  separate change, and it needs a project root to exist first.
+  directory happened to be at call time. The base is captured ONCE, at
+  construction: a ``chdir`` at runtime used to move ``file_ops``' boundary
+  under it; now it cannot. Callers pass the working directory -- except a
+  ``file_ops`` instance that allows ``"."``, which counts from the directory
+  the command was started in and keeps ``data/...`` on the installation
+  (``data_base``).
 * **Whether ``..`` is allowed.** ``file_ops`` rejected any path containing
   ``..`` lexically; ``media_ops`` resolved it and judged the result.
 * **Whether a read-only mode exists.** ``file_ops`` had one, ``media_ops`` did
@@ -68,11 +67,11 @@ import logging
 import os
 import stat
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PureWindowsPath
 from typing import Iterable
 
-from agent_system.paths import PROJECT_ROOT, data_path, resolve_data_path
+from agent_system.paths import PROJECT_ROOT, _names_data, data_path, resolve_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -240,11 +239,16 @@ class PathSandbox:
         roots: canonicalized absolute directories. EMPTY means nothing allowed.
         base: what a relative input path is resolved against.
         read_only: when True, every call with ``write=True`` is refused.
+        data_base: what a relative ``data/...`` counts against while no data
+            directory is configured; None means ``base``. Set when ``base`` is
+            the person's directory, not the installation's: ``data/...`` stays
+            the installation's, as every other tool reads it.
     """
 
     roots: tuple[Path, ...]
     base: Path
     read_only: bool = False
+    data_base: Path | None = None
 
     @classmethod
     def from_config(
@@ -253,6 +257,7 @@ class PathSandbox:
         *,
         base: Path | str,
         read_only: bool = False,
+        data_base: Path | str | None = None,
     ) -> "PathSandbox":
         """Build from plugin configuration.
 
@@ -260,18 +265,29 @@ class PathSandbox:
         ``- data`` names the same root in every configuration regardless of
         where the process was started.
         """
-        resolved_base = Path(base).resolve()
+        sandbox = cls(roots=(), base=Path(base).resolve(), read_only=read_only,
+                      data_base=Path(data_base).resolve() if data_base is not None else None)
         # A data/... root lands in the data directory like a data/... request
         # does (resolve below) -- a root left behind would deny every one.
-        roots = []
-        for entry in allowed_directories or ():
-            root = resolve_data_path(entry)
-            roots.append((root if root.is_absolute() else resolved_base / root).resolve())
+        roots = tuple(sandbox._joined(Path(entry)).resolve() for entry in allowed_directories or ())
         if not roots:
             logger.warning(
                 "PathSandbox has no allowed directories — every path will be "
                 "refused (fail closed)")
-        return cls(roots=tuple(roots), base=resolved_base, read_only=read_only)
+        return replace(sandbox, roots=roots)
+
+    def _data_anchor(self) -> Path:
+        """Where a relative ``data/...`` lands: the data directory."""
+        return (self.data_base if self.data_base is not None else self.base) / data_path()
+
+    def _joined(self, named: Path) -> Path:
+        """``named`` made absolute, not yet resolved: ``data/...`` in the data directory, the rest on the base."""
+        names_data = _names_data(str(named))
+        moved = resolve_data_path(named)
+        if moved.is_absolute():
+            return moved
+        anchor = self.data_base if names_data and self.data_base is not None else self.base
+        return anchor / moved
 
     def resolve(self, path: str, *, write: bool = False) -> Path:
         """Canonicalize the path and return it if it lies inside.
@@ -311,8 +327,7 @@ class PathSandbox:
             # A relative data/... names the data directory, wherever it is
             # configured (agent_system/paths.py) -- prompts and skills brief
             # the model with those paths. Nothing configured, nothing moves.
-            candidate = resolve_data_path(candidate)
-            full = (candidate if candidate.is_absolute() else self.base / candidate).resolve()
+            full = self._joined(candidate).resolve()
         except (OSError, ValueError) as exc:
             # Over-long paths on Windows (null bytes are refused above).
             #
@@ -364,7 +379,7 @@ class PathSandbox:
             try:
                 if Path(named.anchor, *parts[:cut]).exists():
                     continue
-                full = (self.base / resolve_data_path(Path(*parts[cut:]))).resolve()
+                full = self._joined(Path(*parts[cut:])).resolve()
             except (OSError, ValueError):
                 return None         # too long, not allowed to look: refused as before
             if any((full == root or root in full.parents)
@@ -383,7 +398,7 @@ class PathSandbox:
         # must not reach it (remote_outside).
         # The base first: a root that is the base is "." -- named data/..., a caller that joins
         # relative paths to its root (ssh_control's local_root) nested it in itself.
-        for anchor, prefix in ((self.base, ""), (Path(os.path.abspath(self.base / data_path())), "data")):
+        for anchor, prefix in ((self.base, ""), (Path(os.path.abspath(self._data_anchor())), "data")):
             try:
                 below = root.relative_to(anchor)
             except ValueError:

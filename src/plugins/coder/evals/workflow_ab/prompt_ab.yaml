@@ -10,8 +10,8 @@
 # Only the coder's own prompt differs: the same edit touched the explorer's and the reviewer's, and both arms run
 # those as shipped. The counts read the coder's session alone, so they compare what was edited there.
 #
-# The hidden tests are kept from coder_fs, not from coder_shell: the shell starts at the checkout's root (as the
-# file tools resolve a relative path) and can reach them. Confining it takes the terminal's sandbox, which has no
+# The hidden tests are kept from coder_fs, not from coder_shell: the shell starts in the run's workspace (where
+# the file tools resolve a relative path), but nothing confines it, so an absolute path reaches them. Confining it takes the terminal's sandbox, which has no
 # backend on Windows. A run's session shows whether it looked: none of the first eight did.
 #
 # Run it with:  agent-eval run src/plugins/coder/evals/workflow_ab/prompt_ab.yaml

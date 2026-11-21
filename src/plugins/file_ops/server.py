@@ -300,13 +300,18 @@ class FileOpsServer(SchemaBasedToolServer):
         # key let the agent write a plugin under src/plugins/ that the next
         # start loads.
         allowed_dirs = getattr(server_config, "allowed_directories", None)
+        project_root = Path.cwd()
+        # What a relative path in a request counts against. An instance that
+        # allows "." works where the person started it: "README.md" is their
+        # file there, as it is to the shell that starts in the same place.
+        # data/... stays the installation's (prompts and skills name it so).
+        request_base = project_root
         if allowed_dirs is None:
             logger.warning("%s: no allowed_directories configured -- every path is refused; "
                            "list the folders this instance may use", name)
             allowed_dirs = []
         else:
             # Resolve relative paths relative to project root
-            project_root = Path.cwd()
             resolved_dirs = []
             for dir_path in allowed_dirs:
                 if not str(dir_path).strip():
@@ -325,6 +330,7 @@ class FileOpsServer(SchemaBasedToolServer):
                     # the project, as everything was until now, the two are
                     # the same directory and nothing changes.
                     resolved_dirs.append(str(launch_dir()))
+                    request_base = launch_dir()
                 else:
                     # Resolve relative to project root
                     resolved_path = (project_root / dir_path).resolve()
@@ -332,7 +338,7 @@ class FileOpsServer(SchemaBasedToolServer):
             allowed_dirs = resolved_dirs
 
         # Initialize components
-        self.validator = PathValidator(allowed_dirs)
+        self.validator = PathValidator(allowed_dirs, base=request_base, data_base=project_root)
         
         # Read-only mode flag
         self.read_only = getattr(server_config, "read_only", False)

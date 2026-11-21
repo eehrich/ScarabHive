@@ -2340,9 +2340,12 @@ class CodingCliServer(SchemaBasedToolServer):
             answer["api_error"] = record["api_error"]
         if record.get("details"):
             answer["details"] = _untrusted(record["details"])
+        # Named with its repository: the caller's shell may stand in another one (it starts where the person did).
+        # Forward slashes: inside a bash double quote a backslash before \, $ or " is eaten.
+        git = f'git -C "{Path(record["repo"]).as_posix()}"' if record.get("repo") else "git"
         answer["next"] = (f"resume={run_id} continues this conversation; the run worked on no files" if record.get("room")
                           else f"resume={run_id} continues this conversation in the same worktree; nothing is merged "
-                               f"-- git diff {str(record.get('base'))[:10]}..{record.get('branch')} shows it")
+                               f"-- {git} diff {str(record.get('base'))[:10]}..{record.get('branch')} shows it")
         files = len([c for c in changes if not c.startswith("...")])
         window = (record.get("abo") or {}).get("five_hour")
         line = (f"run {run_id} {record.get('state')}: {record.get('turns') or 0} turn(s), {files} file(s), "

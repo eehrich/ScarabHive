@@ -70,7 +70,8 @@ def from_git_bash(path: str) -> str:
 class PathValidator:
     """Validates and sanitizes file paths for secure file operations."""
 
-    def __init__(self, allowed_dirs: List[str], base: Path | str | None = None):
+    def __init__(self, allowed_dirs: List[str], base: Path | str | None = None,
+                 data_base: Path | str | None = None):
         """
         Args:
             allowed_dirs: directories allowed for file operations. Relative
@@ -78,9 +79,11 @@ class PathValidator:
             base: what a relative path counts against. Defaults to the current
                 working directory, which is what this plugin used before the
                 shared sandbox existed.
+            data_base: what a relative ``data/...`` counts against (PathSandbox);
+                None means ``base``.
         """
         self._sandbox = PathSandbox.from_config(
-            allowed_dirs, base=base if base is not None else Path.cwd())
+            allowed_dirs, base=base if base is not None else Path.cwd(), data_base=data_base)
         logger.info(
             "PathValidator initialized with %d allowed directories",
             len(self._sandbox.roots))

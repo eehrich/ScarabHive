@@ -405,7 +405,7 @@ def test_the_claude_code_section_is_there_exactly_when_the_tool_is(config):
     with_tool = _rendered_coder_prompt(config, ["coding_cli", "coding_cli_run_task", "coding_cli_get_run"])
     without = _rendered_coder_prompt(config, ["coder_fs", "coder_fs_read_file"])
 
-    assert "## Claude Code" in with_tool and "git apply" in with_tool
+    assert "## Claude Code" in with_tool and "coding_cli_get_run" in with_tool
     assert "Claude Code" not in without and "coding_cli" not in without
 
 
@@ -436,6 +436,29 @@ def test_one_relative_path_names_one_file_in_the_shell_and_the_file_tools(config
     relative = "data/workspace/some_project/app.py"
 
     assert Path(shell.executor.initial_cwd) / relative == files.validator.validate_path(relative)
+
+
+def test_started_in_another_project_both_tools_work_there(config, tmp_path, monkeypatch):
+    """Started outside the checkout, coder_fs allowed the person's directory
+    while the shell -- and every relative path the file tools took -- stayed in
+    the repository: "README.md" was refused, the project reachable only by an
+    absolute path the model had to guess."""
+    from agent_system import paths
+    from plugins.file_ops.plugin import PLUGIN_FACTORY as FILE_OPS
+    from plugins.terminal.plugin import PLUGIN_FACTORY as TERMINAL
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    monkeypatch.setattr(paths, "_launch_dir", project)
+    assert Path.cwd() != project, "fixture: launched where the process runs"
+
+    shell = TERMINAL(name="coder_shell", system_config=config,
+                     server_config=config.plugins.servers["coder_shell"])
+    files = FILE_OPS(name="coder_fs", system_config=config,
+                     server_config=config.plugins.servers["coder_fs"])
+
+    assert Path(shell.executor.initial_cwd) == project
+    assert files.validator.validate_path("README.md") == project / "README.md"
 
 
 # ── The project's AGENTS.md ────────────────────────────────────────────────
@@ -571,3 +594,4 @@ async def test_the_changed_files_notice_is_registered_and_on_for_the_coder(confi
     search = getattr(server_config, "search", None) or {}
     assert search.get("enable_semantic_search") and search.get("enable_indexing", True), \
         "the notice reads the journal of an index coder_fs must build"
+
