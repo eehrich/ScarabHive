@@ -117,6 +117,28 @@ def local_operator_trusted() -> Iterator[None]:
         _local_operator_trusted = before
 
 
+def operator_account(who: Any, auth: Optional[Any]) -> Any:
+    """The account whose per-user state the local operator uses: the configured
+    first admin (``auth.default_admin_username``), while this process trusts the
+    operator, no account holds its name, and that admin is an active admin
+    account -- the operator acts as admin there, so it works with what the admin
+    set up (a CLI login, for one). By role, not by name: a demoted or re-registered
+    account of that name gets none of the operator's state. Anyone else, and the
+    operator anywhere else, is themselves."""
+    if who != LOCAL_OPERATOR or not _local_operator_trusted:
+        return who
+    if _stored_account(who, auth) is not None:  # an account of that name, or no answer
+        return who
+    from agent_system.auth.enforcement import role_rank
+    from agent_system.auth.first_admin import SHIPPED_USERNAME
+
+    admin = getattr(auth, "default_admin_username", None) or SHIPPED_USERNAME
+    account = _stored_account(admin, auth)
+    if not isinstance(account, tuple) or not account[1] or role_rank(account[0]) < role_rank("admin"):
+        return who
+    return admin
+
+
 def agent_run_denial(min_role: Optional[str], who: Any, auth: Optional[Any], *,
                      local_operator: Optional[bool] = None) -> Optional[str]:
     """Why *who* may not run an agent that requires *min_role*, or None if it may.

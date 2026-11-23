@@ -801,7 +801,12 @@ under. A run gets a home folder of its own, @{tt}agy_home/<user>@{utt} in
 the data folder, with pinned settings: the user's own agy settings, MCP
 servers and memories stay out, and so do Claude Code's variables. Runs of
 one ScarabHive user share their folder -- a resume finds its conversation
-there --, another user's runs have their own. On Windows agy finds
+there --, another user's runs have their own. The local operator of
+agent-cli and agent-run (@{tt}cli_user@{utt}) acts as the admin there and
+uses the folder of @{tt}auth.default_admin_username@{utt}, while that is an
+active admin account; in the API it keeps a folder of its own. An eval
+suite with fresh data has a data folder of its own, and with it agy homes
+without the admin's state. On Windows agy finds
 the login in the credential store from there (measured); elsewhere it may
 keep it in the home folder -- then log in once with @{tt}HOME@{utt} set to
 that folder. Its stream is read as Claude Code's, so
@@ -902,7 +907,7 @@ runs/<id>.read-<session> | that session has read the run's end: it is not woken 
 runs/<id>.released-<instance>, .adopt-<instance> | a stopped instance let the run go; the claim of the instance that took it over
 quota.json | the last subscription report
 quota.asked | when a question for the subscription's state last got no answer
-agy_home/<user> | an Antigravity run's home folder, one per user: its pinned settings, agy's state
+agy_home/<user> | an Antigravity run's home folder, one per user (agent-cli's and agent-run's operator uses the admin's): its pinned settings, agy's state
 runs/<id>.mcp.json | the run's MCP config, for a workdir with @{tt}mcp_servers@{utt}: urls and placeholders, no secret; deleted when the run ends, or when it did not start
 no_mcp.json | the empty MCP config
 worktrees/<id> | the worktrees; their branches are @{tt}coding_cli/<id>@{utt} in the workdir's repository

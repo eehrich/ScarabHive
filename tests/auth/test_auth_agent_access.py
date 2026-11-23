@@ -15,7 +15,8 @@ import pytest
 
 from agent_system.auth import database
 from agent_system.auth import agent_access
-from agent_system.auth.agent_access import agent_run_denial, local_operator_trusted, may_run_agent
+from agent_system.auth.agent_access import (agent_run_denial, local_operator_trusted, may_run_agent,
+                                              operator_account)
 from agent_system.auth.enforcement import AnonymousUser
 from agent_system.auth.models import User, UserCreate, UserRole
 from agent_system.config.models import AnonymousAccessConfig, AuthConfig
@@ -296,3 +297,40 @@ def test_an_operator_named_account_the_store_cannot_parse_is_refused(store, loca
         conn.commit()
 
     assert agent_run_denial("guest", "cli_user", _auth()) is not None
+
+
+# ---------------------------------------------------------------- whose state the operator uses
+
+def test_the_local_operator_uses_the_configured_admins_state_in_a_local_process(store, local_process):
+    assert operator_account("cli_user", _auth(default_admin_username="root")) == "root"
+
+
+@pytest.mark.parametrize("admin", ["bob", "idle", "nobody"])
+def test_only_an_active_admin_account_lends_its_state(store, local_process, admin):
+    """bob is a user, idle an inactive admin, nobody has no account: the operator stays itself."""
+    assert operator_account("cli_user", _auth(default_admin_username=admin)) == "cli_user"
+
+
+def test_without_a_user_store_the_operator_is_itself(no_store, local_process):
+    assert operator_account("cli_user", _auth(default_admin_username="root")) == "cli_user"
+
+
+def test_in_the_api_process_the_operator_is_itself(store, api_process):
+    assert operator_account("cli_user", _auth(default_admin_username="root")) == "cli_user"
+
+
+def test_anyone_else_is_themselves_also_in_a_local_process(store, local_process):
+    assert operator_account("bob", _auth(default_admin_username="root")) == "bob"
+
+
+def test_an_older_account_named_like_the_operator_keeps_its_own_state(store, local_process):
+    with closing(sqlite3.connect(store.db_path)) as conn:
+        conn.execute("INSERT INTO users (username, email, hashed_password, is_active, role, created_at) "
+                     "VALUES ('cli_user', 'old@example.com', 'x', 1, 'user', '2025-01-01T00:00:00')")
+        conn.commit()
+    assert operator_account("cli_user", _auth(default_admin_username="root")) == "cli_user"
+
+
+def test_an_unreadable_store_keeps_the_operator_itself(monkeypatch, local_process):
+    monkeypatch.setattr(database, "_db", _StoreNobodyMayAsk())
+    assert operator_account("cli_user", _auth(default_admin_username="root")) == "cli_user"

@@ -355,6 +355,26 @@ async def test_each_user_has_an_agy_home_of_their_own(repo, log, data_root):  # 
     assert Path(log()["home"]) == data_root / "agy_home" / "other"
 
 
+async def test_the_local_operator_of_an_agent_run_uses_the_admins_agy_home(repo, log, data_root, monkeypatch):  # noqa: F811
+    """In agent-run the operator acts as the admin, so its runs find the admin's agy login; in the API process
+    the name is a name like any other and keeps a home of its own."""
+    from agent_system.auth import agent_access, database
+    from agent_system.auth.models import UserCreate, UserRole
+
+    users = database.UserDatabase(data_root / "users.db")
+    users.create_user(UserCreate(username="root", email="root@example.com", password="correct-horse",
+                                 role=UserRole.ADMIN, is_active=True))
+    monkeypatch.setattr(database, "_db", users)
+    server = make_agy(repo, allowed_users=["admin", "cli_user"])
+    monkeypatch.setattr(server.system_config.auth, "default_admin_username", "root")
+    with agent_access.local_operator_trusted():
+        await call(server, "run_task", user="cli_user", task="x")
+    assert Path(log()["home"]) == data_root / "agy_home" / "root"
+    monkeypatch.setattr(agent_access, "_local_operator_trusted", False)
+    await call(server, "run_task", user="cli_user", task="x")
+    assert Path(log()["home"]) == data_root / "agy_home" / "cli_user"
+
+
 async def test_an_agy_run_on_windows_starts_no_updater_to_flash_a_window(repo, log):  # noqa: F811
     await call(make_agy(repo), "run_task", task="x")
     assert (cli.AGY_NO_UPDATER in log()["env"]) == (os.name == "nt")

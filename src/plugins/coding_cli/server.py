@@ -45,6 +45,7 @@ from agent_system.core.background_runs import BackgroundRun, keeps_sessions
 from agent_system.utils.proctree import run_bounded
 from agent_system.core.cancellation import CancellationToken, get_cancellation_manager
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_session, woken_process
+from agent_system.auth.agent_access import operator_account
 from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.servers.agent.components.tool_call_contract import FRAMEWORK_REQUEST_ID_KEYS
@@ -1757,8 +1758,10 @@ class CodingCliServer(SchemaBasedToolServer):
         env, values = {**cli.child_env(self.pass_env), **self.env}, {}
         if self.agy:
             # One per ScarabHive user: what agy keeps there (conversations for a resume, memories) is not handed
-            # from one user's runs to another's.
-            cli.agy_home(self._root() / "agy_home" / (re.sub(r"[^A-Za-z0-9_-]", "_", user_id)[:60] or "_"), env)
+            # from one user's runs to another's. The local operator of an agent-run process acts as the admin
+            # and uses the admin's (operator_account).
+            home_user = str(operator_account(user_id, getattr(self.system_config, "auth", None)))
+            cli.agy_home(self._root() / "agy_home" / (re.sub(r"[^A-Za-z0-9_-]", "_", home_user)[:60] or "_"), env)
         else:
             # Claude Code gives up on an MCP tool that says nothing for 5 min (its default): a tool that works
             # longer without a word was given up on and called again. The run's own limit bounds a call.
