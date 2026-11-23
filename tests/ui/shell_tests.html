@@ -6497,6 +6497,7 @@
     // after a reload a window without a rectangle of its own takes a step the stored ones leave free --
     // they were dragged a few pixels off theirs: one above the first step, one below the second
     const layout = JSON.parse(localStorage.getItem('scarabhive.layout.v1'));
+    delete layout.windowRects;  // the system window closed above would come back where it was
     layout.items = [
       { panelId: 'system', place: 'float', path: '', rect: null },
       { panelId: 'probe', place: 'float', path: '', rect: { x: 600, y: 5, w: 500, h: 400 } },
@@ -6509,6 +6510,86 @@
     for (const window_ of restored) window_.querySelector('[data-act="dock"]').click();
     await until('no window left again', () => !$('#floatingLayer .app-window'));
     return steps.join() === '20,44' && reused && freeStep;
+  });
+
+  await check('a window closed and opened again comes back at its size and place, also after a reload -- at a free step where a window stands on its place since', async () => {
+    const tab = (panelId) => $(`.dock-tab[data-key^="${panelId}:"]`);
+    need(tab('settings') && tab('system'), `fixture: settings and system not docked (${$$('.dock-tab').map((t) => t.dataset.key).join()})`);
+    const windowOf = (url) => () => $$('#floatingLayer .app-window').find((w) => w.querySelector('iframe')?.src.includes(url));
+    const settingsWindow = windowOf('/ui/panels/settings');
+    const systemWindow = windowOf('/ui/panels/system');
+    const layer = () => $('#floatingLayer').getBoundingClientRect();
+    const box = (w) => {
+      const r = w.getBoundingClientRect();
+      return { x: Math.round(r.left - layer().left), y: Math.round(r.top - layer().top), w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    const same = (a, b) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+    const show = (b) => `${b.x},${b.y} ${b.w}x${b.h}`;
+    const drag = (handle, dx, dy) => {
+      const r = handle.getBoundingClientRect();
+      const at = (type, x, y) => handle.dispatchEvent(new PointerEvent(type,
+        { button: 0, pointerId: 1, clientX: r.left + 10 + x, clientY: r.top + 5 + y, bubbles: true, cancelable: true }));
+      at('pointerdown', 0, 0);
+      at('pointermove', dx, dy);
+      handle.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }));
+    };
+    const float = async (panelId, shown) => {
+      (await until(`the ${panelId} tab`, () => tab(panelId))).querySelector('[data-act="float"]').click();
+      return until(`the ${panelId} window`, shown);
+    };
+    const close = async (w, shown) => {
+      w.querySelector('[data-act="close"]').click();
+      await until('the window closed', () => !shown());
+    };
+    const reopenDocked = async () => {
+      $('#launcherButton').click();
+      (await until('the settings entry', () => $('#launcherList [data-panel="settings"]'))).click();
+      await until('the settings tab', () => tab('settings'));  // the launcher opens it in the dock (the default)
+    };
+    const reopen = async () => {
+      await reopenDocked();
+      return float('settings', settingsWindow);
+    };
+    // resized and moved: both are what comes back
+    let w = await float('settings', settingsWindow);
+    const first = box(w);
+    drag(w.querySelector('.app-window-resize'), -90, -60);
+    drag(w.querySelector('.app-window-bar'), -50, 30);
+    const moved = box(w);
+    need(moved.w === first.w - 90 && moved.x === first.x - 50 && moved.y === first.y + 30,
+      `fixture: the drags did not take (${show(first)} -> ${show(moved)})`);
+    await close(w, settingsWindow);
+    const again = box(await reopen());
+    await close(settingsWindow(), settingsWindow);
+    await loadShell();
+    await until('the shell after the reload', () => $('#launcherButton'));
+    const reloaded = box(await reopen());
+    // a window detached since on its place -- after settings was opened again in the dock: its size comes back,
+    // its place is the first free step, decided as it becomes a window
+    const system = box(await float('system', systemWindow));
+    w = settingsWindow();
+    drag(w.querySelector('.app-window-bar'), 0, system.y - box(w).y);
+    need(box(w).y === system.y, `fixture: settings not on the step of system (${show(box(w))}, ${show(system)})`);
+    await close(w, settingsWindow);
+    systemWindow().querySelector('[data-act="dock"]').click();
+    await until('the system tab', () => tab('system'));
+    await reopenDocked();
+    need(same(box(await float('system', systemWindow)), system), 'fixture: system did not come back on its step');
+    const beside = box(await float('settings', settingsWindow));
+    // as the fixture had it: docked, and no rectangle kept for the checks after this one
+    settingsWindow().querySelector('[data-act="dock"]').click();
+    systemWindow().querySelector('[data-act="dock"]').click();
+    await until('the tabs again', () => tab('settings') && tab('system'));
+    const layout = JSON.parse(localStorage.getItem('scarabhive.layout.v1'));
+    delete layout.windowRects;
+    layout.items.forEach((item) => { if (item.panelId === 'settings') item.rect = null; });
+    localStorage.setItem('scarabhive.layout.v1', JSON.stringify(layout));
+    await loadShell();
+    await until('the settings tab after the reset', () => tab('settings'));
+    return need(same(again, moved) && same(reloaded, moved)
+      && beside.w === moved.w && beside.h === moved.h && beside.y !== system.y,
+      `moved to ${show(moved)}, opened again at ${show(again)}, after the reload at ${show(reloaded)}, `
+      + `with system on its step (${show(system)}) at ${show(beside)}`);
   });
 
   await check('the docked tabs sort by drag and drop and by Shift+arrow, keep their order after a reload, and a cancelled drag changes nothing', async () => {

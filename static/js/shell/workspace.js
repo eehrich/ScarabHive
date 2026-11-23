@@ -59,6 +59,8 @@ export class Workspace {
      * collapsed: a window folded to its bar -- the page stays loaded behind it, told it is not visible
      */
     this.items = new Map();
+    // panelId -> the rectangle its window had when it was closed: opened again, it comes back there
+    this.windowRects = {};
     this.active = null;
     // The dock put away beside the chat on a wide screen (the header's right toggle), kept for the next visit.
     // Not the narrow screen's "aside": that steps the panels back on every visit, and says nothing wide.
@@ -265,6 +267,7 @@ export class Workspace {
     if (!item || (item.dirty && !(await this.mayDiscard(item)))) return;
     item.frame.remove();
     if (item.element) item.element.remove();
+    if (item.rect) this.windowRects[item.panelId] = { ...item.rect };
     this.items.delete(key);
     if (this.active === key) this.active = this.docked().at(-1)?.key || null;
     this.renderDock();
@@ -556,7 +559,9 @@ export class Workspace {
   place(item) {
     if (!item.rect) {
       if (this.narrow()) return;
-      item.rect = this.firstRect(item);
+      // decided as it becomes a window, against the windows open now -- a panel opened docked becomes one later
+      const kept = storedRect(this.windowRects[item.panelId]);
+      item.rect = kept ? this.keptRect(item, kept) : this.firstRect(item);
     }
     const { x, y, w, h } = this.clamp(item.rect, this.layer.getBoundingClientRect());
     Object.assign(item.element.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
@@ -568,12 +573,9 @@ export class Workspace {
    * dragged above the first step on that one. A window dragged further down holds a
    * step lower down: the new window may cover its bar, and the window chips bring it forward.
    */
-  firstRect(item) {
-    const size = this.panel(item.panelId).window;
+  firstRect(item, size = this.panel(item.panelId).window) {
     const bounds = this.layer.getBoundingClientRect();
-    const taken = new Set([...this.items.values()]
-      .filter((other) => other.place === 'float' && other.rect)
-      .map((other) => Math.max(0, Math.floor((other.rect.y - 20) / 24))));
+    const taken = this.takenSteps();
     let step = 0;
     while (taken.has(step)) step++;
     return {
@@ -582,6 +584,27 @@ export class Workspace {
       x: Math.max(20, bounds.width - size.width - 40 - step * 24),
       y: 20 + step * 24,
     };
+  }
+
+  /** The step down a window's rectangle stands on (see firstRect). */
+  static step(rect) {
+    return Math.max(0, Math.floor((rect.y - 20) / 24));
+  }
+
+  /** The steps the open windows stand on. */
+  takenSteps() {
+    return new Set([...this.items.values()]
+      .filter((other) => other.place === 'float' && other.rect)
+      .map((other) => Workspace.step(other.rect)));
+  }
+
+  /**
+   * The rectangle a window closed earlier comes back with: its size always, its place while no open window stands
+   * on that step -- one there since would be covered bar and all, so it takes the first free step instead.
+   */
+  keptRect(item, kept) {
+    if (!this.takenSteps().has(Workspace.step(kept))) return kept;
+    return this.firstRect(item, { width: kept.w, height: kept.h });
   }
 
   /** Keep a window reachable: its bar stays inside the layer. */
@@ -629,6 +652,7 @@ export class Workspace {
       dockWidth: this.dockWidth,
       active: this.items.get(this.active)?.panelId || null,
       dockAway: this.dockAway,
+      windowRects: this.windowRects,
       items: [...this.items.values()].map(({ panelId, path, linked, place, rect, collapsed }) => ({
         panelId, path, linked, place, rect, ...(place === 'float' && collapsed ? { collapsed: true } : {}) })),
     };
@@ -651,6 +675,10 @@ export class Workspace {
     if (!layout || !Array.isArray(layout.items)) return;
     if (Number.isFinite(layout.dockWidth)) this.dockWidth = layout.dockWidth;
     this.dockAway = layout.dockAway === true;
+    // kept only for panels still in the catalogue, and only well-formed rectangles
+    this.windowRects = Object.fromEntries(Object.entries(layout.windowRects || {})
+      .filter(([panelId, rect]) => this.panel(panelId) && storedRect(rect))
+      .map(([panelId, rect]) => [panelId, storedRect(rect)]));
     const valid = layout.items.filter((saved) => saved && typeof saved.panelId === 'string' && this.panel(saved.panelId));
     // windows without a rectangle of their own last: they take the steps the others leave free
     const rectless = (saved) => saved.place === 'float' && !storedRect(saved.rect);

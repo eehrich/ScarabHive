@@ -307,6 +307,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A panel window closed and opened again comes back at the size and place it had, also after a reload; it
+  used to start over at the panel's default size. Where another window stands on its place since, it keeps its
+  size and takes the first free step.
 - A network outage of hours no longer ends the agent runs that wait for it. While other runs of the process find
   the network gone -- since the last answer of any run, they could not reach two or more hosts
   (`llm/network_state.py`) -- `network_outage_seconds` does not run, a chain that cannot tell whether it reached its
