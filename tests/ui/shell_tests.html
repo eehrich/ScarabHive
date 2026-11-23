@@ -56,6 +56,13 @@
   // A condition a check needs, failing with the condition itself as the reason -- a bare
   // `return false` reports 'failed' and leaves the reader to guess which line it was.
   const need = (ok, why) => { if (!ok) throw new Error(why); return true; };
+  // a tab detached through its own menu: the tab in front stays in front
+  const floatTab = (tab) => {
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1, clientY: 1 }));
+    $('#tabMenu [data-act="float"]').click();
+  };
+  // the bar's end acts on the tab in front: the tab picked first, as a viewer does
+  const openTabOf = (tab) => { tab.click(); $('#dockOpenTab').click(); };
   /** The colour a token of the kit stands for in the shell, as getComputedStyle says a colour. */
   const tone = (name) => {
     const probe = doc().createElement('span');
@@ -440,10 +447,11 @@
     await until('the toast', () => $$('.pk-toast--ok').some((t) => t.textContent.includes('Saved')));
     // the bar was drawn anew: the keyboard focus stayed on the same button
     if (doc().activeElement.dataset.act !== 'close') return false;
-    $('.dock-tab [data-act="float"]').focus();
+    const tab = $('.dock-tab');
+    tab.focus();
     probe().pk.setTitle('Probe · float');
     await until('the next title', () => $('.dock-tab .dock-tab-title').textContent === 'Probe · float');
-    return doc().activeElement.dataset.act === 'float';
+    return doc().activeElement === $('.dock-tab') && doc().activeElement.dataset.key === tab.dataset.key;
   });
 
   await check('a second docked panel takes the front and the first is told it is hidden', async () => {
@@ -483,7 +491,7 @@
         'with room, a title is cut or padded out');
       bar.style.width = `${Math.round($$('.dock-tab').reduce((sum, t) => sum + t.offsetWidth, 0) * 0.7)}px`;
       need(!$$('.dock-tab').every(whole) && bar.scrollWidth <= bar.clientWidth, 'short of room, no tab gives way, or the bar scrolls already');
-      bar.style.width = '200px';
+      bar.style.width = '160px';  // two tabs at their least, with their close buttons alone, overflow it by more than 50px
       need(!whole(tab('Probe')), 'fixture: the long title is not cut');
       need(whole(tab('Settings')) && snug(title(tab('Settings'))), 'out of room, the short Settings title is cut or padded out');
       need(bar.scrollWidth > bar.clientWidth && $$('.dock-tab').every((t) => whole(t) || holdsFive(title(t))),
@@ -520,7 +528,7 @@
   });
 
   await check('a docked panel detaches into a window and docks back', async () => {
-    $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="float"]').click();
+    floatTab($$('.dock-tab').find((t) => t.textContent.includes('Probe')));
     const window_ = await until('the window', () => $('#floatingLayer .app-window'));
     await until('pk:init in the window', () => received('pk:init').at(-1)?.visible === true);
     const detached = $$('.dock-tab').length === 1 && $('#floatingList [data-key]') !== null
@@ -532,7 +540,7 @@
   });
 
   await check('a window gets its size back once the browser window grows again', async () => {
-    $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="float"]').click();
+    floatTab($$('.dock-tab').find((t) => t.textContent.includes('Probe')));
     const window_ = await until('the window', () => $('#floatingLayer .app-window'));
     const height = () => window_.getBoundingClientRect().height;
     const full = height();
@@ -549,7 +557,7 @@
   });
 
   await check('a window folds to its bar and opens again at its size, its page kept loaded', async () => {
-    $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="float"]').click();
+    floatTab($$('.dock-tab').find((t) => t.textContent.includes('Probe')));
     const window_ = await until('the window', () => $('#floatingLayer .app-window'));
     await until('pk:init in the window', () => received('pk:init').at(-1)?.visible === true);
     const page = probeFrame().contentWindow;
@@ -597,9 +605,9 @@
     win().open = (...args) => { opened.push(args); return null; };
     try {
       const tab = (name) => $$('.dock-tab').find((t) => t.textContent.includes(name));
-      tab('Probe').querySelector('[data-act="tab"]').click();
-      tab('Settings').querySelector('[data-act="tab"]').click();
-      tab('Probe').querySelector('[data-act="float"]').click();
+      openTabOf(tab('Probe'));
+      openTabOf(tab('Settings'));
+      floatTab(tab('Probe'));
       const window_ = await until('the window', () => $('#floatingLayer .app-window'));
       window_.querySelector('[data-act="tab"]').click();
       window_.querySelector('[data-act="dock"]').click();
@@ -608,7 +616,7 @@
       // pinned to another session already (a link sent it there): it stays pinned there
       probe().pk.navigate('/tests/ui/shell_probe_panel.html?session_id=s-2');
       await sleep(200);
-      tab('Probe').querySelector('[data-act="tab"]').click();
+      openTabOf(tab('Probe'));
       probe().pk.navigate();  // back to the path the probe shows
       await sleep(200);
       const url = (n) => new URL(opened[n][0], location.origin);
@@ -636,7 +644,7 @@
     scope.setAttribute('all', '');
     probeFrame().contentDocument.body.append(scope);
     try {
-      const openTab = () => $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="tab"]').click();
+      const openTab = () => openTabOf($$('.dock-tab').find((t) => t.textContent.includes('Probe')));
       const pickThenOpen = async (which) => {
         (await until(`the ${which} scope`, () => scope.querySelector(`[data-scope="${which}"]`))).click();
         await sleep(200);  // pk:scope on its way to the shell
@@ -5758,7 +5766,7 @@
     const page = probeFrame();
     tab().querySelector('[data-act="close"]').click();
     await answer(false);
-    tab().querySelector('[data-act="float"]').click();
+    floatTab(tab());
     await answer(false);
     await link('req 43');
     await answer(false);
@@ -5768,7 +5776,7 @@
     probe().pk.navigate('gone');
     await edit(false);  // a title the shell has not shown yet: once it shows, the path before it has arrived
     await edit(true);
-    tab().querySelector('[data-act="float"]').click();
+    floatTab(tab());
     await answer(true);
     (await floated()).querySelector('[data-act="dock"]').click();
     await docked();
@@ -5786,7 +5794,7 @@
     probeFrame().contentWindow.location.assign(request('req%2045'));
     await until('the page it went to', () => where() === request('req%2045'));
     await answered();
-    tab().querySelector('[data-act="float"]').click();
+    floatTab(tab());
     (await floated()).querySelector('[data-act="dock"]').click();
     await docked();
     await answered();
@@ -6320,7 +6328,7 @@
     const storedRect = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'settings').rect;
     const narrow = await withWidth('600px', async () => {
       await until('the narrow layout', () => win().innerWidth === 600);
-      $$('.dock-tab').find((t) => t.textContent.includes('Settings')).querySelector('[data-act="float"]').click();
+      floatTab($$('.dock-tab').find((t) => t.textContent.includes('Settings')));
       const bar = await until('the window bar', () => $('#floatingLayer .app-window .app-window-bar'));
       return { bar, rectless: storedRect() === null, drags: press(bar) === false };
     });
@@ -6385,7 +6393,7 @@
       need(!away() && !chatToEdge() && expanded() === 'true' && !toggle().disabled, 'the dock is not shown at the start');
       tab('Probe').click();  // in front: the panel that is told
       await until('the probe told it shows', () => heard() === true);
-      $$('.dock-tab').filter((t) => !t.textContent.includes('Probe')).at(-1).querySelector('[data-act="float"]').click();
+      floatTab($$('.dock-tab').filter((t) => !t.textContent.includes('Probe')).at(-1));
       const window_ = await until('the window', () => $('#floatingLayer .app-window'));
       toggle().click();
       need(away() && chatToEdge() && expanded() === 'false' && stored() === true, 'the toggle did not put the dock away');
@@ -6481,7 +6489,7 @@
   await check('a new window takes the first free step down, not the count of windows', async () => {
     // by panel id: a panel may retitle its tab (the session panel shows the session's title)
     const float = async (panelId, url) => {
-      $(`.dock-tab[data-key^="${panelId}:"] [data-act="float"]`).click();
+      floatTab($(`.dock-tab[data-key^="${panelId}:"]`));
       return until(`the ${panelId} window`, () => $$('#floatingLayer .app-window')
         .find((w) => w.querySelector('iframe')?.src.includes(url)));
     };
@@ -6512,6 +6520,51 @@
     return steps.join() === '20,44' && reused && freeStep;
   });
 
+  await check('a tab shows its close button in front only, a right-click detaches that tab, the bar detaches the one in front, a window docks with its own icon, and the toggles fill the side they show', async () => {
+    const tabs = $$('.dock-tab');
+    need(tabs.length >= 2, `fixture: ${tabs.length} docked tabs`);
+    const front = $('.dock-tab[aria-selected="true"]');
+    const back = tabs.find((t) => t !== front);
+    const closeShown = (t) => getComputedStyle(t.querySelector('.dock-tab-close')).visibility === 'visible';
+    // detaching and a browser tab are at the bar's end, not on every tab
+    const lean = closeShown(front) && !closeShown(back) && !$('.dock-tab [data-act="float"], .dock-tab [data-act="tab"]');
+    const pane = (id) => getComputedStyle($(`#${id} .pk-icon`)).getPropertyValue('--pk-icon-pane').trim();
+    const sessionsFill = ($('#sessionsToggle').getAttribute('aria-expanded') === 'true') === (pane('sessionsToggle') !== '');
+    const dockFilled = $('#dockToggle').getAttribute('aria-expanded') === 'true' && pane('dockToggle') !== '';
+    // the menu key: no pointer, the menu opens under the tab, the keyboard on its first item
+    back.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const keyed = await until('the tab menu from the keyboard', () => $('#tabMenu:popover-open'));
+    const underTab = keyed.getBoundingClientRect().top >= back.getBoundingClientRect().bottom - 1
+      && keyed.contains(doc().activeElement);
+    keyed.hidePopover();
+    // the menu of the tab behind: its own detach, not the front one's; the menu goes with the click
+    const key = back.dataset.key;
+    back.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }));
+    (await until('the tab menu', () => $('#tabMenu:popover-open'))).querySelector('[data-act="float"]').click();
+    let window_ = await until('the window', () => $('#floatingLayer .app-window'));
+    const thatOne = !$(`.dock-tab[data-key="${key}"]`) && $(`.dock-tab[data-key="${front.dataset.key}"]`) !== null
+      && !$('#tabMenu');
+    const dockIcon = window_.querySelector('[data-act="dock"] use').getAttribute('href').endsWith('#dock-in');
+    window_.querySelector('[data-act="dock"]').click();
+    await until('the tab again', () => !$('#floatingLayer .app-window') && $(`.dock-tab[data-key="${key}"]`));
+    // the bar's end detaches the tab in front
+    $(`.dock-tab[data-key="${front.dataset.key}"]`).click();
+    $('#dockFloat').click();
+    window_ = await until('the front window', () => $('#floatingLayer .app-window'));
+    const barFloat = !$(`.dock-tab[data-key="${front.dataset.key}"]`);
+    window_.querySelector('[data-act="dock"]').click();
+    await until('the front tab again', () => !$('#floatingLayer .app-window') && $(`.dock-tab[data-key="${front.dataset.key}"]`));
+    $(`.dock-tab[data-key="${front.dataset.key}"]`).click();  // in front again, as the checks after this one expect
+    // the dock put away: its toggle shows an empty right side, and back again
+    $('#dockToggle').click();
+    await until('the dock away', () => $('#dockToggle').getAttribute('aria-expanded') === 'false');
+    const dockEmptied = pane('dockToggle') === '';
+    $('#dockToggle').click();
+    await until('the dock back', () => $('#dockToggle').getAttribute('aria-expanded') === 'true');
+    return need(lean && sessionsFill && dockFilled && underTab && thatOne && dockIcon && barFloat && dockEmptied,
+      JSON.stringify({ lean, sessionsFill, dockFilled, underTab, thatOne, dockIcon, barFloat, dockEmptied }));
+  });
+
   await check('a window closed and opened again comes back at its size and place, also after a reload -- at a free step where a window stands on its place since', async () => {
     const tab = (panelId) => $(`.dock-tab[data-key^="${panelId}:"]`);
     need(tab('settings') && tab('system'), `fixture: settings and system not docked (${$$('.dock-tab').map((t) => t.dataset.key).join()})`);
@@ -6534,7 +6587,7 @@
       handle.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }));
     };
     const float = async (panelId, shown) => {
-      (await until(`the ${panelId} tab`, () => tab(panelId))).querySelector('[data-act="float"]').click();
+      floatTab((await until(`the ${panelId} tab`, () => tab(panelId))));
       return until(`the ${panelId} window`, shown);
     };
     const close = async (w, shown) => {

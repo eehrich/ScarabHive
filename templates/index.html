@@ -12,7 +12,7 @@
 </head>
 <body class="app">
   <header class="app-header">
-    <button id="sessionsToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="sessionsPane" aria-expanded="true" title="Sessions (Ctrl+B)">{{ icon('panel-left') }}</button>
+    <button id="sessionsToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="sessionsPane" aria-expanded="true" title="Sessions (Ctrl+B)">{{ icon('sidebar-left') }}</button>
     <a class="app-brand" href="/" aria-label="ScarabHive">{{ logo(22) }}<span>ScarabHive</span></a>
     <div class="app-session">
       <button id="headerSessionId" type="button" class="app-session-title pk-truncate" title="Open the session in a panel" disabled>New session</button>
@@ -23,7 +23,7 @@
     <div class="app-header-actions">
       <!-- the work area: a panel to open, the panel area beside the chat (mirrors the sessions toggle on the left) -->
       <button id="launcherButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" popovertarget="launcher" title="Open a panel">{{ icon('layout-grid') }}</button>
-      <button id="dockToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="dock" aria-expanded="false" title="Show or hide the panel area (Ctrl+Alt+B)" disabled>{{ icon('panel-right') }}</button>
+      <button id="dockToggle" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" aria-controls="dock" aria-expanded="false" title="Show or hide the panel area (Ctrl+Alt+B)" disabled>{{ icon('sidebar-right') }}</button>
       <span class="app-header-divider" aria-hidden="true"></span>
       <!-- the app: its manual, the account last -->
       <button id="agentRunsPill" type="button" class="pk-btn pk-btn--ghost pk-btn--sm app-runs" aria-live="polite" hidden></button>
@@ -71,7 +71,11 @@
       <div class="app-dock-bar">
         <button id="dockCollapse" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-back" title="Back to the chat">{{ icon('arrow-left', size='sm') }}</button>
         <div class="app-dock-tabs" role="tablist"></div>
-        <button id="dockHelp" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-dock-help" title="Help for this panel" data-idle>{{ icon('circle-help', size='sm') }}</button>
+        <div class="app-dock-actions">
+          <button id="dockFloat" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" title="Detach into a window">{{ icon('picture-in-picture-2', size='sm') }}</button>
+          <button id="dockOpenTab" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" title="Open in a new browser tab">{{ icon('external-link', size='sm') }}</button>
+          <button id="dockHelp" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-dock-help" title="Help for this panel" data-idle>{{ icon('circle-help', size='sm') }}</button>
+        </div>
       </div>
       <div class="app-dock-frames"></div>
     </section>

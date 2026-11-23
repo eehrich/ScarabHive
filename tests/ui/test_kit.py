@@ -211,15 +211,22 @@ def test_every_icon_named_in_code_exists_in_the_sprite():
 
 
 def test_the_sprite_holds_exactly_the_icons_its_generator_lists():
-    """icons.svg is built from build_icon_sprite.ICONS: an icon put into the sprite by hand is gone after the next
-    build, and the buttons that show it are empty."""
+    """icons.svg is built from build_icon_sprite.ICONS (Lucide) and CUSTOM (the kit's own): an icon put into the
+    sprite by hand is gone after the next build, and the buttons that show it are empty."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("build_icon_sprite", REPO / "src" / "scripts" / "build_icon_sprite.py")
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
 
-    assert sorted(sprite_icons()) == sorted(generator.ICONS)
+    assert sorted(sprite_icons()) == sorted([*generator.ICONS, *generator.CUSTOM])
+    # the kit's own as the generator draws them: one edited in the sprite alone is lost on the next build
+    sprite = (STATIC_DIR / "kit" / "icons.svg").read_text(encoding="utf-8")
+    for name, inner in generator.CUSTOM.items():
+        assert f'<symbol id="{name}" viewBox="0 0 24 24">{inner}</symbol>' in sprite, name
+    # the sidebar toggles fill their side through the pane kit.css sets on an open toggle
+    for name in ("sidebar-left", "sidebar-right"):
+        assert "fill: var(--pk-icon-pane, none)" in generator.CUSTOM[name], name
 
 
 _NATIVE = re.compile(

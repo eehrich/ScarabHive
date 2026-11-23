@@ -29,6 +29,11 @@
   const frame = document.getElementById('shell');
   const doc = () => frame.contentDocument;
   const $ = (selector) => doc().querySelector(selector);
+  // a tab detached through its own menu: the tab in front stays in front
+  const floatTab = (tab) => {
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1, clientY: 1 }));
+    $('#tabMenu [data-act="float"]').click();
+  };
   const $$ = (selector) => [...doc().querySelectorAll(selector)];
   const helpFrame = () => $$('iframe.panel-frame').find((f) => f.src.includes('/ui/panels/help'));
   const helpText = () => helpFrame()?.contentDocument?.querySelector('.pk-guide-page')?.textContent || '';
@@ -108,8 +113,8 @@
   });
 
   await check("a window's help button opens the guide as a window above it, one without a guide has none", async () => {
-    tab('memory').querySelector('[data-act="float"]').click();
-    tab('todo').querySelector('[data-act="float"]').click();
+    floatTab(tab('memory'));
+    floatTab(tab('todo'));
     const windows = await until('two windows', () => $$('.app-window').length === 2 && $$('.app-window'));
     const memory = windows.find((one) => one.querySelector('iframe')?.src.includes('/plugins/memory/'));
     const todo = windows.find((one) => one.querySelector('iframe')?.src.includes('/plugins/todo/'));

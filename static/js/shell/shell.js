@@ -254,8 +254,8 @@ async function contextMenu(anchor, context, values) {
 function paletteEntries(sessions) {
   const entries = [
     { group: 'Actions', icon: 'plus', label: 'New session', run: () => sessions.newConversation() },
-    { group: 'Actions', icon: 'panel-left', label: 'Toggle sessions', hint: 'Ctrl B', run: () => setSessionsOpen(!sessionsOpen()) },
-    { group: 'Actions', icon: 'panel-right', label: 'Toggle panels', hint: 'Ctrl Alt B', run: () => workspace.toggleDock() },
+    { group: 'Actions', icon: 'sidebar-left', label: 'Toggle sessions', hint: 'Ctrl B', run: () => setSessionsOpen(!sessionsOpen()) },
+    { group: 'Actions', icon: 'sidebar-right', label: 'Toggle panels', hint: 'Ctrl Alt B', run: () => workspace.toggleDock() },
     ...THEMES.map((theme) => ({ group: 'Actions', icon: THEME_ICONS[theme], label: `Theme: ${theme}`, keywords: ['appearance'], run: () => applyTheme(theme) })),
     ...STYLES.map((style) => ({ group: 'Actions', icon: 'layers', label: `Style: ${style}`, keywords: ['appearance', 'look', 'design'], run: () => applyStyle(style) })),
   ];

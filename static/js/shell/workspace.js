@@ -1,6 +1,6 @@
 // The workspace: panels docked as tabs beside the chat, or detached into
 // floating windows -- and the host side of the pk:* protocol every panel speaks.
-import { html, render, icon, showToast, showDialog, wheelScrollsAcross, keepInSight } from '/static/kit/panel-kit.js';
+import { html, render, icon, placeMenu, showToast, showDialog, wheelScrollsAcross, keepInSight } from '/static/kit/panel-kit.js';
 
 // allow-modals keeps unmigrated panels' native dialogs working -- and a panel's beforeunload question (setDirty), which a sandbox
 // without it suppresses silently.
@@ -81,7 +81,9 @@ export class Workspace {
     document.getElementById('dockCollapse').addEventListener('click', () => this.stepAside());
     this.toggle = document.getElementById('dockToggle');
     this.toggle.addEventListener('click', () => this.toggleDock());
-    // one help button for the dock, at the end of its bar: the tab in front's plugin guide
+    // the dock's actions at the end of its bar, for the tab in front: detach it, open it in a browser tab, its guide
+    document.getElementById('dockFloat').addEventListener('click', () => this.active && this.move(this.active, 'float'));
+    document.getElementById('dockOpenTab').addEventListener('click', () => this.active && this.openInTab(this.active));
     this.dockHelp = document.getElementById('dockHelp');
     this.dockHelp.addEventListener('click', async () => {
       await this.openHelp(this.items.get(this.active));
@@ -224,6 +226,36 @@ export class Workspace {
     window.open(url.href, '_blank', 'noopener');
   }
 
+  /** A tab's menu: detach it, open it in a browser tab, close it -- at the pointer, or under the tab from the
+   *  keyboard (its menu key fires the event at 0,0). */
+  tabMenu(tab, event) {
+    const key = tab.dataset.key;
+    document.getElementById('tabMenu')?.remove();
+    const menu = document.createElement('div');
+    menu.id = 'tabMenu';
+    menu.className = 'pk-menu';
+    menu.popover = 'auto';
+    render(menu, html`
+      <button type="button" class="pk-menu-item" data-act="float">${icon('picture-in-picture-2')} Detach into a window</button>
+      <button type="button" class="pk-menu-item" data-act="tab">${icon('external-link')} Open in a new browser tab</button>
+      <button type="button" class="pk-menu-item" data-act="close">${icon('x')} Close</button>`);
+    menu.addEventListener('click', (click) => {
+      const act = click.target.closest('[data-act]')?.dataset.act;
+      if (!act) return;
+      menu.hidePopover();
+      menu.remove();  // at once: its toggle event, which removes it on Escape or a click elsewhere, comes a task later
+      if (act === 'float') this.move(key, 'float');
+      else if (act === 'tab') this.openInTab(key);
+      else this.close(key);
+    });
+    menu.addEventListener('toggle', (toggle) => { if (toggle.newState === 'closed') menu.remove(); });
+    document.body.appendChild(menu);
+    const atPointer = event.clientX || event.clientY;
+    placeMenu(menu, atPointer ? new DOMRect(event.clientX, event.clientY, 0, 0) : tab.getBoundingClientRect());
+    menu.showPopover();
+    menu.querySelector('[data-act]').focus();
+  }
+
   createFrame(item) {
     const frame = document.createElement('iframe');
     frame.className = 'panel-frame';
@@ -360,11 +392,7 @@ export class Workspace {
       <div class="dock-tab" role="tab" tabindex="0" draggable="true" aria-selected="${String(item.key === this.active)}" data-key="${item.key}" title="${item.title}">
         ${icon(this.panel(item.panelId).icon, { size: 'sm' })}
         <span class="dock-tab-title">${item.title}</span>
-        <span class="dock-tab-actions">
-          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="tab" data-key="${item.key}:tab" title="Open in a new browser tab">${icon('external-link', { size: 'sm' })}</button>
-          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="float" data-key="${item.key}:float" title="Detach into a window">${icon('picture-in-picture-2', { size: 'sm' })}</button>
-          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" data-key="${item.key}:close" title="Close">${icon('x', { size: 'sm' })}</button>
-        </span>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm dock-tab-close" data-act="close" data-key="${item.key}:close" title="Close">${icon('x', { size: 'sm' })}</button>
       </div>`));
     docked.forEach((item) => { item.frame.hidden = item.key !== this.active; });
     // The tab coming to the front is brought into sight -- a panel opened lands at the end of a full bar. A redraw
@@ -384,9 +412,14 @@ export class Workspace {
       if (!tab) return;
       const act = event.target.closest('[data-act]')?.dataset.act;
       if (act === 'close') this.close(tab.dataset.key);
-      else if (act === 'float') this.move(tab.dataset.key, 'float');
-      else if (act === 'tab') this.openInTab(tab.dataset.key);
       else this.focus(tab.dataset.key);
+    });
+    // right-click (or the menu key) on a tab: what the bar's end offers for the tab in front, for this one
+    this.tabBar.addEventListener('contextmenu', (event) => {
+      const tab = event.target.closest('.dock-tab');
+      if (!tab) return;
+      event.preventDefault();
+      this.tabMenu(tab, event);
     });
     this.tabBar.addEventListener('keydown', (event) => {
       if (!event.target.matches('.dock-tab')) return;
@@ -495,7 +528,7 @@ export class Workspace {
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-window-fold" data-act="fold"></button>
         ${panel.help && html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="help" title="Help for this panel">${icon('circle-help', { size: 'sm' })}</button>`}
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="tab" title="Open in a new browser tab">${icon('external-link', { size: 'sm' })}</button>
-        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="dock" title="Dock beside the chat">${icon('panel-right', { size: 'sm' })}</button>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="dock" title="Dock beside the chat">${icon('dock-in', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" title="Close">${icon('x', { size: 'sm' })}</button>
       </header>
       <div class="app-window-body"></div>

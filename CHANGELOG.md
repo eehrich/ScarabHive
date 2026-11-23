@@ -237,6 +237,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Shell: the sessions and dock toggles fill the side they show, as an editor's layout buttons do. A dock tab
+  carries only its close button, shown in front and under the pointer; detaching and opening in a browser tab
+  sit once at the end of the dock bar for the tab in front, and a right-click on a tab offers them for that
+  tab. A window's dock button has its own icon instead of the dock toggle's.
 - Faster under load, nothing else changed (a load test of 50 agents at once with 50 viewers, measured on the
   thread holding the GIL: -15 % of the API's Python time, the slowest session read 1.06 s -> 0.48 s):
   - the copy of the run's context each hook gets is made by `utils/deep_copy.py`, `copy.deepcopy`'s result at

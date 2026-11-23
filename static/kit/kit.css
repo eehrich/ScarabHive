@@ -202,6 +202,8 @@
   vertical-align: -3px;
 }
 .pk-icon--sm { width: 14px; height: 14px; }
+/* a toggle that is open fills the pane its icon draws (sidebar-left, sidebar-right) */
+.pk-btn[aria-expanded="true"] > .pk-icon { --pk-icon-pane: currentColor; }
 @keyframes pk-spin { to { transform: rotate(360deg); } }
 
 /* ----------------------------------------------------------------- buttons */

@@ -148,7 +148,7 @@ from agent_system.ui.routes import router
 from tests.ui.browser import find_browser, run_app_test_page
 
 BROWSER = find_browser()
-PAGE_TIMEOUT = 480  # 150-odd checks run to ~300 s on this machine, and a loaded one needs room
+PAGE_TIMEOUT = 720  # 220-odd checks run to ~480 s on an idle machine, and a loaded one needs room
 # the whole page runs in the first test's fixture: pytest's default of 120 s would cut it off
 pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based browser installed"),
               pytest.mark.timeout(PAGE_TIMEOUT + 60)]
@@ -2022,6 +2022,7 @@ EXPECTED = [
     'the docked tab brought to the front comes back in front after a reload',
     'with nothing docked, a dock once put away hides no window when the screen turns narrow',
     'a new window takes the first free step down, not the count of windows',
+    'a tab shows its close button in front only, a right-click detaches that tab, the bar detaches the one in front, a window docks with its own icon, and the toggles fill the side they show',
     'a window closed and opened again comes back at its size and place, also after a reload -- at a free step where a window stands on its place since',
     'the docked tabs sort by drag and drop and by Shift+arrow, keep their order after a reload, and a cancelled drag changes nothing',
     'the agent and profile pickers open on the current choice, search, group by a remembered grouping and pick by click or keyboard',
