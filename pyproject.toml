@@ -68,6 +68,7 @@ test = [
     "pytest-asyncio>=1.1.0",
     "pytest-timeout>=2.4.0",
     "pytest-cov>=6.0.0",
+    "pytest-xdist>=3.6",
     "anyio>=3.0",
 ]
 gpu = [
