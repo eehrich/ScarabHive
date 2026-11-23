@@ -82,8 +82,9 @@ logger = logging.getLogger(__name__)
 MAX_RETRY_AFTER_SECONDS = 60.0
 
 #: Self-heals one request may take on top of its attempts: one provider pin
-#: released, two encrypted-reasoning strips, one signature bypass.
-_MAX_HEALS = 4
+#: released, one price wish dropped, two encrypted-reasoning strips, one
+#: signature bypass.
+_MAX_HEALS = 5
 
 
 def openrouter_routing_info(response_data: dict) -> Optional[dict]:
@@ -231,7 +232,50 @@ async def routing_pinned_to_last_backend(provider_routing: Optional[dict],
     return {**(routing or {}), "order": pinned, "allow_fallbacks": False}
 
 
-def release_provider_pin(payload: dict, provider_routing: Optional[dict]) -> None:
+#: provider_routing key: a price ceiling that is a wish, not a limit. It travels
+#: as ``max_price``; when no endpoint is under it, the call is sent again without
+#: it instead of failing (the gateway answers 404, which would end the call).
+PREFERRED_MAX_PRICE = "preferred_max_price"
+
+_PRICE_CEILING_REFUSAL = re.compile(r"max[ _]price", re.IGNORECASE)
+
+
+def routing_on_the_wire(provider_routing: Optional[dict],
+                        price_wish: bool = True) -> Optional[dict]:
+    """*provider_routing* as the gateway takes it.
+
+    ``preferred_max_price`` goes out as ``max_price`` while the wish holds;
+    dropped, a ``max_price`` of the entry's own (a hard limit) stays. The wish
+    never loosens that limit: per key the lower price travels.
+    """
+    if not isinstance(provider_routing, dict) or PREFERRED_MAX_PRICE not in provider_routing:
+        return provider_routing
+    routing = {k: v for k, v in provider_routing.items() if k != PREFERRED_MAX_PRICE}
+    wish = provider_routing[PREFERRED_MAX_PRICE]
+    if price_wish and isinstance(wish, dict):
+        hard = routing.get("max_price")
+        routing["max_price"] = ({**wish, **{k: _lower_price(v, wish.get(k)) for k, v in hard.items()}}
+                                if isinstance(hard, dict) else wish)
+    return routing
+
+
+def _lower_price(hard: Any, wish: Any) -> Any:
+    """The lower of two prices; one that is no number leaves the hard one."""
+    try:
+        return wish if wish is not None and float(wish) < float(hard) else hard
+    except (TypeError, ValueError):
+        return hard
+
+
+def is_price_wish_refusal(provider_routing: Optional[dict], status_code: int, body: str) -> bool:
+    """No endpoint under the entry's ``preferred_max_price``: the gateway's 404."""
+    return (status_code == 404 and isinstance(provider_routing, dict)
+            and provider_routing.get(PREFERRED_MAX_PRICE) is not None
+            and bool(_PRICE_CEILING_REFUSAL.search(body or "")))
+
+
+def release_provider_pin(payload: dict, provider_routing: Optional[dict],
+                         price_wish: bool = True) -> None:
     """Take the pin out of *payload*: the pinned backend refused this call.
 
     The retry then travels as the model entry is configured -- for an entry
@@ -239,8 +283,9 @@ def release_provider_pin(payload: dict, provider_routing: Optional[dict]) -> Non
     gateway chooses. Only a refusal gets this far: the pin is one backend
     with no fallbacks, so nothing else can have answered.
     """
-    if provider_routing:
-        payload["provider"] = provider_routing
+    routing = routing_on_the_wire(provider_routing, price_wish)
+    if routing:
+        payload["provider"] = routing
     else:
         payload.pop("provider", None)
 
@@ -1324,8 +1369,10 @@ class HTTPXOpenAIClient(LLMClient):
                 self.provider_routing, messages, self.base_url, self._verify,
                 recent_backend=self.recent_backend())
             if provider:
-                payload["provider"] = provider
+                payload["provider"] = routing_on_the_wire(provider)
             pinned = provider is not self.provider_routing
+
+        price_wish = True
 
         def _release_pin_after_refusal() -> bool:
             """A refusal sends the retry out as the model entry is configured."""
@@ -1334,8 +1381,24 @@ class HTTPXOpenAIClient(LLMClient):
                 return False
             pinned = False
             self.forget_backend()
-            release_provider_pin(payload, self.provider_routing)
+            release_provider_pin(payload, self.provider_routing, price_wish)
             logger.info("Provider pin released after a refusal (model=%s)", self.model)
+            return True
+
+        def _drop_price_wish_after_refusal(status_code: int, body: str) -> bool:
+            """No endpoint under the preferred max price: the retry goes without it."""
+            nonlocal price_wish
+            if not (self._is_openrouter and price_wish
+                    and is_price_wish_refusal(self.provider_routing, status_code, body)):
+                return False
+            price_wish = False
+            routing = routing_on_the_wire(provider if pinned else self.provider_routing, False)
+            if routing:
+                payload["provider"] = routing
+            else:
+                payload.pop("provider", None)
+            logger.warning("No endpoint under the preferred max price; sent again without it "
+                           "(model=%s)", self.model)
             return True
 
         # Add max_tokens if configured (limits output length)
@@ -1497,6 +1560,12 @@ class HTTPXOpenAIClient(LLMClient):
                                     "openai_httpx", self.model, url, False,
                                     "404, provider pin released", attempt, self.max_retries + 1)
                                 _heals += 1  # a self-heal retries the same attempt
+                                continue
+                            if _drop_price_wish_after_refusal(response.status_code, response.text or ""):
+                                await self._notify_retry(
+                                    "openai_httpx", self.model, url, False,
+                                    "404, price wish dropped", attempt, self.max_retries + 1)
+                                _heals += 1
                                 continue
 
                             # Self-healing: OpenAI encrypted-reasoning 400 (defective
@@ -1959,8 +2028,10 @@ class HTTPXOpenAIClient(LLMClient):
                 self.provider_routing, messages, self.base_url, self._verify,
                 recent_backend=self.recent_backend())
             if provider:
-                payload["provider"] = provider
+                payload["provider"] = routing_on_the_wire(provider)
             pinned = provider is not self.provider_routing
+
+        price_wish = True
 
         def _release_pin_after_refusal() -> bool:
             """A refusal sends the retry out as the model entry is configured."""
@@ -1969,8 +2040,24 @@ class HTTPXOpenAIClient(LLMClient):
                 return False
             pinned = False
             self.forget_backend()
-            release_provider_pin(payload, self.provider_routing)
+            release_provider_pin(payload, self.provider_routing, price_wish)
             logger.info("Provider pin released after a refusal (model=%s)", self.model)
+            return True
+
+        def _drop_price_wish_after_refusal(status_code: int, body: str) -> bool:
+            """No endpoint under the preferred max price: the retry goes without it."""
+            nonlocal price_wish
+            if not (self._is_openrouter and price_wish
+                    and is_price_wish_refusal(self.provider_routing, status_code, body)):
+                return False
+            price_wish = False
+            routing = routing_on_the_wire(provider if pinned else self.provider_routing, False)
+            if routing:
+                payload["provider"] = routing
+            else:
+                payload.pop("provider", None)
+            logger.warning("No endpoint under the preferred max price; sent again without it "
+                           "(model=%s)", self.model)
             return True
 
         # Add max_tokens if configured (limits output length)
@@ -2204,6 +2291,13 @@ class HTTPXOpenAIClient(LLMClient):
                                         "404, provider pin released (stream)", attempt,
                                         self.max_retries + 1)
                                     _heals += 1  # a self-heal retries the same attempt
+                                    continue
+                                if _drop_price_wish_after_refusal(response.status_code, error_text):
+                                    await self._notify_retry(
+                                        "openai_httpx", self.model, url, True,
+                                        "404, price wish dropped (stream)", attempt,
+                                        self.max_retries + 1)
+                                    _heals += 1
                                     continue
 
                                 # Self-healing: OpenAI encrypted-reasoning 400

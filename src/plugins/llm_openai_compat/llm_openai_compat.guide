@@ -406,6 +406,12 @@ assistant message (@{tt}served_by@{utt}) and reported to the hooks.
 @{tt}provider@{utt} object (order, allow_fallbacks, sort, ...);
 @{tt}llm_system.openrouter_routing@{utt} is merged in by the core, the entry
 winning per key.
+@{bullet}@{b}A price wish.@{ub} @{tt}preferred_max_price@{utt} (same shape as
+@{tt}max_price@{utt}, $ per million tokens) travels as @{tt}max_price@{utt}.
+When no endpoint is under it the gateway answers 404; the call is then sent
+once more without it (a @{tt}max_price@{utt} of the entry's own, a hard limit,
+stays) and a warning is logged. @{tt}max_price@{utt} alone is a limit: over it
+the call fails.
 @{bullet}@{b}The pin.@{ub} A request goes to the backend that answered the
 run's latest turn, or -- for a run without one -- the backend that answered
 this agent on this model within @{tt}provider_affinity_minutes@{utt}

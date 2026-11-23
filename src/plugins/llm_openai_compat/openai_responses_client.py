@@ -98,8 +98,10 @@ from plugins.llm_common.model_dialects import (
 from .httpx_client import (
     HTTPXTimeoutConfig,
     _ending_error,
+    is_price_wish_refusal,
     openrouter_routing_info,
     release_provider_pin,
+    routing_on_the_wire,
     routing_pinned_to_last_backend,
 )
 from plugins.llm_common.http_status import retry_after_seconds
@@ -908,7 +910,7 @@ class OpenAIResponsesClient(LLMClient):
         if self.service_tier:
             payload["service_tier"] = self.service_tier
         if self.provider_routing:
-            payload["provider"] = self.provider_routing
+            payload["provider"] = routing_on_the_wire(self.provider_routing)
         # Gemini via OpenRouter: content-filter thresholds (BLOCK_NONE for
         # fiction prose etc.) — same shape the Chat Completions route sends.
         if self.safety_settings:
@@ -1349,10 +1351,13 @@ class OpenAIResponsesClient(LLMClient):
         # free text as if the provider had constrained it.
         self._require_response_format(response_format)
 
+        # Whether preferred_max_price still travels: dropped once no endpoint is under it.
+        price_wish = True
+
         def build_payload() -> dict:
             payload = self._build_payload(messages, tools, model)
             if provider:
-                payload["provider"] = provider
+                payload["provider"] = routing_on_the_wire(provider, price_wish)
             # Here, beside the pin, and not in _build_payload: the heals below rebuild the
             # payload, and the format belongs to every rebuild as the pin does.
             if response_format is not None:
@@ -1379,8 +1384,23 @@ class OpenAIResponsesClient(LLMClient):
             provider = self.provider_routing
             released_backend = last_served_by(messages)
             self.forget_backend()
-            release_provider_pin(payload, self.provider_routing)
+            release_provider_pin(payload, self.provider_routing, price_wish)
             logger.info("Provider pin released after a refusal (model=%s)", self.model)
+            return True
+
+        def drop_price_wish_after_refusal(status_code: int, body: str) -> bool:
+            """No endpoint under the preferred max price: the retry goes without it."""
+            nonlocal price_wish
+            if not (price_wish and is_price_wish_refusal(self.provider_routing, status_code, body)):
+                return False
+            price_wish = False
+            routing = routing_on_the_wire(provider, False)
+            if routing:
+                payload["provider"] = routing
+            else:
+                payload.pop("provider", None)
+            logger.warning("No endpoint under the preferred max price; sent again without it "
+                           "(model=%s)", self.model)
             return True
 
         url = f"{self.base_url}/responses"
@@ -1571,6 +1591,12 @@ class OpenAIResponsesClient(LLMClient):
                             await self._notify_retry(
                                 self._PROVIDER, self.model, url, stream,
                                 "404, pin released", attempt, self.max_retries + 1)
+                            continue
+                        # Costs no retry slot either: it happens once per request.
+                        if drop_price_wish_after_refusal(response.status_code, body_text):
+                            await self._notify_retry(
+                                self._PROVIDER, self.model, url, stream,
+                                "404, price wish dropped", attempt, self.max_retries + 1)
                             continue
 
                         # Backstop only — the native item round-trip is the fix for

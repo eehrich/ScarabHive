@@ -1036,3 +1036,182 @@ async def test_runs_that_miss_while_the_catalogue_loads_do_not_ask_again(monkeyp
         results = await asyncio.gather(first, *others)
     assert results == ["a/slug-20260731"] * 4
     assert mock_client.get.call_count == 1, "each run that missed during the load asked again"
+
+
+#: What the gateway answers when no endpoint is under the request's max_price
+#: (measured on a DeepSeek alias with a ceiling below every price).
+OVER_THE_CEILING = {"error": {"message": "No endpoints found that satisfy the max price for this request.",
+                              "code": 404}}
+WISH = {"prompt": 0.10, "completion": 0.40}
+CHEAPEST_FP8 = {"order": None, "sort": "price", "quantizations": ["fp8"],
+                "preferred_max_price": WISH, "allow_fallbacks": True}
+AS_WISHED = {"order": None, "sort": "price", "quantizations": ["fp8"],
+             "allow_fallbacks": True, "max_price": WISH}
+WITHOUT_THE_WISH = {"order": None, "sort": "price", "quantizations": ["fp8"], "allow_fallbacks": True}
+
+
+def _chat_answer():
+    return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "x"},
+                                                  "finish_reason": "stop"}],
+                                     "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                               "total_tokens": 2}},
+                          request=httpx.Request("POST", OPENROUTER + "/chat/completions"))
+
+
+@pytest.mark.usefixtures("published")
+class TestAPriceWish:
+    """``preferred_max_price`` is a ceiling the call may pass when nothing is under it.
+
+    ``max_price`` alone fails the call with a 404 once every endpoint costs more
+    -- a discount ends, prices move -- and the agent loop takes a 404 for a dead
+    model and blocks it for every agent. The wish goes out as max_price; refused
+    for it, the call goes again without it.
+    """
+
+    FIRST_TURN = [ChatMessage(role="user", content="first turn")]
+
+    def setup_method(self):
+        backend_affinity.clear()
+
+    def _responses(self, routing, answers):
+        client = OpenAIResponsesClient(model="~deepseek/deepseek-flash-latest", api_key="k",
+                                       base_url=OPENROUTER, provider_routing=routing,
+                                       ssl_verify=False, max_retries=1, retry_backoff=0.0)
+        sent = []
+
+        async def post(_client, _url, payload, **_kwargs):
+            sent.append(copy.deepcopy(payload.get("provider")))
+            return answers[len(sent) - 1]
+        client._post = post
+        return client, sent
+
+    async def test_the_wish_travels_as_max_price(self):
+        client, sent = self._responses(dict(CHEAPEST_FP8), [_ok()])
+        await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent == [AS_WISHED]
+
+    async def test_over_the_wish_the_call_goes_again_without_it(self):
+        client, sent = self._responses(dict(CHEAPEST_FP8), [
+            httpx.Response(404, json=OVER_THE_CEILING), _ok()])
+        await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent == [AS_WISHED, WITHOUT_THE_WISH]
+
+    async def test_a_hard_max_price_stays_when_the_wish_goes(self):
+        hard = {"prompt": 1, "completion": 2}
+        client, sent = self._responses({**CHEAPEST_FP8, "max_price": hard}, [
+            httpx.Response(404, json=OVER_THE_CEILING), _ok()])
+        await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent[0]["max_price"] == WISH
+        assert sent[1]["max_price"] == hard
+
+    async def test_a_hard_max_price_alone_still_fails_the_call(self):
+        routing = {**WITHOUT_THE_WISH, "max_price": WISH}
+        client, sent = self._responses(routing, [httpx.Response(
+            404, json=OVER_THE_CEILING, request=httpx.Request("POST", OPENROUTER + "/responses"))] * 2)
+        with pytest.raises(Exception, match="404"):
+            await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent == [routing]
+
+    async def test_another_404_keeps_the_wish(self):
+        """'No such model' must keep reaching the fallback chain."""
+        client, sent = self._responses(dict(CHEAPEST_FP8), [
+            httpx.Response(404, json={"error": {"message": "No endpoints found for x.", "code": 404}},
+                           request=httpx.Request("POST", OPENROUTER + "/responses"))] * 2)
+        with pytest.raises(Exception, match="404"):
+            await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent == [AS_WISHED]
+
+    async def test_a_pinned_call_releases_the_pin_then_drops_the_wish(self):
+        client, sent = self._responses(dict(CHEAPEST_FP8), [
+            httpx.Response(404, json=OVER_THE_CEILING), httpx.Response(404, json=OVER_THE_CEILING), _ok()])
+        client.set_app_title("coder")
+        backend_affinity.remember("coder", client.model, "DeepInfra")
+        await client.chat_tools(list(self.FIRST_TURN), [])
+        pinned = {**AS_WISHED, "order": ["deepinfra"], "allow_fallbacks": False}
+        assert sent == [pinned, AS_WISHED, WITHOUT_THE_WISH]
+
+    def test_the_sdk_route_builds_with_the_wish(self):
+        from plugins.llm_openrouter.openrouter_sdk_client import build_openrouter_sdk_client
+        routing = {**CHEAPEST_FP8, "preferred_max_price": {"prompt": "0.1", "completion": "0.4"}}
+        client = build_openrouter_sdk_client(model="~deepseek/deepseek-flash-latest", api_key="k",
+                                             base_url=OPENROUTER, safety_settings=None,
+                                             prompt_cache_marker_style=None, provider_routing=routing)
+        assert client.provider_routing == routing
+
+    async def test_the_chat_route_drops_the_wish_too(self):
+        client = _httpx()
+        client.provider_routing = dict(CHEAPEST_FP8)
+        answers = [httpx.Response(404, json=OVER_THE_CEILING,
+                                  request=httpx.Request("POST", OPENROUTER + "/chat/completions")),
+                   _chat_answer()]
+        sent = []
+
+        async def post(**kwargs):
+            sent.append(copy.deepcopy(kwargs["json"].get("provider")))
+            return answers[len(sent) - 1]
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.post = post
+            mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            await client._make_request_non_streaming(list(self.FIRST_TURN), tools=[])
+        assert sent == [AS_WISHED, WITHOUT_THE_WISH]
+
+    async def test_the_chat_stream_drops_the_wish_too(self):
+        client = _httpx()
+        client.provider_routing = dict(CHEAPEST_FP8)
+        chunk = {"id": "c", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "x"},
+                                         "finish_reason": "stop"}]}
+        body = ("data: " + json.dumps(chunk) + "\ndata: [DONE]\n").encode("utf-8")
+        sent = []
+
+        def stream(*_args, **kwargs):
+            sent.append(copy.deepcopy(kwargs["json"].get("provider")))
+            response = AsyncMock()
+            response.headers = {}
+            if len(sent) == 1:
+                response.status_code = 404
+                response.aread = AsyncMock(return_value=json.dumps(OVER_THE_CEILING).encode("utf-8"))
+            else:
+                response.status_code = 200
+
+                async def aiter_bytes():
+                    yield body
+                response.aiter_bytes = aiter_bytes
+            response.__aenter__.return_value = response
+            response.__aexit__.return_value = None
+            return response
+
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.stream = stream
+            mock_async_client.return_value = mock_client
+            await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent == [AS_WISHED, WITHOUT_THE_WISH]
+
+    async def test_an_entry_of_nothing_but_the_wish_goes_again_with_no_provider(self):
+        client, sent = self._responses({"preferred_max_price": WISH}, [
+            httpx.Response(404, json=OVER_THE_CEILING), _ok()])
+        await client.chat_tools(list(self.FIRST_TURN), [])
+        assert sent == [{"max_price": WISH}, None]
+
+    def test_the_wish_never_loosens_a_hard_max_price(self):
+        """Per key the lower price; a hard key the wish does not name stays."""
+        from plugins.llm_openai_compat.httpx_client import routing_on_the_wire
+        routing = {"max_price": {"prompt": 0.05, "completion": 1.0, "request": 0.01},
+                   "preferred_max_price": {"prompt": 0.10, "completion": 0.40}}
+        assert routing_on_the_wire(routing) == {
+            "max_price": {"prompt": 0.05, "completion": 0.40, "request": 0.01}}
+        assert routing_on_the_wire(routing, False) == {"max_price": routing["max_price"]}
+
+    def test_the_sdk_route_refuses_a_hard_max_price_it_could_send_only_later(self):
+        from plugins.llm_openrouter.openrouter_sdk_client import build_openrouter_sdk_client
+        routing = {**CHEAPEST_FP8, "preferred_max_price": {"prompt": "0.1"},
+                   "max_price": {"prompt": 1}}
+        with pytest.raises(ValueError, match="provider_routing"):
+            build_openrouter_sdk_client(model="~deepseek/deepseek-flash-latest", api_key="k",
+                                        base_url=OPENROUTER, safety_settings=None,
+                                        prompt_cache_marker_style=None, provider_routing=routing)

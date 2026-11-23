@@ -101,6 +101,7 @@ from typing import Any, Optional
 import httpx
 import pydantic
 
+from plugins.llm_openai_compat.httpx_client import routing_on_the_wire
 from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
 
 logger = logging.getLogger(__name__)
@@ -362,8 +363,14 @@ def build_openrouter_sdk_client(
             f"Gemini entries do (OpenRouter ignores it on /responses).")
     for name, value in (("provider_routing", kwargs.get("provider_routing")),
                         ("plugins", kwargs.get("plugins"))):
-        if value:
-            _refuse_what_the_sdk_cannot_type(model, name, value)
+        if not value:
+            continue
+        # What travels: preferred_max_price goes out as max_price, and after a
+        # refusal for it the entry's own max_price alone.
+        for sent in ((routing_on_the_wire(value), routing_on_the_wire(value, False))
+                     if name == "provider_routing" else (value,)):
+            if sent:
+                _refuse_what_the_sdk_cannot_type(model, name, sent)
     return OpenRouterSDKClient(
         model=model, api_key=api_key, base_url=base_url,
         safety_settings=None, prompt_cache_marker_style=prompt_cache_marker_style,
