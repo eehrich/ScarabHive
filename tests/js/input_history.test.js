@@ -348,6 +348,24 @@ const tests = {
     assert.strictEqual(ui.input.value, 'gerade abgeschickt');
   },
 
+  async 'a line just sent comes back as it was typed: a command stays a command, an escaped one stays escaped'() {
+    const ui = load();
+    ui.loadSession([]);
+    for (const typed of ['/cls', '//compact', '/3d drucker bauen']) {
+      ui.input.value = typed;
+      ui.submit();
+      ui.input.value = '';
+    }
+    ui.input.selectionStart = 0;
+    const back = [];
+    for (let i = 0; i < 3; i++) {
+      await ui.press('ArrowUp');
+      back.push(ui.input.value);
+      ui.input.selectionStart = 0;
+    }
+    assert.deepStrictEqual(back, ['/3d drucker bauen', '//compact', '/cls']);
+  },
+
   async 'the text is captured before the chat module empties the box'() {
     // chat_module clears taskInput SYNCHRONOUSLY on an ordinary message, from
     // a listener registered earlier -- so a history listener on the form

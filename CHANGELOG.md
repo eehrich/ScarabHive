@@ -311,6 +311,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web chat: a command just sent and recalled with Arrow-Up comes back as typed (`/cls`), not escaped as a
+  message (`//cls`), which re-sent it to the agent instead of running it.
 - A panel window closed and opened again comes back at the size and place it had, also after a reload; it
   used to start over at the panel's default size. Where another window stands on its place since, it keeps its
   size and takes the first free step.

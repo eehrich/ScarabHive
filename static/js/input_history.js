@@ -65,13 +65,17 @@
     }).filter(Boolean).join(' ');
   }
 
-  function push(text) {
+  /**
+   * One entry. A message read from the session is stored unescaped and gets its "//" back; a line just
+   * typed (`typed`) is kept as it was typed -- "/cls" stays a command, "//compact" stays a message.
+   */
+  function push(text, typed) {
     var value = (text || '').trim();
     if (!value) return;
+    if (value.length > MAX_CHARS) return;
+    if (!typed && needsEscape(value)) value = '/' + value;
     // Consecutive repeats add nothing but distance to the older entries.
     if (entries.length && entries[entries.length - 1] === value) return;
-    if (value.length > MAX_CHARS) return;
-    if (needsEscape(value)) value = '/' + value;
     entries.push(value);
   }
 
@@ -196,7 +200,7 @@
       // time. Capture on an ancestor runs before any listener on the target.
       document.addEventListener('submit', function (event) {
         if (event.target !== form) return;
-        push(input.value);
+        push(input.value, true);
         reset();
       }, true);
     }
