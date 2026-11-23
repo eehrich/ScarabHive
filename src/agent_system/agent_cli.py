@@ -151,7 +151,14 @@ def _main() -> None:
     _apply_colour_flags(getattr(ns, "no_color", False), getattr(ns, "color", "auto"))
 
     parser, mcp_parser = main_parser()
-    args = parser.parse_args(main_parser_args(ns, rest))
+    args, extra = parser.parse_known_args(main_parser_args(ns, rest))
+    # Before Python 3.14 an option between AGENT and TASK (`chat helper --session-user u1 "the task"`) ends the
+    # positionals at it: the task comes back unparsed. One plain word left over is that task.
+    if (len(extra) == 1 and not extra[0].startswith("-")
+            and hasattr(args, "task_after_agent") and args.task_after_agent is None):
+        args.task_after_agent = extra.pop()
+    if extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
 
     # If no subcommand was provided, show help and exit instead of proceeding
     if not getattr(args, "subcommand", None):
