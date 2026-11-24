@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -121,6 +122,59 @@ def test_the_panel_routes_show_and_change_the_choice(app):
     assert client.post("/p/ai/assess", json={"mode": "ai"}).json()["changed_by"] == "local"
     assert client.post("/p/ai/assess", json={"mode": "robot"}).status_code == 422
     assert client.post("/p/ai/nothing", json={"mode": "ai"}).status_code == 404
+
+
+def with_profiles(app, profiles=("fast", "think"), default="fast"):
+    """The app as it runs with these LLM profiles (its live configuration, as build_app sets it)."""
+    llm_system = SimpleNamespace(profiles={name: object() for name in profiles}, default_profile=default)
+    app.state.context = SimpleNamespace(live_config=lambda: SimpleNamespace(llm_system=llm_system))
+    return app
+
+
+def test_a_task_runs_on_the_llm_chosen_for_it(app):
+    client = TestClient(with_profiles(app))
+    offered = client.get("/p/ai").json()
+    assert offered["llms"] == {"choices": ["fast", "think"], "default": "fast"}
+    assert offered["tasks"][0]["llm"] == ""  # the agent's own until one is chosen
+    chosen = client.post("/p/ai/assess", json={"mode": "ai", "llm": "think"}).json()
+    assert (chosen["mode"], chosen["agent"], chosen["llm"]) == ("ai", "assessor", "think")
+    # a change of the agent keeps the LLM; one the app does not have is refused
+    assert client.post("/p/ai/assess", json={"agent": "other"}).json()["llm"] == "think"
+    assert client.post("/p/ai/assess", json={"llm": "nonesuch"}).status_code == 422
+    client.post("/p/ai/assess", json={"agent": "assessor"})
+    client.post("/p/ai/assess/run", json={"target": "VULN-1"})
+    assert app.state.runs[-1]["llm_profile"] == "think"
+    # back to the agent's own: no profile goes to /run
+    assert client.post("/p/ai/assess", json={"llm": ""}).json()["llm"] == ""
+    client.post("/p/ai/assess/run", json={"target": "VULN-1"})
+    assert "llm_profile" not in app.state.runs[-1]
+
+
+def test_an_llm_the_app_no_longer_has_runs_on_the_agents_own(app):
+    client = TestClient(with_profiles(app))
+    client.post("/p/ai/assess", json={"mode": "ai", "llm": "think"})
+    with_profiles(app, profiles=("fast",))  # a reload took "think" away
+    client.post("/p/ai/assess/run", json={"target": "VULN-1"})
+    assert "llm_profile" not in app.state.runs[-1]
+    assert client.get("/p/ai").json()["tasks"][0]["llm"] == "think"  # still shown, as not available
+
+
+def test_an_app_without_profiles_offers_no_llm_choice(app):
+    assert TestClient(app).get("/p/ai").json()["llms"] == {"choices": [], "default": ""}
+
+
+def test_a_table_from_before_the_llm_choice_gets_its_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE ai_tasks (task TEXT PRIMARY KEY, mode TEXT NOT NULL, agent TEXT NOT NULL, "
+                   "changed TEXT, changed_by TEXT)")
+        db.execute("INSERT INTO ai_tasks VALUES ('assess', 'ai', 'other', '2026-10-01', 'alice')")
+    settings = AiSettings(path, TASKS)
+    assert (settings.get("assess")["agent"], settings.get("assess")["llm"]) == ("other", "")
+    settings.set("assess", None, None, "2026-10-27", "bob", "think")
+    assert AiSettings(path, TASKS).get("assess")["llm"] == "think"
 
 
 def test_an_agent_starts_only_when_a_person_chose_it(app):

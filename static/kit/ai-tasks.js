@@ -38,6 +38,9 @@ const WORDS = {
     title: 'AI assistance: where an agent may work', close: 'Close',
     count: (on, all) => `An agent may do ${on} of ${all} task(s); choose here`, choose: 'Choose where an AI agent may work',
     setAi: (title, agent) => `${title}: ${agent} may do it`, setPerson: (title) => `${title}: done by a person`,
+    llm: 'LLM', llmOwn: "The agent's own", llmSystem: ' (system default)',
+    llmTitle: 'The LLM the agent runs on for this task; the agent\'s own is the one its configuration names',
+    setLlm: (title, llm) => `${title}: runs on ${llm}`, setLlmOwn: (title) => `${title}: runs on the agent's own LLM`,
     started: (agent) => `${agent} started; follow it here`,
     runs: 'Agent runs', runsTitle: 'What the agents started here say and do', runsCount: (n) => `${n} running`,
     noRuns: 'No agent was started here yet.', task: 'Task', result: 'Result', inChat: 'Open in the chat',
@@ -81,6 +84,9 @@ const WORDS = {
     title: 'KI-Unterstützung: wo ein Agent arbeiten darf', close: 'Schließen',
     count: (on, all) => `Ein Agent darf ${on} von ${all} Aufgabe(n) übernehmen; hier wählen`, choose: 'Wählen, wo ein KI-Agent arbeiten darf',
     setAi: (title, agent) => `${title}: ${agent} darf es übernehmen`, setPerson: (title) => `${title}: erledigt eine Person`,
+    llm: 'LLM', llmOwn: 'Das des Agenten', llmSystem: ' (Systemstandard)',
+    llmTitle: 'Das LLM, mit dem der Agent diese Aufgabe erledigt; das des Agenten ist das, das seine Konfiguration nennt',
+    setLlm: (title, llm) => `${title}: läuft mit ${llm}`, setLlmOwn: (title) => `${title}: läuft mit dem LLM des Agenten`,
     started: (agent) => `${agent} gestartet; hier mitlesen`,
     runs: 'Agenten-Läufe', runsTitle: 'Was die hier gestarteten Agenten sagen und tun', runsCount: (n) => `${n} läuft`,
     noRuns: 'Hier wurde noch kein Agent gestartet.', task: 'Auftrag', result: 'Ergebnis', inChat: 'Im Chat öffnen',
@@ -156,10 +162,19 @@ function agentOptions(task) {
   return names.map((name) => html`<option value="${name}" ${name === task.agent ? 'selected' : ''}>${name}${name === task.default_agent ? word('byDefault') : ''}${state.agents.length && !state.agents.includes(name) ? word('missing') : ''}</option>`);
 }
 
+/** The LLM profiles a task's agent may run on: first the agent's own (no choice), then the app's profiles. A profile
+ * chosen that the app no longer has stays shown as not available; the run then takes the agent's own. */
+function llmOptions(task, llms) {
+  const names = [...new Set([...(task.llm ? [task.llm] : []), ...llms.choices])];
+  return html`<option value="" ${task.llm ? '' : 'selected'}>${word('llmOwn')}</option>
+    ${names.map((name) => html`<option value="${name}" ${name === task.llm ? 'selected' : ''}>${name}${name === llms.default ? word('llmSystem') : ''}${llms.choices.includes(name) ? '' : word('missing')}</option>`)}`;
+}
+
 function card(data) {
+  const llms = data.llms?.choices?.length ? data.llms : null;   // a server without profiles: no choice to offer
   return html`<div class="ai-tasks">
     <p class="pk-muted">${word('intro')}</p>
-    <div class="ai-rows">${data.tasks.map((task) => html`<div class="ai-row" data-ai-task="${task.id}">
+    <div class="ai-rows${llms ? ' ai-rows--llm' : ''}">${data.tasks.map((task) => html`<div class="ai-row" data-ai-task="${task.id}">
       <div class="ai-what"><strong>${task.title}</strong><div class="pk-muted">${task.what}</div></div>
       <div class="pk-segmented" role="radiogroup" aria-label="${word('who', task.title)}">
         ${['person', 'ai'].map((mode) => html`<label><input type="radio" name="ai-mode-${task.id}" value="${mode}"
@@ -167,6 +182,8 @@ function card(data) {
       </div>
       <label class="pk-field ai-agent"><span class="pk-label">${word('agent')}</span>
         <select class="pk-select" name="ai-agent" ${task.mode === 'ai' ? '' : 'disabled'}>${agentOptions(task)}</select></label>
+      ${llms && html`<label class="pk-field ai-llm" title="${word('llmTitle')}"><span class="pk-label">${word('llm')}</span>
+        <select class="pk-select" name="ai-llm" ${task.mode === 'ai' ? '' : 'disabled'}>${llmOptions(task, llms)}</select></label>`}
       <div>${!task.target || task.batch ? aiButton(task.id, '', task.target ? word('allOpen') : '') : ''}</div>
     </div>`)}
     ${data.person_only.map((item) => html`<div class="ai-row ai-person-only" data-person-only="${item.id}">
@@ -211,7 +228,9 @@ async function save(id, change) {
   try {
     const task = await api(`${state.base}/ai/${id}`, { method: 'POST', json: change });
     state.tasks.set(id, task);
-    toast(task.mode === 'ai' ? word('setAi', task.title, task.agent) : word('setPerson', task.title), { kind: 'ok' });
+    const said = 'llm' in change ? (task.llm ? word('setLlm', task.title, task.llm) : word('setLlmOwn', task.title))
+      : task.mode === 'ai' ? word('setAi', task.title, task.agent) : word('setPerson', task.title);
+    toast(said, { kind: 'ok' });
   } catch {
     // api() has shown the error
   }
@@ -712,6 +731,7 @@ export async function initAiTasks(base, host, { onChange } = {}) {
     const id = row.dataset.aiTask;
     if (event.target.name === `ai-mode-${id}`) save(id, { mode: event.target.value });
     if (event.target.name === 'ai-agent') save(id, { agent: event.target.value });
+    if (event.target.name === 'ai-llm') save(id, { llm: event.target.value });
   });
   document.addEventListener('click', (event) => {
     const mark = event.target.closest('[data-ai-mark]');
