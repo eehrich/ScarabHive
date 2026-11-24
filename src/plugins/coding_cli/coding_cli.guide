@@ -32,7 +32,7 @@ see @{" Antigravity instead of Claude Code " link setup}.
 The plugin has four tools, no hooks and no panel. It also ships two agents
 that only relay work: @{tt}claude_code_agent@{utt} to Claude Code and
 @{tt}agy_code_agent@{utt} to Antigravity (instance @{tt}agy_cli@{utt}); the
-coder agent has the Claude Code tools too.
+coder agent has both tool sets too.
 
 @{code}
 For users
@@ -484,8 +484,8 @@ its instance @{tt}agy_cli@{utt}, which ships with the secret files of
 @{tt}agy@{utt}; a host where agy is not on the service's PATH names it in its
 local config.
 
-The coder agent has the four Claude Code tools itself (deferred: loaded on
-demand with @{tt}tool_search@{utt}).
+The coder agent has the Claude Code and Antigravity tools itself (deferred:
+loaded on demand with @{tt}tool_search@{utt}).
 @endnode
 
 @node run_task "run_task"

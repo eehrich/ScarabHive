@@ -81,3 +81,17 @@ def test_the_agy_instance_keeps_the_secrets_out_of_what_its_web_search_could_car
     workdir = cfg.workdirs["scarabhive"]
     assert workdir["web"] is True, "agy searches the web in every run: a workdir without web is skipped"
     assert {"config/secrets.env", "config/config.yaml"} <= set(workdir["exclude"])
+
+
+def test_the_agy_instance_defaults_to_neon_medium_and_offers_neon_high(config):
+    cfg = resolved(config, "agy_cli")
+    assert cfg.model == "gemini-4-neon-medium"
+    assert set(cfg.models) == {"gemini-4-neon-medium", "gemini-4-neon-high"}
+    schema = load_schema_from_dir(str(PLUGIN), template_vars={
+        "name": "agy_cli", "configured": True, "workdirs": ["scarabhive"], "windows": False,
+        "models": sorted(set(cfg.models) | {cfg.model}),
+    })
+    run_task = next(t["function"] for t in schema["tools"] if t["function"]["name"] == "agy_cli_run_task")
+    assert run_task["parameters"]["properties"]["model"]["enum"] == [
+        "gemini-4-neon-high", "gemini-4-neon-medium",
+    ]

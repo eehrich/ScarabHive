@@ -406,7 +406,28 @@ def test_the_claude_code_section_is_there_exactly_when_the_tool_is(config):
     without = _rendered_coder_prompt(config, ["coder_fs", "coder_fs_read_file"])
 
     assert "## Claude Code" in with_tool and "coding_cli_get_run" in with_tool
+    assert "Antigravity" not in with_tool and "agy_cli" not in with_tool
     assert "Claude Code" not in without and "coding_cli" not in without
+    assert "Antigravity" not in without and "agy_cli" not in without
+
+
+def test_the_antigravity_section_is_there_exactly_when_the_tool_is(config):
+    """Same guard for Antigravity (agy_cli): rendered only when agy_cli_run_task
+    is available, and mentions Claude Code as an equal peer only when both are."""
+    only_agy = _rendered_coder_prompt(config, ["agy_cli", "agy_cli_run_task", "agy_cli_get_run"])
+    both = _rendered_coder_prompt(
+        config,
+        ["coding_cli", "coding_cli_run_task", "coding_cli_get_run",
+         "agy_cli", "agy_cli_run_task", "agy_cli_get_run"],
+    )
+
+    assert "## Antigravity (Gemini 4 Neon)" in only_agy and "agy_cli_get_run" in only_agy
+    assert "gemini-4-neon-high" in only_agy
+    assert "Claude Code" not in only_agy and "coding_cli" not in only_agy
+
+    assert "## Claude Code" in both and "## Antigravity (Gemini 4 Neon)" in both
+    assert "Equal peer alongside Claude Code" in both
+    assert "Claude Code or Antigravity" in both
 
 
 def test_the_coder_is_sent_back_when_its_answer_is_cut_off(config):
@@ -420,6 +441,15 @@ def test_the_coder_may_call_claude_code(config):
     for tool in ("coding_cli_run_task", "coding_cli_get_run", "coding_cli_cancel_run"):
         assert tool_matches_patterns(tool, "coding_cli", allowed), tool
     assert config.plugins.servers["coding_cli"].enabled
+
+
+def test_the_coder_may_call_antigravity_deferred(config):
+    for agent_name in ("coder", "coder_ultra"):
+        tools = _agent_config(config, agent_name).tools
+        for tool in ("agy_cli_run_task", "agy_cli_get_run", "agy_cli_cancel_run"):
+            assert tool_matches_patterns(tool, "agy_cli", tools.allowed), (agent_name, tool)
+        assert "agy_cli/*" in (tools.deferred or []), agent_name
+    assert config.plugins.servers["agy_cli"].enabled
 
 
 def test_one_relative_path_names_one_file_in_the_shell_and_the_file_tools(config):

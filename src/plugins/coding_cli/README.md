@@ -21,7 +21,7 @@ those of the agent that made the call, run by that agent -- what a CLI that answ
   windows, without starting a run). They are offered only when the Claude Code executable and a usable workdir are
   there.
 - **Agents** -- `claude_code_agent` and `agy_code_agent`, which only relay work to Claude Code (instance
-  `coding_cli`) and to Antigravity (instance `agy_cli`); the coder agent has the Claude Code tools too.
+  `coding_cli`) and to Antigravity (instance `agy_cli`); the coder agent has both tool sets too.
 - **Hooks / panel** -- none.
 
 The entry ships in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude`, `mcp_servers` and `web`,

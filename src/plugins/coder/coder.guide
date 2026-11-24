@@ -96,14 +96,15 @@ possible the call is named, so a rewind never reads as "exactly as before"
 when it is not. Claude Code edits a worktree of its own, which is not
 recorded -- what the coder applies from it to the working tree is.
 
-@{h2}Claude Code and GitLab/GitHub
+@{h2}Claude Code, Antigravity and GitLab/GitHub
 
-Where Claude Code is installed (@{" Coding CLI " link coding_cli/main}),
-the coder can hand a self-contained task to it; the result comes back on a
-branch, and the coder reviews it like its own work before applying it.
-Where repositories are configured for @{" Forge " link forge/main}, it
-works tickets from issue to merge. Neither is there otherwise, and the
-prompt then does not mention them.
+Where Claude Code or Antigravity (@{tt}agy@{utt}, Gemini 4 Neon) is installed
+(@{" Coding CLI " link coding_cli/main}), the coder can hand a self-contained
+task to either; the result comes back on a branch, and the coder reviews it
+like its own work before applying it. Antigravity runs without a shell, so the
+coder runs the checks itself. Where repositories are configured for
+@{" Forge " link forge/main}, it works tickets from issue to merge. Any tool
+not installed or configured is absent, and the prompt then does not mention it.
 
 @{h2}Web pages
 
@@ -278,8 +279,9 @@ coder_reviewer | about 7,400 | what counts as a finding, the report format, then
 coder_tester | about 2,700 | run what was asked, report failures verbatim, the mutation probe
 @{body}
 
-The coder's sections on Claude Code and on GitLab/GitHub are rendered
-only when @{tt}has_tool('coding_cli_run_task')@{utt} or
+The coder's sections on Claude Code, Antigravity and GitLab/GitHub are rendered
+only when @{tt}has_tool('coding_cli_run_task')@{utt},
+@{tt}has_tool('agy_cli_run_task')@{utt} or
 @{tt}has_tool('forge_issue')@{utt} finds the tool. The bundle path is
 filled in from @{tt}template_vars.okf_bundle@{utt}. No prompt renders a
 value that changes between calls.
@@ -298,6 +300,7 @@ context_engineer_list, _read, _store_fact, _compact | @{" context_engineer " lin
 coder_okf_search, _read_concept, _neighbors, _subgraph, _list, _write_concept, _append_log, _validate, _reindex | deferred; OKF, instance @{tt}coder_okf@{utt}
 sequential_thinking and its two helpers, datetime_operations | deferred
 coding_cli_run_task, _get_run, _cancel_run, _quota | deferred; only where Claude Code is installed
+agy_cli_run_task, _get_run, _cancel_run | deferred; only where Antigravity (@{tt}agy@{utt}) is installed
 forge_repo, _issue, _pr, _ci | deferred; @{" Forge " link forge/main}, each with an operation; without a usable repository only forge_repo status
 playwright_browser_navigate, _snapshot, _click, _console_messages, _take_screenshot and 18 more | deferred; the external MCP server @{tt}playwright@{utt}, only where it is enabled
 @{body}
@@ -376,8 +379,8 @@ The shared instances in @{tt}config/plugins.yaml@{utt}: @{tt}skills@{utt},
 @{tt}todo@{utt}, @{tt}ask_user@{utt}, @{tt}sequential_thinking@{utt},
 @{tt}datetime@{utt}, @{tt}context_engineer@{utt},
 @{tt}project_instructions@{utt},
-@{tt}file_checkpoints@{utt}, @{tt}tool_preload@{utt}; optionally @{tt}coding_cli@{utt} and
-@{tt}forge@{utt}. The LLM profiles @{tt}code@{utt},
+@{tt}file_checkpoints@{utt}, @{tt}tool_preload@{utt}; optionally @{tt}coding_cli@{utt},
+@{tt}agy_cli@{utt} and @{tt}forge@{utt}. The LLM profiles @{tt}code@{utt},
 @{tt}code_fallback@{utt}, @{tt}code_adv@{utt}, @{tt}code_adv_fallback@{utt},
 @{tt}structured@{utt}, @{tt}structured_fallback@{utt}. On the server:
 whatever the projects build and test with; for the browser node with
