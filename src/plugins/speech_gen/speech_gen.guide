@@ -1,0 +1,128 @@
+@database "speech_gen"
+@author "Enrico Ehrich"
+@$VER: speech_gen.guide 1.0 (24.11.2026)
+@smartwrap
+
+@node main "Speech Generation"
+@{h1}Speech Generation
+
+The @{tt}speech_gen@{utt} plugin gives agents sandboxed access to text-to-speech
+models configured under @{tt}llm_system.tts_models@{utt} and
+@{tt}llm_system.tts_profiles@{utt} (such as Gemini TTS, ElevenLabs, and OpenAI /
+OpenRouter Speech). Each call writes a 16-bit PCM WAV file inside the
+instance's write sandbox and can optionally attach it as an audio preview for
+audio-capable models.
+
+Two tools, no hooks and no panel. Multiple instances can run side by side with
+different sandboxes, profile allowlists, and character caps.
+
+@{code}
+For agents and developers
+  @{"  synthesize  " link synthesize}
+  @{"  list_profiles  " link list_profiles}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node synthesize "synthesize"
+@{h1}synthesize
+
+Calls @{tt}create_tts_from_profile@{utt} for the selected TTS profile and writes
+the returned PCM audio atomically to @{tt}output_path@{utt} (must end in
+@{tt}.wav@{utt}).
+
+@{table}
+Parameter | Meaning
+text | required; text to speak (or speaker-labelled transcript when using @{tt}speakers@{utt}), at most @{tt}max_text_chars@{utt} characters
+output_path | required; target @{tt}.wav@{utt} file path inside @{tt}output_directories@{utt}
+profile | TTS profile from @{tt}llm_system.tts_profiles@{utt} (optional when @{tt}default_profile@{utt} is set)
+voice | optional voice name or provider voice ID (overrides the model default; not with @{tt}speakers@{utt})
+speakers | optional list of 1-2 @{tt}{name, voice}@{utt} objects for multi-speaker synthesis (where supported by the provider)
+system_instruction | optional style or delivery direction (single-speaker only; providers with @{tt}supports_style_prompt=False@{utt} warn and ignore it)
+seed | optional integer seed (single-speaker only; provider-dependent)
+reference_audio | optional audio file path inside @{tt}input_directories@{utt} for voice cloning (only offered and accepted when @{tt}allow_voice_cloning: true@{utt})
+reference_text | optional transcript of @{tt}reference_audio@{utt} (only with @{tt}reference_audio@{utt}; used by stateless speech APIs, ignored by providers that clone via upload)
+attach_preview | @{tt}false@{utt} (default): set @{tt}true@{utt} to attach the WAV to the tool result when under the 25 MB audio attachment limit
+@{body}
+
+Returns @{tt}status: "success"@{utt} with @{tt}path@{utt},
+@{tt}duration_seconds@{utt}, @{tt}sample_rate@{utt}, @{tt}channels@{utt},
+@{tt}bytes@{utt}, @{tt}mime_type@{utt} (@{tt}audio/wav@{utt}), @{tt}profile@{utt},
+@{tt}model@{utt}, optional @{tt}voice@{utt}, optional @{tt}warnings@{utt}, and
+@{tt}not_attached@{utt} if @{tt}attach_preview@{utt} exceeded the request limit.
+@endnode
+
+@node list_profiles "list_profiles"
+@{h1}list_profiles
+
+Lists the TTS profiles allowed on this instance with their @{tt}description@{utt},
+@{tt}model_ref@{utt}, @{tt}provider@{utt}, @{tt}model@{utt}, @{tt}default_voice@{utt},
+and @{tt}is_default@{utt}, plus the instance's @{tt}allow_voice_cloning@{utt} and
+@{tt}max_text_chars@{utt} settings.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Tool descriptions and errors
+
+The schema lists allowed profiles as an enum when at least one profile is
+configured, makes @{tt}profile@{utt} optional when @{tt}default_profile@{utt} is
+set, and exposes @{tt}reference_audio@{utt} / @{tt}reference_text@{utt} only when
+@{tt}allow_voice_cloning: true@{utt}. Validation errors (sandbox denial,
+non-@{tt}.wav@{utt} path, text over @{tt}max_text_chars@{utt}, unsupported
+multi-speaker or voice cloning, missing voice) return
+@{tt}{"status": "error", "error": "..."}@{utt} before any API call.
+
+@{h2}Token and cache effect
+
+Append-only: each call returns one tool result. @{tt}attach_preview@{utt}
+defaults to @{tt}false@{utt} because most chat models lack @{tt}audio_input@{utt}
+and raw WAV attachments cost roughly 32 tokens per second on audio-capable
+models. When enabled, the attachment is frozen by content hash so overwriting
+the path later does not invalidate earlier turns in the prompt cache.
+
+@{h2}Known gaps
+
+@{bullet}@{tt}create_tts_from_profile@{utt} does not yet forward
+@{tt}network.ssl_verify@{utt} to TTS provider clients.
+@{bullet}@{tt}file_checkpoints@{utt} counts @{tt}speech_gen/synthesize@{utt} as
+an untracked write rather than snapshotting previous bytes at @{tt}output_path@{utt}.
+@{bullet}Output is always 16-bit PCM WAV; use @{" Audio operations " link audio_ops/main}
+if you need MP3/FLAC conversion or post-processing.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Configure TTS models and profiles under @{tt}llm_system.tts_models@{utt} and
+@{tt}llm_system.tts_profiles@{utt} in @{tt}config/llm.yaml@{utt}, then configure
+an instance in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    speech_gen:
+      type: speech_gen
+      enabled: true
+      output_directories:
+        - "data/speech_gen"
+      input_directories:
+        - "data/speech_gen"
+      default_profile: "gemini-tts"
+      allow_voice_cloning: false
+      max_text_chars: 5000
+@{body}
+
+@{table}
+Key | Default | Meaning
+output_directories | data/speech_gen | write sandbox (PathSandbox); empty refuses all writes
+input_directories | same as output_directories | read-only sandbox for @{tt}reference_audio@{utt}
+profiles | all configured | allowlist of @{tt}llm_system.tts_profiles@{utt}
+default_profile | none | profile used when @{tt}synthesize@{utt} omits @{tt}profile@{utt}
+allow_voice_cloning | false | opt-in gate for @{tt}reference_audio@{utt}
+max_text_chars | 5000 | maximum characters per @{tt}synthesize@{utt} call
+max_reference_size_mb | 15.0 | maximum size per @{tt}reference_audio@{utt} file in MiB
+@{body}
+@endnode

@@ -158,6 +158,18 @@ plugins:
         - "data/image_gen"
       default_profile: "or-nano-banana"
 
+    speech_gen:
+      type: speech_gen
+      enabled: true
+      description: "Synthesize speech to WAV via configured llm_system.tts_profiles"
+      output_directories:
+        - "data/speech_gen"
+      input_directories:
+        - "data/speech_gen"
+      default_profile: "gemini-tts"
+      allow_voice_cloning: false
+      max_text_chars: 5000
+
     media_ops:
       type: media_ops
       enabled: true

@@ -1,0 +1,96 @@
+# Jinja2 variables: {{ name }}, {{ profiles }}, {{ has_default_profile }}, {{ allow_voice_cloning }}
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_synthesize"
+      description: "Synthesize speech from text using a configured TTS profile (llm_system.tts_profiles), write a WAV file inside output_directories, and optionally attach an audio preview for audio-capable models."
+      parameters:
+        type: object
+        properties:
+          text:
+            type: string
+            description: "The text to speak (or a speaker-labelled transcript like 'Joe: Hi\\nJane: Hello' when using speakers)"
+          output_path:
+            type: string
+            description: "Destination .wav file path inside the instance's output_directories (e.g. 'out/greeting.wav')"
+          profile:
+            type: string
+{% if profiles %}
+            enum: {{ profiles | tojson }}
+{% endif %}
+            description: "TTS profile name from llm_system.tts_profiles{% if has_default_profile %} (optional; uses the instance's default_profile when omitted){% endif %}"
+          voice:
+            type: string
+            description: "Optional voice name or provider voice ID (overrides the model's default voice; cannot be combined with speakers)"
+          speakers:
+            type: array
+            items:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: "Speaker label matching names used in text"
+                voice:
+                  type: string
+                  description: "Voice name for this speaker"
+              required: [name, voice]
+              additionalProperties: false
+            description: "Optional multi-speaker mapping (1-2 speakers, where supported by the provider; cannot be combined with voice, system_instruction, seed, or reference_audio)"
+          system_instruction:
+            type: string
+            description: "Optional style or delivery direction (used by providers with supports_style_prompt; single-speaker only)"
+          seed:
+            type: integer
+            description: "Optional integer seed for reproducible speech (where supported by the provider; single-speaker only)"
+{% if allow_voice_cloning %}
+          reference_audio:
+            type: string
+            description: "Optional path inside input_directories to a reference audio sample (WAV, FLAC, OGG, MP3, AIFF, M4A) for voice cloning on providers that support it"
+          reference_text:
+            type: string
+            description: "Optional transcript of reference_audio to sharpen voice cloning (only valid together with reference_audio)"
+{% endif %}
+          attach_preview:
+            type: boolean
+            default: false
+            description: "When true, attach the generated WAV to the tool result so audio-capable models can listen to it directly"
+        required: {% if has_default_profile %}[text, output_path]{% else %}[text, output_path, profile]{% endif %}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_profiles"
+      description: "List the TTS profiles this instance may use, together with their provider, model, default voice, and instance limits."
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
+
+config:
+  output_directories:
+    type: array
+    items: {type: string}
+    description: "Allowed directories for writing synthesized WAV files (PathSandbox). Defaults to data_path('speech_gen')."
+  input_directories:
+    type: array
+    items: {type: string}
+    description: "Allowed directories for reading reference_audio files (read-only PathSandbox). Defaults to output_directories."
+  profiles:
+    type: array
+    items: {type: string}
+    description: "Allowlist of llm_system.tts_profiles this instance may call. Empty/omitted means all configured tts_profiles."
+  default_profile:
+    type: string
+    description: "Optional default TTS profile used when synthesize omits `profile`."
+  allow_voice_cloning:
+    type: boolean
+    default: false
+    description: "Opt-in: allow reference_audio for voice cloning (off by default because some providers create persistent account voice clones)."
+  max_text_chars:
+    type: integer
+    default: 5000
+    description: "Maximum text length in characters accepted per synthesize call."
+  max_reference_size_mb:
+    type: number
+    default: 15.0
+    description: "Maximum size in MiB of a reference_audio file."

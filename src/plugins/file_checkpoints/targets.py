@@ -33,6 +33,7 @@ UNTRACKED: Dict[str, FrozenSet[str]] = {
     "audio_ops": frozenset({"cut", "merge", "create", "mix", "volume", "compress_silence"}),
     "image_compose": frozenset({"render"}),
     "image_gen": frozenset({"generate"}),
+    "speech_gen": frozenset({"synthesize"}),
     "comfyui": frozenset({"workflow"}),
     "sqlite_query": frozenset({"execute_sql"}),
     # A machine's tool: activities are called by the framework and pass no hook.
