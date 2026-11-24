@@ -64,6 +64,11 @@
       "items": {"type": "string"},
       "description": "Decision model provider names this plugin serves (agent_system.llm.registry, `provides_decisions`). A decision model answers named questions with a typed value and a probability -- no chat; entries live under llm_system.decision_models."
     },
+    "provides_image": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Image generation provider names this plugin serves (agent_system.llm.registry, `provides_image`). Entries live under llm_system.image_models."
+    },
     "default_base_url": {
       "type": "object",
       "additionalProperties": {"type": "string"},

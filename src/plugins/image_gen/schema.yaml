@@ -1,0 +1,71 @@
+# Jinja2 variables: {{ name }}, {{ profiles }}, {{ has_default_profile }}
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_generate"
+      description: "Generate or edit an image using a configured image profile (llm_system.image_profiles), save it to output_path inside the write sandbox, and optionally attach a preview so a vision model can inspect it."
+      parameters:
+        type: object
+        properties:
+          prompt:
+            type: string
+            description: "Detailed description of the image to generate, or the edit instruction when reference_images are supplied"
+          output_path:
+            type: string
+            description: "Destination file path inside the instance's output_directories (e.g. 'out/hero.png'). If the extension (.png/.jpg/.webp/.gif) differs from the model's output MIME type, the image is converted to match."
+          profile:
+            type: string
+{% if profiles %}
+            enum: {{ profiles | tojson }}
+{% endif %}
+            description: "Image profile name from llm_system.image_profiles{% if has_default_profile %} (optional; uses the instance's default_profile when omitted){% endif %}"
+          reference_images:
+            type: array
+            items:
+              type: string
+            description: "Optional reference image paths (inside input_directories) for editing, style transfer, or character/object consistency"
+          aspect_ratio:
+            type: string
+            description: "Optional aspect ratio such as '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9'"
+          image_size:
+            type: string
+            description: "Optional output resolution tier such as '1K', '2K', '4K' (model-dependent)"
+          seed:
+            type: integer
+            description: "Optional integer seed for reproducible generation (where supported by the provider)"
+          attach_preview:
+            type: boolean
+            default: true
+            description: "When true, attach the generated image to the tool result so vision-capable models can inspect it directly"
+        required: {% if has_default_profile %}[prompt, output_path]{% else %}[prompt, output_path, profile]{% endif %}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_profiles"
+      description: "List the image generation profiles this instance may use, together with their provider, model and defaults."
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
+
+config:
+  output_directories:
+    type: array
+    items: {type: string}
+    description: "Allowed directories for writing generated images (PathSandbox). Defaults to data_path('image_gen')."
+  input_directories:
+    type: array
+    items: {type: string}
+    description: "Allowed directories for reading reference_images (read-only PathSandbox). Defaults to output_directories."
+  profiles:
+    type: array
+    items: {type: string}
+    description: "Allowlist of llm_system.image_profiles this instance may call. Empty means all configured image_profiles."
+  default_profile:
+    type: string
+    description: "Optional default image profile used when generate omits `profile`."
+  max_reference_size_mb:
+    type: number
+    default: 15.0
+    description: "Maximum size in MiB of each input reference image."

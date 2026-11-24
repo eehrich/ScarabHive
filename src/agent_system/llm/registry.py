@@ -37,6 +37,7 @@ from ..plugins.plugin_manifest import read_manifest_table
 if TYPE_CHECKING:
     from agent_system.config.models import LLMModelConfig
     from agent_system.llm.batch.base import BatchProviderClient
+    from agent_system.llm.image import ImageClient
     from agent_system.llm.models import LLMClient
     from agent_system.llm.tts import TTSClient
 
@@ -63,6 +64,7 @@ SEAMS: Dict[str, tuple] = {
     "provides_batch": ("BATCH_BACKENDS", "Batch backend"),
     "provides_tts": ("TTS_PROVIDERS", "TTS provider"),
     "provides_decisions": ("DECISION_PROVIDERS", "Decisions provider"),
+    "provides_image": ("IMAGE_PROVIDERS", "Image provider"),
 }
 
 _lock = threading.RLock()
@@ -339,6 +341,26 @@ def known_decisions_providers() -> frozenset:
     with _lock:
         _scan_manifests()
         return frozenset(_owners["provides_decisions"])
+
+
+def get_image_provider(image_provider: str) -> Callable:
+    """Image generation factory for one provider (manifest key ``provides_image``)."""
+    return cast(Callable, _factory(
+        "provides_image", image_provider, "image provider",
+        unknown="Unknown image provider"))
+
+
+def build_image_client(cfg, ssl_verify: Optional[bool] = None) -> "ImageClient":
+    """Build the client for an ImageModelConfig — the image construction seam."""
+    return _construct(get_image_provider(cfg.provider), cfg,
+                      "provides_image", "image provider", ssl_verify=ssl_verify)
+
+
+def known_image_providers() -> frozenset:
+    """Image provider names any plugin manifest declares — no imports happen."""
+    with _lock:
+        _scan_manifests()
+        return frozenset(_owners["provides_image"])
 
 
 def known_batch_providers() -> frozenset:

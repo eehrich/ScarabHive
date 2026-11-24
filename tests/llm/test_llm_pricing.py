@@ -214,6 +214,7 @@ class TestPricingPath:
                   if not (m.provider == "ollama" and (m.ollama_mode or "").lower() == "native")
                   and m.provider not in CODING_CLIS]
         models += [m for m in llm.decision_models.values() if m.provider != "ollama_decisions"]
+        models += list((llm.image_models or {}).values())
         missing = sorted({m.model for m in models if m.model and m.model not in table})
         assert not missing, (
             f"no entry in config/llm_pricing.yaml for {missing} - add the "

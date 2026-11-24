@@ -11,6 +11,7 @@ type = ["llm-provider"]
 provides = ["gemini", "gemini_sdk"]
 provides_batch = ["gemini"]
 provides_tts = ["gemini_tts"]
+provides_image = ["gemini_image"]
 # Where a model entry without base_url goes (provider._common_kwargs). Not gemini_sdk: its client leaves the
 # endpoint to the SDK and names none (the drift test compares the two).
 default_base_url = { gemini = "https://generativelanguage.googleapis.com/v1beta" }

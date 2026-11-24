@@ -682,7 +682,8 @@ class TestBatchModelsFailAtConfigLoad:
 
         names = (set(registry.known_providers())
                  | set(registry.known_batch_providers())
-                 | set(registry.known_tts_providers()))
+                 | set(registry.known_tts_providers())
+                 | set(registry.known_image_providers()))
         names.discard("batch")  # the resolver's own pseudo-provider
         assert len(names) >= 5, "provider scan came up empty — check would be vacuous"
 

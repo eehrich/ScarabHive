@@ -1151,6 +1151,113 @@
       "type": "object",
       "additionalProperties": false
     },
+    "ImageModelConfig": {
+      "additionalProperties": false,
+      "description": "Individual image generation model configuration.\n\nDefines an image generation backend (e.g. native Gemini image generation\nor OpenRouter image models) with its connection and default output knobs.\nSeparate from ``models`` because an image generator does not serve chat or\ntool calling and should not appear in the chat profile picker.",
+      "properties": {
+        "provider": {
+          "default": "gemini_image",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "aspect_ratio": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aspect Ratio"
+        },
+        "image_size": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image Size"
+        },
+        "request_timeout": {
+          "default": 180,
+          "exclusiveMinimum": 0,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "ImageModelConfig",
+      "type": "object"
+    },
+    "ImageProfile": {
+      "additionalProperties": false,
+      "description": "Named image generation profile that references an image model.",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "ImageProfile",
+      "type": "object"
+    },
     "LLMModelConfig": {
       "additionalProperties": false,
       "description": "Individual LLM model configuration",
@@ -1793,6 +1900,22 @@
           ],
           "default": null,
           "title": "Default Decision Profile"
+        },
+        "image_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ImageModelConfig"
+          },
+          "default": {},
+          "title": "Image Models",
+          "type": "object"
+        },
+        "image_profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ImageProfile"
+          },
+          "default": {},
+          "title": "Image Profiles",
+          "type": "object"
         }
       },
       "title": "LLMSystemConfig",

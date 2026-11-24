@@ -1,0 +1,119 @@
+@database "image_gen"
+@author "Enrico Ehrich"
+@$VER: image_gen.guide 1.0 (24.11.2026)
+@smartwrap
+
+@node main "Image Generation"
+@{h1}Image Generation
+
+The @{tt}image_gen@{utt} plugin gives agents sandboxed access to cloud image
+generation and editing models configured under
+@{tt}llm_system.image_models@{utt} and @{tt}llm_system.image_profiles@{utt}.
+Each call writes the generated image to disk inside the instance's write
+sandbox and can attach a preview so a vision-capable model inspects the
+result directly and refines it with @{tt}reference_images@{utt}.
+
+Two tools, no hooks and no panel. Multiple instances can run side by side
+with different sandboxes and profile allowlists.
+
+@{code}
+For agents and developers
+  @{"  generate  " link generate}
+  @{"  list_profiles  " link list_profiles}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node generate "generate"
+@{h1}generate
+
+Calls @{tt}create_image_from_profile@{utt} for the selected profile, saves the
+image atomically to @{tt}output_path@{utt} (converting formats via Pillow when
+the file extension differs from the model's MIME type), and optionally
+attaches a preview image.
+
+@{table}
+Parameter | Meaning
+prompt | required; description of the image to create or edit instruction
+output_path | required; target file path inside @{tt}output_directories@{utt}
+profile | image profile from @{tt}llm_system.image_profiles@{utt} (optional when @{tt}default_profile@{utt} is set)
+reference_images | optional list of file paths inside @{tt}input_directories@{utt} for editing or consistency
+aspect_ratio | optional aspect ratio (e.g. @{tt}1:1@{utt}, @{tt}16:9@{utt}, @{tt}4:3@{utt})
+image_size | optional resolution tier (e.g. @{tt}1K@{utt}, @{tt}2K@{utt}, @{tt}4K@{utt})
+seed | optional integer seed (where supported by the provider)
+attach_preview | @{tt}true@{utt} (default): attach the generated image to the tool result when under the request size limit
+@{body}
+
+Returns @{tt}status: "success"@{utt} with @{tt}path@{utt}, @{tt}width@{utt},
+@{tt}height@{utt}, @{tt}bytes@{utt}, @{tt}mime_type@{utt}, @{tt}profile@{utt},
+@{tt}model@{utt}, optional @{tt}text@{utt} (when the model returns commentary),
+and @{tt}not_attached@{utt} if the preview exceeded the attachment limit.
+@endnode
+
+@node list_profiles "list_profiles"
+@{h1}list_profiles
+
+Lists the image generation profiles allowed on this instance with their
+@{tt}description@{utt}, @{tt}provider@{utt}, @{tt}model@{utt}, default
+@{tt}aspect_ratio@{utt} / @{tt}image_size@{utt}, and @{tt}is_default@{utt}.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Tool descriptions and errors
+
+The schema lists the allowed profile names as an enum when at least one
+profile is configured, and makes @{tt}profile@{utt} optional when
+@{tt}default_profile@{utt} is set. Validation errors (path outside sandbox,
+missing reference file, unsupported capability such as @{tt}reference_images@{utt}
+or @{tt}seed@{utt} on a provider that lacks it) return
+@{tt}{"status": "error", "error": "..."}@{utt} before any API call.
+
+@{h2}Token and cache effect
+
+Append-only: each call returns one tool result. When @{tt}attach_preview@{utt}
+is @{tt}true@{utt}, the generated image is attached via the multimodal tool
+channel (frozen by content hash so overwriting the path later does not
+invalidate earlier turns in the prompt cache).
+
+@{h2}Known gaps
+
+@{bullet}One image per call on current providers (@{tt}gemini_image@{utt},
+@{tt}openrouter_image@{utt}).
+@{bullet}@{tt}file_checkpoints@{utt} counts @{tt}image_gen/generate@{utt} as
+an untracked write rather than snapshotting previous bytes at
+@{tt}output_path@{utt}.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Configure image models and profiles under @{tt}llm_system@{utt} (for example
+in @{tt}config/llm.yaml@{utt} or @{tt}config/llm_openrouter.yaml@{utt}):
+
+@{code yaml}
+llm_system:
+  image_models:
+    gemini-nano-banana-2.1:
+      provider: gemini_image
+      model: gemini-nano-banana-2.1
+  image_profiles:
+    nano-banana:
+      model_ref: gemini-nano-banana-2.1
+      description: "Google Nano Banana 2.1 (direct Gemini API)"
+@{body}
+
+Then configure an instance in @{tt}config/plugins.yaml@{utt} or an agent's
+@{tt}tools.yaml@{utt}:
+
+@{table}
+Key | Default | Meaning
+output_directories | data/image_gen | write sandbox (PathSandbox); empty refuses all writes
+input_directories | same as output_directories | read-only sandbox for @{tt}reference_images@{utt}
+profiles | all configured | allowlist of @{tt}llm_system.image_profiles@{utt}
+default_profile | none | profile used when @{tt}generate@{utt} omits @{tt}profile@{utt}
+max_reference_size_mb | 15.0 | maximum size per reference image in MiB
+@{body}
+@endnode

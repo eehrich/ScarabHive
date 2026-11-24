@@ -15,6 +15,7 @@ provides = ["openai_httpx", "openai_responses"]
 # reaches this one through the registry.
 provides_batch = ["openai_httpx", "openai_responses"]
 provides_tts = ["openai_speech"]
+provides_image = ["openrouter_image"]
 # Endpoint each factory falls back to when the model entry names none. The
 # resolver reads this to tell whether a base_url-less entry actually talks to
 # OpenRouter (provider_routing, key-follows-endpoint) instead of knowing the

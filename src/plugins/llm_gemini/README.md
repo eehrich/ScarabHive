@@ -7,6 +7,7 @@ panel.
 - **`gemini_sdk`** -- the same API through Google's `google-genai` SDK.
 - **`gemini` (batch)** -- the Gemini Batch API, for `provider: batch` entries.
 - **`gemini_tts`** -- text to speech with Gemini's TTS models.
+- **`gemini_image`** -- native image generation and editing (`:generateContent` with `imageConfig`) for models such as `gemini-nano-banana-2.1`.
 
 Nothing to enable: name one of the providers in a model entry of `config/llm.yaml` and point a profile at it. The
 API key is the entry's `api_key`, else `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Unlike Gemini behind OpenRouter, these

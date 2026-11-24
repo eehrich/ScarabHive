@@ -148,6 +148,16 @@ plugins:
       overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
       overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
 
+    image_gen:
+      type: image_gen
+      enabled: true
+      description: "Generate and edit images via configured llm_system.image_profiles"
+      output_directories:
+        - "data/image_gen"
+      input_directories:
+        - "data/image_gen"
+      default_profile: "or-nano-banana"
+
     media_ops:
       type: media_ops
       enabled: true

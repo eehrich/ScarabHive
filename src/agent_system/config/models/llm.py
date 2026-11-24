@@ -289,6 +289,46 @@ class DecisionProfile(BaseModel):
     description: Optional[str] = None
 
 
+# ===========================
+# Image Generation Configuration Models
+# ===========================
+
+class ImageModelConfig(BaseModel):
+    """Individual image generation model configuration.
+
+    Defines an image generation backend (e.g. native Gemini image generation
+    or OpenRouter image models) with its connection and default output knobs.
+    Separate from ``models`` because an image generator does not serve chat or
+    tool calling and should not appear in the chat profile picker.
+    """
+    model_config = ConfigDict(extra="forbid")
+    # Free string like TTSModelConfig.provider: the plugins under src/plugins/
+    # own the vocabulary via `provides_image` in their manifests; typos fail at
+    # config load through LLMSystemConfig._providers_must_exist_as_plugins.
+    provider: str = "gemini_image"
+    model: str
+    api_key: Optional[str] = None  # provider factory falls back to its env vars
+    base_url: Optional[str] = None
+    aspect_ratio: Optional[str] = None  # default aspect ratio (e.g. "1:1", "16:9")
+    image_size: Optional[str] = None  # default resolution tier (e.g. "1K", "2K", "4K")
+    request_timeout: int = Field(180, gt=0)  # image generation can take tens of seconds
+    max_retries: int = Field(3, ge=0)
+
+    @field_validator("model")
+    @classmethod
+    def _model_must_not_be_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("ImageModelConfig.model must be a non-empty string")
+        return v.strip()
+
+
+class ImageProfile(BaseModel):
+    """Named image generation profile that references an image model."""
+    model_config = ConfigDict(extra="forbid")
+    model_ref: str  # Reference to key in image_models dict
+    description: Optional[str] = None
+
+
 class LLMSystemConfig(BaseModel):
     """Complete LLM system configuration"""
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
@@ -353,19 +393,20 @@ class LLMSystemConfig(BaseModel):
         try:
             from agent_system.llm.registry import (
                 batch_client_provider, known_batch_providers,
-                known_decisions_providers, known_providers,
-                known_tts_providers)
+                known_decisions_providers, known_image_providers,
+                known_providers, known_tts_providers)
             known = known_providers()
             known_tts = known_tts_providers()
             known_decisions = known_decisions_providers()
+            known_image = known_image_providers()
         except Exception as e:
             # Lenient, but never silent: without this line an unreadable
             # plugin root turns the typo guard off with no trace, and every
             # agent dies individually at build time instead. Names EVERY
             # check — the TTS half used to be skipped without mention.
             logging.getLogger(__name__).warning(
-                "LLM, TTS and decision provider validation skipped (manifest "
-                "scan failed): %s", e)
+                "LLM, TTS, decision and image provider validation skipped "
+                "(manifest scan failed): %s", e)
             return self
         unknown = sorted(
             f"{name} (provider={m.provider})"
@@ -444,6 +485,8 @@ class LLMSystemConfig(BaseModel):
              known_tts, "provides_tts"),
             ("decision", "decisions", self.decision_models, self.decision_profiles,
              known_decisions, "provides_decisions"),
+            ("image", "image", self.image_models, self.image_profiles,
+             known_image, "provides_image"),
         ):
             unknown = sorted(
                 f"{name} (provider={m.provider})"
@@ -490,3 +533,7 @@ class LLMSystemConfig(BaseModel):
     #: none and has been removed — a default nothing reads is not configuration, it
     #: is decoration, so if this ever loses its reader it should go the same way.
     default_decision_profile: Optional[str] = None
+
+    # Image generation models — see ImageModelConfig.
+    image_models: Dict[str, ImageModelConfig] = {}
+    image_profiles: Dict[str, ImageProfile] = {}

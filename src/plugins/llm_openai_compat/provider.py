@@ -158,6 +158,12 @@ def build_openai_speech_tts(cfg):
     return build_openai_speech(cfg)
 
 
+def build_openrouter_image(cfg, ssl_verify: Optional[bool] = None):
+    """Image generation factory (manifest key provides_image)."""
+    from .openrouter_image_client import build_openrouter_image as _build
+    return _build(cfg, ssl_verify=ssl_verify)
+
+
 def make_responses_batch_backend(cfg: "LLMModelConfig"):
     """Batch backend on /v1/responses (``batch_provider: openai_responses``):
     OpenAI's reasoning models take function calls only there."""
@@ -207,3 +213,4 @@ PROVIDERS = {
 BATCH_BACKENDS = {"openai_httpx": make_batch_backend,
                   "openai_responses": make_responses_batch_backend}
 TTS_PROVIDERS = {"openai_speech": build_openai_speech_tts}
+IMAGE_PROVIDERS = {"openrouter_image": build_openrouter_image}

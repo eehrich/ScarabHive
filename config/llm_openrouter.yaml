@@ -653,3 +653,21 @@ llm_system:
 
   # Who judges when a caller names no profile.
   default_decision_profile: jev
+
+  # =============================================================================
+  # IMAGE GENERATION MODELS & PROFILES (via OpenRouter)
+  # =============================================================================
+  # Reached via POST /chat/completions with modalities: ["image", "text"] and
+  # image_config. Direct Gemini image models live in llm.yaml; both sections merge.
+  image_models:
+    openrouter-nano-banana-2.1:
+      provider: openrouter_image
+      model: google/gemini-nano-banana-2.1
+      # api_key: defaults to OPENROUTER_API_KEY (key follows endpoint)
+      request_timeout: 180
+      max_retries: 3
+
+  image_profiles:
+    or-nano-banana:
+      model_ref: openrouter-nano-banana-2.1
+      description: "Google Nano Banana 2.1 via OpenRouter - image generation and multi-reference editing"

@@ -1,0 +1,11 @@
+[plugin]
+name = "image_gen"
+version = "1.0.0"
+description = "Generate and edit images through configured llm_system.image_profiles, writing into a configured path sandbox"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "media"
+tags = ["image", "generation", "editing", "media"]
+requires = { python = ">=3.11", agent_system = ">=0.6.0" }
+dependencies = ["Pillow>=10.0.0"]

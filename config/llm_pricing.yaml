@@ -112,6 +112,13 @@ gemini-3.5-flash-lite:
   cached_input: 0.03
   batch_discount: 0.5
 
+# Nano Banana 2.1 (image generation): input $1.50/M, text output $7.50/M, image
+# output $30.00/M (~1,120 tokens at 1K -> ~$0.034/image). Output is overwhelmingly
+# image tokens on generation calls, so the single-rate fallback uses $30.00/M.
+gemini-nano-banana-2.1:
+  input: 1.50
+  output: 30.00
+
 # =============================================================================
 # Anthropic Claude — Direct API (api.anthropic.com)
 # Cache read = 0.1x of input price (Fable 5.1: $0.25/M flat), cache write premium = 0.25x (5-minute cache)
@@ -379,6 +386,12 @@ google/gemini-4-neon:
   input: 3.00
   output: 15.00
   cached_input: 0.15
+
+# Nano Banana 2.1 via OpenRouter: OpenRouter returns exact billed `usage.cost`;
+# fallback table uses image-output rate ($30/M, text input $1.50/M).
+google/gemini-nano-banana-2.1:
+  input: 1.50
+  output: 30.00
 
 # OpenAI via OpenRouter — standard tier (endpoint tag `openai`), <=272K context.
 # Routing in llm_openrouter.yaml: order: [openai], allow_fallbacks: false.

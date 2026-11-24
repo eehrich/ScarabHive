@@ -32,6 +32,7 @@ UNTRACKED: Dict[str, FrozenSet[str]] = {
     "godot": frozenset({"setup", "import_assets", "script", "export", "scene", "node", "command"}),
     "audio_ops": frozenset({"cut", "merge", "create", "mix", "volume", "compress_silence"}),
     "image_compose": frozenset({"render"}),
+    "image_gen": frozenset({"generate"}),
     "comfyui": frozenset({"workflow"}),
     "sqlite_query": frozenset({"execute_sql"}),
     # A machine's tool: activities are called by the framework and pass no hook.

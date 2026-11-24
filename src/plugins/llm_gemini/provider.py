@@ -96,6 +96,13 @@ def build_gemini_tts(cfg):
     return _build(cfg)
 
 
+def build_gemini_image(cfg, ssl_verify: Optional[bool] = None):
+    """Image generation factory (manifest key provides_image)."""
+    from .gemini_image_client import build_gemini_image as _build
+    return _build(cfg, ssl_verify=ssl_verify)
+
+
 PROVIDERS = {"gemini": build_gemini, "gemini_sdk": build_gemini_sdk}
 BATCH_BACKENDS = {"gemini": make_batch_backend}
 TTS_PROVIDERS = {"gemini_tts": build_gemini_tts}
+IMAGE_PROVIDERS = {"gemini_image": build_gemini_image}

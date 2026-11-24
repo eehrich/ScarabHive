@@ -9,6 +9,13 @@ from .tts import (
     create_tts_from_profile,
 )
 from .decisions import create_decisions_from_profile
+from .image import (
+    GeneratedImage,
+    ImageClient,
+    ImageInput,
+    ImageResult,
+    create_image_from_profile,
+)
 from .capabilities import (
     ModelCapability,
     ModelCapabilities,
@@ -28,6 +35,12 @@ __all__ = [
     "create_tts_from_profile",
     # Decisions (profile lookup; clients live in plugins via provides_decisions)
     "create_decisions_from_profile",
+    # Image generation (service definition; clients live in plugins via provides_image)
+    "ImageClient",
+    "ImageInput",
+    "GeneratedImage",
+    "ImageResult",
+    "create_image_from_profile",
     # Capabilities
     "ModelCapability",
     "ModelCapabilities",
