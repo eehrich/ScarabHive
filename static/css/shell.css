@@ -155,7 +155,7 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 /* a day group's head: it folds its sessions (Today, Yesterday, This week open; months closed) */
 .sessions-group {
   display: flex; align-items: center; gap: var(--space-1); width: 100%;
-  padding: var(--space-3) var(--space-2) var(--space-1); font: 500 var(--text-xs)/1.2 var(--font-ui); color: var(--text-muted);
+  padding: var(--space-3) var(--sessions-row-end) var(--space-1) var(--space-2); font: 500 var(--text-xs)/1.2 var(--font-ui); color: var(--text-muted);
   text-align: left; background: none; border: 0; border-radius: var(--radius-sm); cursor: pointer;
 }
 .sessions-group:hover { color: var(--text-primary); }
@@ -163,13 +163,18 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
   flex: none; transition: transform var(--duration-fast); color: var(--text-muted);
 }
 .sessions-group[aria-expanded="true"] .pk-icon, .sessions-folder-toggle[aria-expanded="true"] > .pk-icon:first-child { transform: rotate(90deg); }
-.sessions-count { flex: none; min-width: 2ch; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: right; }
+/* Counts and times end on one line down the whole list: every row kind keeps the same right padding
+   (--sessions-row-end), and the column is as wide in each, its digits all one width. */
+.sessions-count, .session-row .session-meta {
+  flex: none; min-width: 4ch; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: right;
+}
+.sessions-list, .sessions-activity { --sessions-row-end: var(--space-2); }
 
 /* folders, above the sessions in none: a row each, their sessions by day inside */
 .sessions-folder { border-radius: var(--radius-md); margin-bottom: 1px; }
 .sessions-folder-row {
   display: flex; align-items: center; gap: var(--space-1);
-  min-height: 34px; padding: 0 var(--space-1) 0 var(--space-1); border-radius: var(--radius-md); color: var(--text-secondary);
+  min-height: 34px; padding: 0 var(--sessions-row-end) 0 var(--space-1); border-radius: var(--radius-md); color: var(--text-secondary);
 }
 .sessions-folder-row:hover { background: var(--surface-3); color: var(--text-primary); }
 .sessions-folder-toggle {
@@ -179,8 +184,9 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 }
 .sessions-folder-toggle > .pk-icon:nth-child(2) { flex: none; color: var(--accent-text); }
 .sessions-folder-edit { display: none; }
-.sessions-folder-row:is(:hover, :focus-within) > .sessions-folder-edit { display: inline-flex; }
-.sessions-folder-row:is(:hover, :focus-within) > .sessions-count { display: none; }
+/* With the pointer on the row, or the keyboard in it -- not after a click on it, which leaves the focus there */
+.sessions-folder-row:is(:hover, :has(:focus-visible)) > .sessions-folder-edit { display: inline-flex; }
+.sessions-folder-row:is(:hover, :has(:focus-visible)) > .sessions-count { display: none; }
 .sessions-folder-running { display: none; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .sessions-folder.is-running > .sessions-folder-row > .sessions-folder-running { display: block; animation: session-running-pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
@@ -205,7 +211,7 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 .session-item { border-radius: var(--radius-md); }
 .session-row {
   display: flex; align-items: center; gap: var(--space-1);
-  min-height: 34px; padding: 0 var(--space-1) 0 calc(var(--space-2) + var(--depth, 0) * 14px);
+  min-height: 34px; padding: 0 var(--sessions-row-end) 0 calc(var(--space-2) + var(--depth, 0) * 14px);
   border-radius: var(--radius-md); color: var(--text-secondary);
 }
 .session-row:hover { background: var(--surface-3); color: var(--text-primary); }
@@ -231,12 +237,28 @@ body:has(.app-body:not([data-sessions="closed"])) .app-runs[data-runs-quiet="0"]
 @media (prefers-reduced-motion: reduce) {
   .session-item.is-running > .session-row > .session-running { animation: none; }
 }
-.session-row .session-meta { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.session-row .session-actions { display: none; }
-.session-row:hover .session-actions, .session-row:focus-within .session-actions { display: flex; }
-.session-row:hover .session-meta, .session-row:focus-within .session-meta { display: none; }
-/* the agent's name gives way to the actions as the timestamp does (outweighs the rule showing it) */
-.session-item.is-running > .session-row:is(:hover, :focus-within) > .session-agent:not(:empty) { display: none; }
+.session-row .session-meta { white-space: nowrap; }
+/* One button, "more", in place of the time: with the pointer on the row, the keyboard in it, or its menu open --
+   not after a click on the title, which leaves the focus in the row. A touch screen has no pointer resting on a
+   row: the button stays, beside the time. */
+.session-row .session-actions { display: none; flex: none; }
+.session-row:is(:hover, :has(:focus-visible), :has([data-act="more"][aria-expanded="true"])) .session-actions { display: flex; }
+.session-row:is(:hover, :has(:focus-visible), :has([data-act="more"][aria-expanded="true"])) .session-meta { display: none; }
+/* the agent's name gives way to the button as the timestamp does (outweighs the rule showing it) */
+.session-item.is-running > .session-row:is(:hover, :has(:focus-visible), :has([data-act="more"][aria-expanded="true"])) > .session-agent:not(:empty) { display: none; }
+.session-actions .pk-btn { margin-right: calc(-1 * var(--space-1)); }
+@media (hover: none) {
+  .session-row .session-actions { display: flex; }
+  .session-row .session-meta { display: inline; }
+  .sessions-folder-edit { display: inline-flex; }
+}
+/* the head's view button while the list is laid out other than by default */
+.sessions-view[data-changed] { color: var(--accent-text, var(--accent)); }
+.sessions-view[data-changed]::after {
+  content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+.sessions-view { position: relative; }
+.sessions-flat { padding-top: var(--space-1); }
 .session-expand { width: 20px; height: 20px; padding: 0; color: var(--text-muted); background: none; border: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .session-expand[aria-expanded="true"] .pk-icon { transform: rotate(90deg); }
 .session-expand-spacer { width: 20px; flex: none; }

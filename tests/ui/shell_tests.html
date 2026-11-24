@@ -48,7 +48,16 @@
   const probe = () => probeFrame()?.contentWindow?.probe;
   const received = (type) => probe().received.filter((m) => m.type === type);
   const panelFrame = (path) => $$('iframe.panel-frame').find((f) => f.src.includes(path));
-  const sessionButton = (id, act) => $(`.session-item[data-id="${id}"] > .session-row [data-act="${act}"]`);
+  // Rename, move, open in a panel and delete sit in the row's "more" menu: asked for one, the menu opens and its item
+  // is handed back; the row's own buttons (open, expand, more) come straight from the row.
+  const sessionButton = (id, act) => {
+    const own = $(`.session-item[data-id="${id}"] > .session-row [data-act="${act}"]`);
+    if (own || !['rename', 'move', 'info', 'delete'].includes(act)) return own;
+    const more = $(`.session-item[data-id="${id}"] > .session-row [data-act="more"]`);
+    if (!more) return null;
+    more.click();
+    return $(`.sessions-row-menu:popover-open [data-act="${act}"]`);
+  };
   const cookie = (name, value) => {
     document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`;
   };
@@ -3089,7 +3098,7 @@
     storeRun('r-live-severed', 's-severed');  // its stream breaks as it is cancelled
     try {
       await go(`/?load=${performance.now()}`);
-      await until('the reattached run', () => reattached() && sessionButton('s-severed', 'delete'), 4000);
+      await until('the reattached run', () => reattached() && sessionButton('s-severed', 'more'), 4000);
       sessionButton('s-severed', 'delete').click();
       (await until('the delete question', () => $('dialog.pk-dialog[open] .pk-btn--danger'))).click();
       (await until('the run question', () => {
@@ -5332,7 +5341,7 @@
       await stub('/__stub/sessions', { session_id: 's-honour', title: 'Honouring session', has_children: false });
       storeRun('r-live-honouring-late', 's-honour');
       await go(`/?load=${performance.now()}`);
-      await until('the run to stop', () => reattached() && sessionButton('s-honour', 'delete') && $('#stopBtn').style.display !== 'none', 4000);
+      await until('the run to stop', () => reattached() && sessionButton('s-honour', 'more') && $('#stopBtn').style.display !== 'none', 4000);
       $('#stopBtn').click();
       await until('its cancelled event', () => $('#chat').textContent.includes('Request cancelled'), 3000);
       sessionButton('s-honour', 'delete').click();
@@ -5495,6 +5504,68 @@
     await win().sessionManager.refreshActivity();
     folderRow('video').querySelector('.sessions-group').click();  // open again for the next check
     return need(marked, 'a run in a closed month shows nowhere');
+  });
+
+  await check("a session row has one button, its menu holds the rest", async () => {
+    const row = $('.session-item[data-id="s-1"] > .session-row');
+    const buttons = [...row.querySelectorAll('.session-actions [data-act]')].map((b) => b.dataset.act);
+    need(buttons.join() === 'more', `the row's actions: ${buttons}`);
+    row.querySelector('[data-act="more"]').click();
+    const menu = await until('the row menu', () => $('.sessions-row-menu:popover-open'));
+    const items = [...menu.querySelectorAll('[data-act]')].map((b) => b.dataset.act).join();
+    const kept = row.querySelector('[data-act="more"]').getAttribute('aria-expanded') === 'true'
+      && getComputedStyle(row.querySelector('.session-actions')).display !== 'none';
+    menu.hidePopover();
+    await until('the menu closed', () => !$('.sessions-row-menu'));
+    const closed = row.querySelector('[data-act="more"]').getAttribute('aria-expanded') === 'false';
+    // Not checked here: that a title a MOUSE clicked keeps the button out. Focus a script sets counts as keyboard
+    // focus (:focus-visible), so the page cannot make the case; shell.css shows the button on :has(:focus-visible).
+    return need(items === 'rename,move,info,delete', `the menu: ${items}`) && need(kept, 'the open menu hid its button')
+      && need(closed, 'the button still says its menu is open');
+  });
+
+  await check('counts and times end on one line down the list', async () => {
+    const ends = $$('.sessions-list :is(.sessions-count, .session-meta)')
+      .filter((el) => el.getClientRects().length).map((el) => Math.round(el.getBoundingClientRect().right));
+    need(ends.length > 3, `fixture: ${ends.length} counts and times shown`);
+    return need(Math.max(...ends) - Math.min(...ends) <= 1, `their right edges: ${[...new Set(ends)]}`);
+  });
+
+  await check('the view menu groups, sorts and filters the list, kept in this browser', async () => {
+    const view = $('.sessions-head [data-act="view"]');
+    const pick = async (key, value) => {
+      view.click();
+      (await until('the view menu', () => $(`.sessions-view-menu:popover-open [data-view="${key}"][data-value="${value}"]`))).click();
+      await until('the menu closed', () => !$('.sessions-view-menu'));
+    };
+    const titles = () => $$('.sessions-list .session-item > .session-row .session-open').map((b) => b.textContent.trim());
+    const manager = win().sessionManager;
+    try {
+      need(!view.hasAttribute('data-changed'), 'marked before any choice');
+      await pick('group', 'none');
+      await until('the flat list', () => $('.sessions-flat') && !$('.sessions-list .sessions-folder') && !$('.sessions-list .sessions-group'));
+      need(view.hasAttribute('data-changed'), 'a changed view is not marked');
+      await pick('sort', 'title');
+      const sorted = titles();
+      need(sorted.length > 2 && sorted.every((title, i) => !i
+        || sorted[i - 1].localeCompare(title, undefined, { sensitivity: 'base' }) <= 0), `not by title: ${sorted}`);
+      const agent = manager.sessions.find((s) => s.agent_name)?.agent_name;
+      await pick('agent', agent);
+      const ofAgent = manager.sessions.filter((s) => s.agent_name === agent).length;
+      need($$('.sessions-list .session-item').length === ofAgent, `not only the sessions of ${agent}`);
+      const kept = JSON.parse(localStorage.getItem('scarabhive.sessions.view.v1'));
+      need(kept.group === 'none' && kept.sort === 'title' && kept.agent === agent, `kept: ${JSON.stringify(kept)}`);
+      await pick('group', 'days');
+      need($('.sessions-list .sessions-group') && !$('.sessions-list .sessions-folder'), 'days without folders');
+      // no folders shown: nothing to drag into or out of, so no row leaves its folder by a slip of the mouse
+      return need(!$('.sessions-list [data-drop-folder]') && !$('.sessions-list .session-row[draggable="true"]'),
+        'a list without folders still takes a dragged session out of its folder');
+    } finally {
+      localStorage.setItem('scarabhive.sessions.view.v1', JSON.stringify({ group: 'folders', sort: 'updated', agent: '' }));
+      manager.view = { group: 'folders', sort: 'updated', agent: '' };
+      manager.showViewChanged();
+      manager.render();
+    }
   });
 
   await check('a session moves into a folder by its menu and by dragging, and out again; the dialog renames, decorates and deletes a folder', async () => {

@@ -60,6 +60,39 @@ function storedArchive() {
   try { return localStorage.getItem(ARCHIVE_KEY) !== 'closed'; } catch { return true; }
 }
 
+/**
+ * How the list is laid out, in this browser (the view menu in the pane's head): grouped by folders and days, by
+ * days only, or not at all; sorted by the last change, by the start or by title; one agent's sessions only.
+ */
+const VIEW_KEY = 'scarabhive.sessions.view.v1';
+const VIEW_DEFAULTS = Object.freeze({ group: 'folders', sort: 'updated', agent: '' });
+const VIEW_CHOICES = {
+  group: [['folders', 'Folders and days'], ['days', 'Days'], ['none', 'None']],
+  sort: [['updated', 'Last updated'], ['created', 'Created'], ['title', 'Title']],
+};
+
+function storedView() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(VIEW_KEY));
+    if (stored && typeof stored === 'object') {
+      const valid = (key) => VIEW_CHOICES[key].some(([value]) => value === stored[key]);
+      return { group: valid('group') ? stored.group : VIEW_DEFAULTS.group, sort: valid('sort') ? stored.sort : VIEW_DEFAULTS.sort,
+               agent: typeof stored.agent === 'string' ? stored.agent : '' };
+    }
+  } catch { /* no storage or no JSON: the defaults */ }
+  return { ...VIEW_DEFAULTS };
+}
+
+/** A menu that floats over the page (a popover), gone once it closes. */
+function popoverMenu(className) {
+  const menu = document.createElement('div');
+  menu.className = `pk-menu ${className}`;
+  menu.popover = 'auto';
+  menu.setAttribute('role', 'menu');
+  menu.addEventListener('toggle', (event) => { if (event.newState === 'closed') menu.remove(); });
+  return menu;
+}
+
 /** A new folder's id: its name as a slug, and enough of the clock that a second of the same name differs. */
 function folderId(name) {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'folder';
@@ -81,8 +114,8 @@ const ACTIVITY_POLL_MAX_IDS = 200;
 
 /** What the pane needs of a session -- not its messages, which a loaded session carries. */
 function summary(session) {
-  const { session_id, title, agent_name, updated_at, has_children, folder, category } = session;
-  return { session_id, title, agent_name, updated_at, has_children, folder, category };
+  const { session_id, title, agent_name, updated_at, created_at, has_children, folder, category } = session;
+  return { session_id, title, agent_name, updated_at, created_at, has_children, folder, category };
 }
 
 export class SessionManager {
@@ -127,6 +160,8 @@ export class SessionManager {
     this.folders = [];
     /** fold key -> open; a key not in it takes its default (folders closed, recent days open) */
     this.folds = storedFolds();
+    /** how the list is grouped, sorted and narrowed (VIEW_KEY) */
+    this.view = storedView();
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
@@ -134,6 +169,8 @@ export class SessionManager {
                 title="New folder" aria-label="New folder">${icon('folder-plus', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="refresh"
                 title="Reload the session list" aria-label="Reload the session list">${icon('refresh-cw', { size: 'sm' })}</button>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm sessions-view" data-act="view"
+                title="Group, sort and filter" aria-label="Group, sort and filter" aria-haspopup="menu">${icon('filter', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="collapse-all"
                 title="Collapse all sub-sessions">${icon('chevrons-down-up', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--sm" data-act="new" title="New session">${icon('plus', { size: 'sm' })} New</button>
@@ -160,6 +197,8 @@ export class SessionManager {
     this.pane.querySelector('[data-act="new"]').addEventListener('click', () => this.newConversation());
     this.pane.querySelector('[data-act="collapse-all"]').addEventListener('click', () => this.collapseAll());
     this.pane.querySelector('[data-act="new-folder"]').addEventListener('click', () => this.editFolder(null));
+    this.pane.querySelector('[data-act="view"]').addEventListener('click', (event) => this.viewMenu(event.currentTarget));
+    this.showViewChanged();
     this.wireDrops();
     // By hand only: the list is reloaded after the chat's own runs, not for what another
     // process did meanwhile -- and a timer would reload it for nobody most of the time.
@@ -213,7 +252,7 @@ export class SessionManager {
     const children = this.expanded.get(id);
     return html`
       <div class="session-item" data-id="${id}" aria-current="${String(id === this.currentSessionId)}">
-        <div class="session-row" style="--depth: ${depth}" draggable="${String(depth === 0)}">
+        <div class="session-row" style="--depth: ${depth}" draggable="${String(depth === 0 && this.view.group === 'folders')}">
           ${session.has_children
             ? html`<button type="button" class="session-expand" data-act="expand" aria-expanded="${String(Boolean(children))}" title="Sub-sessions">${icon('chevron-right', { size: 'sm' })}</button>`
             : html`<span class="session-expand-spacer"></span>`}
@@ -221,12 +260,10 @@ export class SessionManager {
           <span class="session-running" title="An agent is working in this session" aria-hidden="true"></span>
           <span class="session-agent pk-truncate" aria-hidden="true"></span>
           <span class="session-running-said pk-sr-only"></span>
-          <span class="session-meta">${relative(session.updated_at)}</span>
+          <span class="session-meta">${relative(this.dateOf(session))}</span>
           <span class="session-actions">
-            ${depth === 0 && html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="move" title="Move to a folder" aria-haspopup="menu">${icon('folder-input', { size: 'sm' })}</button>`}
-            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="info" title="Open in a panel">${icon('panel-right', { size: 'sm' })}</button>
-            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="rename" title="Rename">${icon('pencil', { size: 'sm' })}</button>
-            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="delete" title="Delete">${icon('trash-2', { size: 'sm' })}</button>
+            <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="more" data-depth="${depth}"
+                    title="More" aria-label="More for ${session.title || 'Untitled'}" aria-haspopup="menu" aria-expanded="false">${icon('ellipsis', { size: 'sm' })}</button>
           </span>
         </div>
         ${children ? html`<div class="session-children">${children.map((child) => this.row(child, depth + 1))}</div>` : ''}
@@ -238,31 +275,137 @@ export class SessionManager {
     const focused = this.list.contains(document.activeElement) ? document.activeElement : null;
     const refocus = focused && { id: focused.closest('[data-id]')?.dataset.id, act: focused.dataset.act,
                                  fold: focused.dataset.fold };
-    const shown = this.sessions.filter((s) => !this.filter
-      || `${s.title} ${s.agent_name}`.toLowerCase().includes(this.filter));
+    const narrowed = Boolean(this.filter || this.view.agent);
+    const shown = this.sorted(this.sessions.filter((s) => (!this.filter
+      || `${s.title} ${s.agent_name}`.toLowerCase().includes(this.filter))
+      && (!this.view.agent || s.agent_name === this.view.agent)));
     // with no session yet the folders a viewer made still show: there is somewhere for the first one to go
-    if (!shown.length && (this.filter || !this.folders.length)) {
+    if (!shown.length && (narrowed || !this.folders.length || this.view.group !== 'folders')) {
       render(this.list, html`<div class="pk-empty">${icon('messages-square')}
-        <div>${this.filter ? 'No matching sessions' : 'No sessions yet -- the first message starts one.'}</div></div>`);
+        <div>${narrowed ? 'No matching sessions' : 'No sessions yet -- the first message starts one.'}</div></div>`);
+      return;
+    }
+    if (this.view.group !== 'folders') {
+      // no folders shown, so nothing to drag into or out of: no drop place, or a row let go anywhere left its folder
+      render(this.list, html`<div class="sessions-unfiled">${this.view.group === 'days'
+        ? this.dayBlocks(shown, 'v')
+        : html`<div class="sessions-flat">${shown.map((s) => this.row(s, 0))}</div>`}</div>`);
+      this.refocus(refocus);
+      this.markActive();
       return;
     }
     const inFolder = new Map(this.folders.map((folder) => [folder.id, []]));
     const unfiled = [];
     shown.forEach((s) => (inFolder.get(this.folderOf(s)) || unfiled).push(s));
     // filtering, a folder without a match goes and every group opens: what matches is what the viewer is after
-    const folders = this.folders.filter((folder) => !this.filter || inFolder.get(folder.id).length);
+    const folders = this.folders.filter((folder) => !narrowed || inFolder.get(folder.id).length);
     render(this.list, html`
       ${folders.map((folder) => this.folderBlock(folder, inFolder.get(folder.id)))}
       <div class="sessions-unfiled" data-drop-folder="">
         ${folders.length && unfiled.length ? html`<div class="sessions-divider" role="presentation"></div>` : ''}
         ${this.dayBlocks(unfiled, 'd')}
       </div>`);
+    this.refocus(refocus);
+    this.markActive();
+  }
+
+  refocus(refocus) {
     if (refocus?.fold) {
       this.list.querySelector(`[data-fold="${CSS.escape(refocus.fold)}"]`)?.focus();
     } else if (refocus?.id) {
       this.list.querySelector(`[data-id="${CSS.escape(refocus.id)}"] [data-act="${refocus.act}"]`)?.focus();
     }
-    this.markActive();
+  }
+
+  /** The date a session is placed and sorted by: when it started, under "Created"; else its last change. */
+  dateOf(session) {
+    return this.view.sort === 'created' ? session.created_at || session.updated_at : session.updated_at;
+  }
+
+  /** The sessions in the chosen order: newest first by date, or by title (A-Z, the newest first among equals). */
+  sorted(sessions) {
+    const time = (s) => new Date(this.dateOf(s)).getTime() || 0;
+    const byTitle = (a, b) => (a.title || 'Untitled').localeCompare(b.title || 'Untitled', undefined, { sensitivity: 'base' });
+    return [...sessions].sort((a, b) => (this.view.sort === 'title' ? byTitle(a, b) : 0) || time(b) - time(a));
+  }
+
+  /** The head's view button marked while the list is laid out other than by default. */
+  showViewChanged() {
+    const changed = Object.keys(VIEW_DEFAULTS).some((key) => this.view[key] !== VIEW_DEFAULTS[key]);
+    this.pane.querySelector('[data-act="view"]').toggleAttribute('data-changed', changed);
+  }
+
+  setView(key, value) {
+    this.view = { ...this.view, [key]: value };
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(this.view)); } catch { /* this page only */ }
+    this.showViewChanged();
+    this.render();
+  }
+
+  /** Group, sort and filter the list: the head's view button. */
+  viewMenu(anchor) {
+    this.menu?.remove();
+    const menu = popoverMenu('sessions-view-menu');
+    const agents = [...new Set(this.sessions.map((s) => s.agent_name).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    if (this.view.agent && !agents.includes(this.view.agent)) agents.unshift(this.view.agent);
+    const choice = (key, value, label) => html`
+      <button type="button" class="pk-menu-item" role="menuitemradio" data-view="${key}" data-value="${value}"
+              aria-checked="${String(this.view[key] === value)}">${this.view[key] === value ? icon('check') : html`<span class="pk-icon" aria-hidden="true"></span>`} ${label}</button>`;
+    render(menu, html`
+      <div class="pk-menu-label">Group by</div>
+      ${VIEW_CHOICES.group.map(([value, label]) => choice('group', value, label))}
+      <hr class="pk-menu-separator">
+      <div class="pk-menu-label">Sort by</div>
+      ${VIEW_CHOICES.sort.map(([value, label]) => choice('sort', value, label))}
+      <hr class="pk-menu-separator">
+      <div class="pk-menu-label">Agent</div>
+      ${choice('agent', '', 'All agents')}
+      ${agents.map((agent) => choice('agent', agent, agent))}`);
+    menu.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-view]');
+      if (!item) return;
+      menu.hidePopover();
+      this.setView(item.dataset.view, item.dataset.value);
+    });
+    document.body.appendChild(menu);
+    this.menu = menu;
+    menu.showPopover();
+    placeMenu(menu, anchor.getBoundingClientRect());
+    menu.querySelector('[aria-checked="true"]')?.focus();
+  }
+
+  /** What can be done with a session, under its "more" button: the row itself shows only that one button. */
+  rowMenu(anchor, id, root) {
+    this.menu?.remove();
+    const menu = popoverMenu('sessions-row-menu');
+    render(menu, html`
+      <button type="button" class="pk-menu-item" role="menuitem" data-act="rename">${icon('pencil')} Rename</button>
+      ${root && html`<button type="button" class="pk-menu-item" role="menuitem" data-act="move" aria-haspopup="menu">${icon('folder-input')} Move to folder…</button>`}
+      <button type="button" class="pk-menu-item" role="menuitem" data-act="info" aria-haspopup="menu">${icon('panel-right')} Open in a panel…</button>
+      <hr class="pk-menu-separator">
+      <button type="button" class="pk-menu-item pk-menu-item--danger" role="menuitem" data-act="delete">${icon('trash-2')} Delete</button>`);
+    // the row keeps its button shown while its menu is open (shell.css)
+    anchor.setAttribute('aria-expanded', 'true');
+    menu.addEventListener('toggle', (event) => { if (event.newState === 'closed') anchor.setAttribute('aria-expanded', 'false'); });
+    menu.addEventListener('click', async (event) => {
+      const item = event.target.closest('[data-act]');
+      if (!item) return;
+      const place = anchor.isConnected ? anchor : this.list.querySelector(`[data-id="${CSS.escape(id)}"] [data-act="more"]`) || anchor;
+      menu.hidePopover();
+      await this.act(item.dataset.act, id, place);
+    });
+    document.body.appendChild(menu);
+    this.menu = menu;
+    menu.showPopover();
+    placeMenu(menu, anchor.getBoundingClientRect());
+    menu.querySelector('.pk-menu-item')?.focus();
+  }
+
+  async act(act, id, anchor) {
+    if (act === 'move') this.moveMenu(anchor, id);
+    else if (act === 'info') this.openContext(anchor, 'session', { session_id: id });
+    else if (act === 'rename') await this.rename(id);
+    else if (act === 'delete') await this.remove(id);
   }
 
   /**
@@ -306,15 +449,21 @@ export class SessionManager {
         </div>
         ${open ? html`<div class="sessions-folder-body">${sessions.length
           ? this.dayBlocks(sessions, key)
-          : html`<div class="sessions-folder-empty">Drag a session here, or move it with its folder button</div>`}</div>` : ''}
+          : html`<div class="sessions-folder-empty">Drag a session here, or move it from its … menu</div>`}</div>` : ''}
       </div>`;
   }
 
   /** Sessions by day group; each group folds, the recent ones open until the viewer closes them. */
   dayBlocks(sessions, prefix) {
     const groups = new Map();
+    // by date, so the groups come newest first whatever order the sessions are in (sorted by title)
+    const byDate = [...sessions].sort((a, b) => (new Date(this.dateOf(b)).getTime() || 0) - (new Date(this.dateOf(a)).getTime() || 0));
+    byDate.forEach((s) => {
+      const group = dayGroup(this.dateOf(s));
+      if (!groups.has(group.key)) groups.set(group.key, { ...group, sessions: [] });
+    });
     sessions.forEach((s) => {
-      const group = dayGroup(s.updated_at);
+      const group = dayGroup(this.dateOf(s));
       if (!groups.has(group.key)) groups.set(group.key, { ...group, sessions: [] });
       groups.get(group.key).sessions.push(s);
     });
@@ -535,11 +684,9 @@ export class SessionManager {
     const id = item.dataset.id;
     const act = button.dataset.act;
     if (act === 'expand') await this.toggleChildren(id);
-    else if (act === 'move') this.moveMenu(button, id);
-    else if (act === 'info') this.openContext(button, 'session', { session_id: id });
-    else if (act === 'rename') await this.rename(id);
-    else if (act === 'delete') await this.remove(id);
+    else if (act === 'more') this.rowMenu(button, id, button.dataset.depth === '0');
     else if (act === 'open') await this.loadSession(id);
+    else await this.act(act, id, button);
   }
 
   // ------------------------------------------------------------ folders
@@ -576,10 +723,7 @@ export class SessionManager {
     this.menu?.remove();
     const session = this.sessions.find((s) => s.session_id === id);
     const here = session ? this.folderOf(session) : null;
-    const menu = document.createElement('div');
-    menu.className = 'pk-menu sessions-move-menu';
-    menu.popover = 'auto';
-    menu.setAttribute('role', 'menu');
+    const menu = popoverMenu('sessions-move-menu');
     render(menu, html`
       <div class="pk-menu-label">Move to</div>
       ${this.folders.map((folder) => html`
@@ -600,7 +744,6 @@ export class SessionManager {
         await this.moveTo(id, item.dataset.folder || null);
       }
     });
-    menu.addEventListener('toggle', (event) => { if (event.newState === 'closed') menu.remove(); });
     document.body.appendChild(menu);
     this.menu = menu;
     menu.showPopover();
