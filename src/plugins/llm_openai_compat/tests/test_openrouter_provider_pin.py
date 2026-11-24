@@ -77,6 +77,7 @@ def model_list(monkeypatch):
     from plugins.llm_openai_compat import openai_responses_client
     monkeypatch.setattr(openai_responses_client, "_model_ids", {})
     monkeypatch.setattr(openai_responses_client, "_model_ids_loaded_at", time.monotonic())
+    monkeypatch.setattr(openai_responses_client, "_newest_refused_until", {})
     return openai_responses_client._model_ids
 
 
@@ -947,6 +948,48 @@ class TestAWalkDownIsNotWhereTheRunStays:
                    ChatMessage(role="user", content="next")]
         await client.chat_tools(history, [])
         assert sent[1]["model"] == "deepseek/deepseek-v4-flash-20260731"
+
+    async def test_a_newest_model_refused_by_name_is_not_asked_for_again(self, monkeypatch):
+        """Measured 24.11.2026: the newest model's cheap endpoints were rate-limited, every walk-down sent the next
+        call back to it, the gateway refused it by name, the alias walked down again -- one wasted round trip on
+        every fourth call. After one refusal every run stays on the model that answered, for a while."""
+        from plugins.llm_openai_compat import openai_responses_client
+        now = [1000.0]
+        monkeypatch.setattr(openai_responses_client._time, "monotonic", lambda: now[0])
+        refused = httpx.Response(404, json={"error": {"message": "No endpoints found", "code": 404}})
+        client, sent = TestARunStaysOnTheModelItsAliasResolvedTo()._client(
+            [_walked_down(), refused, _walked_down(), _walked_down(), _walked_down()], model=self.ALIAS)
+
+        async def turn(history):
+            answer = await client.chat_tools(history, [])
+            return history + [ChatMessage(role="assistant", content=answer["assistant"]["content"],
+                                          reasoning_details=answer["assistant"]["reasoning_details"]),
+                              ChatMessage(role="user", content="next")]
+
+        history = await turn([ChatMessage(role="user", content="go")])
+        history = await turn(history)          # asks for the newest, refused, goes to the alias
+        assert [p["model"] for p in sent] == [
+            self.ALIAS, "deepseek/deepseek-v4-flash-20260731", self.ALIAS], "fixture: the refusal must have happened"
+        history = await turn(history)          # stays on the model that answered
+        assert sent[3]["model"] == "deepseek/deepseek-v4-flash", sent[3]["model"]
+        now[0] += openai_responses_client._NEWEST_REFUSED_FOR_S + 1
+        await turn(history)                    # the lock ran out: the newest is asked for again
+        assert sent[4]["model"] == "deepseek/deepseek-v4-flash-20260731", sent[4]["model"]
+
+    async def test_a_refused_model_the_run_merely_stayed_on_locks_nothing(self):
+        """Only a walk-down's newest model is locked: a refusal of the model that answered (a 404 after its
+        backend dropped it) leaves every other run free to stay on it."""
+        from plugins.llm_openai_compat import openai_responses_client
+        refused = httpx.Response(404, json={"error": {"message": "No endpoints found", "code": 404}})
+        client, sent = TestARunStaysOnTheModelItsAliasResolvedTo()._client(
+            [refused, _answer("deepseek/deepseek-v4-flash-0731")], model=self.ALIAS)
+        history = [ChatMessage(role="user", content="go"),
+                   TestARunStaysOnTheModelItsAliasResolvedTo()._turn(client, "deepseek/deepseek-v4-flash-0731"),
+                   ChatMessage(role="user", content="next")]
+        await client.chat_tools(history, [])
+        assert [p["model"] for p in sent] == ["deepseek/deepseek-v4-flash-0731", self.ALIAS], \
+            "fixture: the run must have stayed on its model and been refused there"
+        assert openai_responses_client._newest_refused_until == {}
 
     def test_only_a_rate_limit_counts(self):
         """After a 5xx the run keeps the model that answered: going back would wait

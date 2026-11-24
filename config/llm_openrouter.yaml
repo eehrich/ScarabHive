@@ -262,16 +262,19 @@ llm_system:
       prompt_cache_ttl_minutes: 15
       provider_affinity_minutes: 30  # the backend pin as it was (it falls back to the ttl)
       provider_routing:
-        # As openrouter-deepseek-latest-flash below, the wish set for V4's prices. On
-        # V4-0731 it also keeps out the slow endpoints of 12.11.2026 (StreamLake,
-        # SiliconFlow: 29 tok/s, 46-92 s to the first token), which are priced above it.
+        # The same wish as openrouter-deepseek-latest-flash below. Its input price keeps
+        # V4-0731's slow endpoints of 12.11.2026 out (StreamLake, SiliconFlow: 29 tok/s,
+        # 46-92 s to the first token; both above 0.10 per M input on 24.11.2026).
+        # Output at 0.50, not 0.25: with V4-0731's cheapest endpoints rate-limited, the
+        # next one (0.09 / 0.27) fell outside, and the alias walked down to the older
+        # V4 for 59 of 60 calls (measured 24.11.2026).
         order: null
         sort: price
         quantizations:
         - fp8
         preferred_max_price:
           prompt: 0.10
-          completion: 0.25
+          completion: 0.50
         allow_fallbacks: true
 
     openrouter-deepseek-flash-nostream:
@@ -330,7 +333,7 @@ llm_system:
         - fp8
         preferred_max_price:
           prompt: 0.10
-          completion: 0.40
+          completion: 0.50
         allow_fallbacks: true
 
 

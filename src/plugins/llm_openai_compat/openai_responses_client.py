@@ -175,6 +175,14 @@ def _alias_walked_down_from(response_data: dict) -> Optional[str]:
 # compares a turn's model with the one asked for. Process-wide on purpose: it is
 # the gateway's catalogue, not run state.
 _model_ids: dict[str, str] = {}
+
+#: (alias, newest model) -> monotonic time until which a run does not go back to the newest model after a
+#: walk-down: asked for directly it was refused. Process-wide on purpose -- the refusal is the gateway's state
+#: (its endpoints under this routing), not a run's. Measured 24.11.2026: the newest model's cheap endpoints
+#: rate-limited, every next call went back to it, got a 404 or 429, and the alias walked down again -- one
+#: wasted round trip on every fourth call, and 59 of 60 answers from the older model all the same.
+_NEWEST_REFUSED_FOR_S = 600.0
+_newest_refused_until: dict[tuple[str, str], float] = {}
 _model_ids_loaded_at = float("-inf")
 
 
@@ -834,8 +842,8 @@ class OpenAIResponsesClient(LLMClient):
         if anthropic_cache_conversation(self.prompt_cache_mode, has_history):
             payload["cache_control"] = {"type": "ephemeral"}
 
-    def _run_model(self, messages: list) -> str:
-        """The model this run's request goes to.
+    def _run_model(self, messages: list) -> tuple[str, bool]:
+        """The model this run's request goes to, and whether it is a walk-down's newest model.
 
         A gateway alias (``~google/gemini-flash-latest``) is resolved per
         request, and OpenRouter walks it down to an older model when the newest
@@ -856,17 +864,26 @@ class OpenAIResponsesClient(LLMClient):
         allowed while the newest was rate-limited there. Such a turn records
         the newest model as ``run_model`` and the next call asks for it; a
         refusal releases the pins as usual. That trades the warm cache of the
-        walk-down model for the newest model -- quality before cost.
+        walk-down model for the newest model -- quality before cost. Once the
+        newest model was refused by name (``_newest_refused_until``), every run
+        stays on the model that answered for ``_NEWEST_REFUSED_FOR_S``: the
+        refusal means the gateway cannot serve it under this routing right now.
         """
         if not (self._is_openrouter and self.model.startswith("~")):
-            return self.model
+            return self.model, False
         for msg in reversed(messages):
             for block in reversed(_get(msg, "reasoning_details") or []):
                 if (isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT
                         and block.get("model") == self.model):
-                    served = block.get("run_model") or block.get("served_model")
-                    return served if isinstance(served, str) else self.model
-        return self.model
+                    newest = block.get("run_model")
+                    if (isinstance(newest, str)
+                            and _newest_refused_until.get((self.model, newest), 0.0) > _time.monotonic()):
+                        newest = None   # refused lately: stay on the model that answered
+                    if newest:
+                        return newest, True
+                    served = block.get("served_model")
+                    return (served if isinstance(served, str) else self.model), False
+        return self.model, False
 
     def _build_payload(self, messages: list, tools: Optional[list],
                        model: Optional[str] = None) -> dict:
@@ -1343,7 +1360,8 @@ class OpenAIResponsesClient(LLMClient):
         # A pin is one backend with no fallbacks, so a refusal reaches us.
         # Local, never on self: one client serves parallel runs.
         pinned = provider is not self.provider_routing
-        model = self._run_model(messages)
+        model, asks_newest = self._run_model(messages)
+        run_choice = model
         if model != self.model:
             model = await _model_id(self.base_url, model, httpx_verify(self.ssl_verify))
 
@@ -1377,6 +1395,11 @@ class OpenAIResponsesClient(LLMClient):
             if released:
                 # The input stays as built: the alias most likely answers with the same model.
                 model = payload["model"] = self.model
+                # A walk-down's newest model refused when asked for directly: the next calls of every run
+                # stay on the model that answered instead of paying this refusal again (_run_model). Only
+                # that one: a model the run merely stayed on is asked for again as before.
+                if asks_newest:
+                    _newest_refused_until[(self.model, run_choice)] = _time.monotonic() + _NEWEST_REFUSED_FOR_S
                 logger.info("Model pin released after a refusal (alias=%s)", self.model)
             if not pinned:
                 return released
