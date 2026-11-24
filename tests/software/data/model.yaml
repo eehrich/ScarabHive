@@ -1,0 +1,25 @@
+# What the model answers in the browser tests: the script of the ModelStandIn (tests/agent_stand_in.py) that takes
+# the place of every language model of the ScarabHive under test. The agent around it is the real one -- its
+# session, its history, its events on the page, a Stop.
+#
+# An answer is chosen by the last thing the user wrote (when: a regular expression), or for the next run by its
+# name (stand_in.use("slow")); without a match the default answers. A test may add its own (stand_in.when(...));
+# every test starts from this script again.
+#
+#   name: {when, text, delay (seconds before the answer, a cancel ends it), chunks (streamed in parts), error}
+
+default:
+  text: "Stand-in of the model: done."
+
+answers:
+  greeting:
+    when: "(?i)\\b(hallo|hello)\\b"
+    text: "Hello! I am the stand-in of the model."
+    chunks: 3
+  slow:
+    when: "(?i)\\b(langsam|slow)\\b"
+    text: "Finally done."
+    delay: 60
+  unreachable:
+    when: "(?i)model (weg|down)"
+    error: "Stand-in: the model is not reachable"
