@@ -660,6 +660,13 @@ z-ai/glm-5.3:
   output: 4.40
   cached_input: 0.26
 
+# GLM latest alias via OpenRouter: points at GLM 5.3 (24.11.2026), so its
+# regular price above -- update both when the alias moves on.
+"~z-ai/glm-latest":
+  input: 1.40
+  output: 4.40
+  cached_input: 0.26
+
 # Source: https://openrouter.ai/moonshotai/kimi-k3.1-pro (Moonshot standard endpoint)
 moonshotai/kimi-k3.1-pro:
   input: 2.00
