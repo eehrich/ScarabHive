@@ -458,13 +458,13 @@ llm_system:
       max_steps: 500
 
     or-gemini-pro:
-      model_ref: openrouter-gemini-pro
-      description: "OpenRouter Gemini 4 Argon"
+      model_ref: openrouter-gemini-neon
+      description: "OpenRouter Gemini 4 Neon"
       max_steps: 500
 
     or-gemini-pro-unlimited:
-      model_ref: openrouter-gemini-pro-unlimited
-      description: "OpenRouter Gemini 4 Argon - No output token limit"
+      model_ref: openrouter-gemini-neon-unlimited
+      description: "OpenRouter Gemini 4 Neon - No output token limit"
       max_steps: 500
 
     or-gemini-hydrogen:

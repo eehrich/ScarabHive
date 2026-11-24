@@ -166,6 +166,10 @@ llm_system:
       capabilities:
         streaming: false
 
+    gemini-4-neon-nostream-unlimited:
+      extends: gemini-4-neon-nostream
+      max_tokens: null
+
     gemini-4-neon-batch:
       extends: gemini-4-argon-batch
       model: gemini-4-neon
@@ -555,23 +559,23 @@ llm_system:
       max_steps: 500
       
     gemini-pro:
-      model_ref: gemini-4-argon-nostream
-      description: "Google Gemini 4 Argon"
+      model_ref: gemini-4-neon-nostream
+      description: "Google Gemini 4 Neon"
       max_steps: 500
 
     gemini-pro-unlimited:
-      model_ref: gemini-4-argon-nostream-unlimited
-      description: "Google Gemini 4 Argon (unlimited)"
+      model_ref: gemini-4-neon-nostream-unlimited
+      description: "Google Gemini 4 Neon (unlimited)"
       max_steps: 500
 
     gemini-pro-stream:
-      model_ref: gemini-4-argon
-      description: "Google Gemini 4 Argon"
+      model_ref: gemini-4-neon
+      description: "Google Gemini 4 Neon"
       max_steps: 500
 
     gemini-pro-batch:
-      model_ref: gemini-4-argon-batch
-      description: "Google Gemini 4 Argon (batch)"
+      model_ref: gemini-4-neon-batch
+      description: "Google Gemini 4 Neon (batch)"
       max_steps: 500
 
     gemini-hydrogen:
