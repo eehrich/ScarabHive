@@ -400,7 +400,7 @@ llm_system:
 
     openrouter-glm:
       extends: openrouter-base
-      model: z-ai/glm-5.3
+      model: ~z-ai/glm-latest
       context_window: 1000000     # no price tier; OpenRouter only routes to endpoints the request fits
       capabilities:
         image_input: true
