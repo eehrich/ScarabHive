@@ -397,6 +397,41 @@ class TestToolMethodRouting:
         assert [w for w in warnings if "'list()'" in w], warnings
         assert [w for w in warnings if "'execute()'" in w], warnings
 
+    def test_a_handler_inherited_from_a_shared_base_of_another_package_counts(self, tmp_path):
+        """A plugin root's shared kit: the server derives from a base in another package of the source tree, whose
+        own base holds the rest. A tool neither of them defines is still reported."""
+        src = tmp_path / "src"
+        kit = src / "plugins_t" / "kit"
+        kit.mkdir(parents=True)
+        (kit / "base.py").write_text("class Root:\n    async def status(self, params): ...\n", encoding="utf-8")
+        (kit / "server.py").write_text("from plugins_t.kit.base import Root\n\n"
+                                       "class Shared(Root):\n    async def projects(self, params): ...\n",
+                                       encoding="utf-8")
+        plugin = self._plugin(src / "plugins_t", ["{{ name }}_projects", "{{ name }}_status", "{{ name }}_gone"], {
+            "server.py": "from plugins_t.kit.server import Shared\n\nclass S(Shared):\n    pass\n"})
+
+        warnings = self._warnings(plugin)
+
+        assert [w for w in warnings if "'gone()'" in w], warnings
+        assert not [w for w in warnings if "'projects()'" in w or "'status()'" in w], warnings
+
+    def test_another_class_beside_the_base_lends_no_handler(self, tmp_path):
+        """Only the base's own chain counts: a class next to it in its module, with bases of its own, does not."""
+        src = tmp_path / "src"
+        kit = src / "plugins_t" / "kit"
+        kit.mkdir(parents=True)
+        (kit / "other.py").write_text("class Elsewhere:\n    async def gone(self, params): ...\n", encoding="utf-8")
+        (kit / "server.py").write_text("from plugins_t.kit.other import Elsewhere\n\n"
+                                       "class Shared:\n    async def projects(self, params): ...\n\n"
+                                       "class Unrelated(Elsewhere):\n    pass\n", encoding="utf-8")
+        plugin = self._plugin(src / "plugins_t", ["{{ name }}_projects", "{{ name }}_gone"], {
+            "server.py": "from plugins_t.kit.server import Shared\n\nclass S(Shared):\n    pass\n"})
+
+        warnings = self._warnings(plugin)
+
+        assert [w for w in warnings if "'gone()'" in w], warnings
+        assert not [w for w in warnings if "'projects()'" in w], warnings
+
     def test_a_handler_in_another_module_counts(self, tmp_path):
         plugin = self._plugin(tmp_path, ["{{ name }}_execute_task", "search"], {
             "server.py": "class S(Mixin):\n    pass\n",

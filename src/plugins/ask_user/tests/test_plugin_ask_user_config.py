@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[4]
 
 #: The agents that ask, chosen: general agents a person works with in the chat.
 #: Not stategraph_author: its files belong to the stategraph owners, who decide.
-ASKING = {"coder", "gamedev", "research_agent", "sysadmin_agent"}
+# coder_ultra is a coder (type: coder) and asks as it does; feature_demo_agent shows the question in its tour
+ASKING = {"coder", "coder_ultra", "feature_demo_agent", "gamedev", "research_agent", "sysadmin_agent"}
 
 
 @pytest.fixture(scope="module")

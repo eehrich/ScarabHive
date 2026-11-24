@@ -28,12 +28,20 @@ def mock_registry():
     mock_server = MagicMock()
     mock_server.get_default_action.return_value = "run"
     
-    # Simulate delayed execution
+    # Simulate delayed execution; how many calls run at once is counted (running["most"])
+    running = {"now": 0, "most": 0}
+
     async def slow_call_with_status(action, params):
-        await asyncio.sleep(0.1)  # Simulate work
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        try:
+            await asyncio.sleep(0.1)  # Simulate work
+        finally:
+            running["now"] -= 1
         return {"content": "Result from test_tool"}
     
     mock_server.call_with_status = AsyncMock(side_effect=slow_call_with_status)
+    mock_server.running = running
     registry.get.return_value = mock_server
     
     return registry
@@ -93,7 +101,7 @@ class TestStreamingToolExecution:
         assert tool_messages[0].role == "tool"
     
     @pytest.mark.asyncio
-    async def test_parallel_execution_maintained(self, manager_with_streaming):
+    async def test_parallel_execution_maintained(self, manager_with_streaming, mock_registry):
         """Tools should still execute in parallel with streaming"""
         manager, forwarder = manager_with_streaming
         
@@ -105,8 +113,6 @@ class TestStreamingToolExecution:
             }
             for i in range(3)
         ]
-        
-        start_time = asyncio.get_event_loop().time()
         
         # Collect results
         async for item in manager.execute_tools_streaming(
@@ -121,10 +127,9 @@ class TestStreamingToolExecution:
                 messages = item["messages"]
                 break
         
-        elapsed = asyncio.get_event_loop().time() - start_time
-        
-        # 3 tools @ 0.1s each should complete in ~0.1s (parallel), not 0.3s (sequential)
-        assert elapsed < 0.25, f"Took {elapsed:.2f}s - not parallel! (expected <0.25s)"
+        # all three at work at once, not one after the other -- counted, not timed: a loaded machine (a parallel
+        # test run) stretched the wall clock past any margin
+        assert mock_registry.get.return_value.running["most"] == 3, "not parallel"
         assert len(messages) == 3, "Missing tool results"
     
     @pytest.mark.asyncio

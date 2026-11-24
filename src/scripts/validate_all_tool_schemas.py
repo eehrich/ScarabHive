@@ -41,6 +41,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _inherited_methods(tree: ast.Module, src: Path, seen: set | None = None) -> set[str]:
+    """The methods the classes of ``tree`` inherit from classes imported out of another module of ``src``
+    (``from pkg.mod import Base``; ``src/pkg/mod.py`` or its ``__init__.py``), those classes' bases included."""
+    seen = set() if seen is None else seen
+    imported = {alias.asname or alias.name: (node.module, alias.name)
+                for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module and not node.level
+                for alias in node.names}
+    methods: set[str] = set()
+    for cls in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        for base in cls.bases:
+            if not isinstance(base, ast.Name) or base.id not in imported or imported[base.id] in seen:
+                continue
+            module, name = imported[base.id]
+            seen.add((module, name))
+            stem = src.joinpath(*module.split("."))
+            source = next((p for p in (stem.with_suffix(".py"), stem / "__init__.py") if p.is_file()), None)
+            if source is None:
+                continue  # outside the source tree (a library): not ours to look into
+            try:
+                base_tree = ast.parse(source.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for found in (n for n in base_tree.body if isinstance(n, ast.ClassDef) and n.name == name):
+                methods |= {n.name for n in found.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                # its own bases, through its module's imports -- not every class of that module
+                own = [n for n in base_tree.body if isinstance(n, ast.ImportFrom)] + [found]
+                methods |= _inherited_methods(ast.Module(body=own, type_ignores=[]), src, seen)
+    return methods
+
+
 class ToolSchemaValidator:
     """Validates tool schemas in plugin schema.yaml files."""
 
@@ -194,12 +224,14 @@ class ToolSchemaValidator:
         ``call``) neither stands in for a missing handler nor switches the
         check off.
 
+        A class of the package that derives from a class imported from another
+        package of the source tree (a shared base, ``from plugins_x.kit.server
+        import Base``) brings that class's methods, and its bases' in turn.
+
         ponytail: methods are pooled across every class in the package, so a
-        same-named method on an unrelated class satisfies the lookup. A handler
-        inherited from a class outside the package, and the mixin's Agent
-        special case (tool == agent name goes to Agent.call), would read as
-        missing. None of it occurs in the tree today; resolve the server class
-        hierarchy if it does.
+        same-named method on an unrelated class satisfies the lookup. The
+        mixin's Agent special case (tool == agent name goes to Agent.call)
+        would read as missing; it does not occur in the tree today.
         """
         defined: set[str] = set()
         own_call = False
@@ -214,6 +246,7 @@ class ToolSchemaValidator:
             methods = [node for cls in ast.walk(tree) if isinstance(cls, ast.ClassDef)
                        for node in cls.body
                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            defined |= _inherited_methods(tree, plugin_path.parent.parent)
             for node in methods:
                 defined.add(node.name)
                 if node.name == "call" and not any(
