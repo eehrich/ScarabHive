@@ -1,0 +1,4 @@
+# The browser tests of the web interface (tests/software): pytest-playwright drives Chromium.
+# After installing: python -m playwright install chromium
+-r core.txt
+pytest-playwright>=0.5

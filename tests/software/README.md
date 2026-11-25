@@ -45,12 +45,26 @@ def test_SHV_TEST_4_message_and_answer_in_the_chat(user_page, stand_in):
 
 ## Running the tests
 
+Once per machine, in the project's virtual environment:
+
 ```
-pip install pytest-playwright
+pip install -r requirements/browser-tests.txt
 python -m playwright install chromium        # or use the installed Chrome: --browser-channel chrome
-python -m pytest tests/software --junitxml=build/test-results/software.xml \
-    --tracing=retain-on-failure --screenshot=only-on-failure --output=build/test-results/playwright
 ```
+
+Then (Windows PowerShell: `.venv\Scripts\python` in place of `python`):
+
+```
+python -m pytest tests/software                                   # all browser tests, headless
+python -m pytest tests/software --headed --slowmo 300             # watch them in a browser window
+python -m pytest tests/software -k chat --headed                  # only some of them
+python -m pytest tests/software --junitxml=build/test-results/software.xml `
+    --tracing=retain-on-failure --screenshot=only-on-failure --output=build/test-results/playwright
+python -m playwright show-trace build/test-results/playwright/<test>/trace.zip    # replay a failure
+```
+
+The last but one command is how the test process of ScarabHive Enterprise runs them (the line break is
+PowerShell's backtick; in bash it is a backslash).
 
 Without pytest-playwright, this folder is not collected. To look at the app by hand, or to record a flow with
 `playwright codegen <url>`, start it with `python tests/software/scarab_harness.py`. It prints the address and the
