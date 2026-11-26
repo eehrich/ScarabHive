@@ -455,3 +455,59 @@ async def test_a_turn_no_person_started_that_is_told_all_the_same_asks_for_its_p
     monkeypatch.setenv(turn_runs.ENV, "1")
     await _run(_agent(), _BrokenModel(), attended=False)
     assert store.run("turn-1")["needs_you"] is True
+
+
+async def _a_panel_task_that_ended_with_its_process():
+    """The panel's task that started the machine, ended by the sweep of a later process."""
+    panel = RunReporter("panel-gone", "requirements_project", who="alice", source="aspice_process", task="phase")
+    await panel.started()
+    await panel.failed(run_events.INTERRUPTED)
+
+
+async def test_work_that_outlived_its_caller_is_told_below_the_session_that_started_it(store):
+    """A state machine a panel's task started, resumed by a later process: the panel's run ended with the process
+    that held it, so nothing above the machine's agents is told -- they are told below the session that started
+    the machine all the same (telling_below), not left out of every view."""
+    await _a_panel_task_that_ended_with_its_process()
+    with turn_runs.telling_below("panel-gone"):
+        own = await turn_runs.started(agent="developer", system_config=None, session_id="dev-1", user_id="alice",
+                                      task="rework", parent="", attended=False)
+        nested = await turn_runs.started(agent="developer", system_config=None, session_id="dev-2",
+                                         user_id="alice", task="rework", parent="sg_machine", attended=False)
+    assert own is not None and nested is not None, "the machine's agents are told nowhere"
+    assert store.run("dev-1")["parent_session"] == "panel-gone"
+    assert store.run("dev-2")["parent_session"] == "panel-gone", "below a session told nowhere, it is lost"
+    turn_runs.ended(own, "dev-1", {"summary": "ok"}, False)
+    turn_runs.ended(nested, "dev-2", {"summary": "ok"}, False)
+
+    outside = await turn_runs.started(agent="developer", system_config=None, session_id="dev-3", user_id="alice",
+                                      task="rework", parent="", attended=False)
+    assert outside is None, "outside such work a turn nobody started stays untold"
+
+
+async def test_a_turn_below_a_told_one_keeps_its_own_parent_in_work_told_below_another(store):
+    """Inside such work a sub-agent of an agent that is told runs below that agent, as anywhere else."""
+    await _a_panel_task_that_ended_with_its_process()
+    with turn_runs.telling_below("panel-gone"):
+        top = await turn_runs.started(agent="developer", system_config=None, session_id="dev-1", user_id="alice",
+                                      task="rework", parent="", attended=False)
+        below = await turn_runs.started(agent="reviewer", system_config=None, session_id="rev-1", user_id="alice",
+                                        task="check it", parent="dev-1", attended=False)
+    assert store.run("rev-1")["parent_session"] == "dev-1"
+    turn_runs.ended(below, "rev-1", {"summary": "ok"}, False)
+    turn_runs.ended(top, "dev-1", {"summary": "ok"}, False)
+
+
+async def test_a_process_that_tells_nothing_tells_nothing_below_such_work_either(store):
+    turn_runs.report_turns(False)
+    with turn_runs.telling_below("panel-gone"):
+        assert await turn_runs.started(agent="developer", system_config=None, session_id="dev-1", user_id="alice",
+                                       task="rework", parent="", attended=False) is None
+
+
+async def test_a_machine_no_told_session_started_tells_nothing_below_it(store):
+    """A worker's job starts machines from its own sessions by the thousand: never told, nor are their agents."""
+    with turn_runs.telling_below("worker-session"):
+        assert await turn_runs.started(agent="developer", system_config=None, session_id="dev-1", user_id="alice",
+                                       task="rework", parent="", attended=False) is None
+    assert store.run("dev-1") is None

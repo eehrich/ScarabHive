@@ -585,7 +585,8 @@ class StateGraphService:
                                      inject_params=inject,
                                      config_check=self.config_check(name, caller=(workflow or {}).get("caller")),
                                      workflow=workflow,
-                                     ended=(lambda status: self._workflow_ended(run_id, status)) if workflow else None)
+                                     ended=(lambda status: self._workflow_ended(run_id, status)) if workflow else None,
+                                     caller_session=row.get("caller_session"))
         return make
 
     # ------------------------------------------------------------ dynamic workflows (workflows.py)
