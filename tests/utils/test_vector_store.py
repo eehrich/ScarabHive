@@ -376,6 +376,30 @@ class TestVectorStoreMetadata:
             gc.collect()
             tmpdir_obj.cleanup()
 
+    def test_sqlite_vec_deletes_more_ids_than_sqlite_takes_variables(self):
+        """delete() bound one variable per id in an ``IN (...)``: an incremental
+        index pass deleting many files raised "too many SQL variables"."""
+        from agent_system.utils.vector_store import store as module
+
+        original = module.get_vector_backend
+        module.get_vector_backend = lambda: "sqlite-vec"
+        tmpdir_obj = create_temp_dir()
+        try:
+            store = VectorStore(persist_path=tmpdir_obj.name)
+            store.add(collection="many", ids=["keep", "gone"], documents=["Bleibt", "Weg"])
+            # Above SQLITE_MAX_VARIABLE_NUMBER of every build (999 old, 32766 new).
+            ids = ["gone"] + [f"missing{i}" for i in range(40000)]
+            store.delete(collection="many", ids=ids)
+            assert {e["id"] for e in store.list_entries("many")} == {"keep"}
+        finally:
+            module.get_vector_backend = original
+            try:
+                store.close()
+            except Exception:
+                pass
+            gc.collect()
+            tmpdir_obj.cleanup()
+
     @pytest.mark.parametrize("name", ["x; DROP TABLE meta_a", "a-b", "a.b", "", "a b", 'a"'])
     def test_sqlite_vec_refuses_a_collection_name_it_would_format_into_sql(self, name):
         """A collection name becomes part of the table names (vec_<name>): one that is not letters, digits

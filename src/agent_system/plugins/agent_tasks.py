@@ -100,8 +100,19 @@ class PersonOnly:
     why: str
 
 
+def llm_profiles(request: Request) -> dict[str, Any]:
+    """The LLM profiles a task's agent may run on, as the app runs now (a reload may add one): their names and the
+    system's default. Empty where the app has no configuration (a test app): the panel then offers no choice."""
+    try:
+        live = request.app.state.context.live_config()
+        profiles = live.llm_system.profiles or {}
+        return {"choices": sorted(profiles, key=str.lower), "default": str(live.llm_system.default_profile or "")}
+    except AttributeError:
+        return {"choices": [], "default": ""}
+
+
 class AiSettings:
-    """A person's choice per task -- mode and agent -- in a table of the plugin's own SQLite file."""
+    """A person's choice per task -- mode, agent and the LLM it runs on -- in a table of the plugin's own SQLite file."""
 
     def __init__(self, path: Path, tasks: tuple[AgentTask, ...]):
         self.path, self.tasks = path, {task.id: task for task in tasks}
@@ -110,6 +121,9 @@ class AiSettings:
         with self._lock, connection(path) as db:
             db.execute("CREATE TABLE IF NOT EXISTS ai_tasks (task TEXT PRIMARY KEY, mode TEXT NOT NULL, agent TEXT NOT NULL, "
                        "changed TEXT, changed_by TEXT)")
+            # the LLM profile the agent runs on ("" = the agent's own); a table from before it has no column for it
+            if "llm" not in {row[1] for row in db.execute("PRAGMA table_info(ai_tasks)")}:
+                db.execute("ALTER TABLE ai_tasks ADD COLUMN llm TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE TABLE IF NOT EXISTS ai_runs (session_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
                        "agent TEXT NOT NULL, title TEXT NOT NULL, who TEXT NOT NULL, started TEXT NOT NULL, ended TEXT, "
                        "state TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', "
@@ -150,26 +164,29 @@ class AiSettings:
     def get(self, task_id: str) -> dict[str, Any]:
         task = self.tasks[task_id]
         with self._lock, connection(self.path) as db:
-            row = db.execute("SELECT mode, agent, changed, changed_by FROM ai_tasks WHERE task = ?", (task_id,)).fetchone()
-        mode, agent, changed, changed_by = row or ("person", task.agent, None, None)
-        return {**asdict(task), "default_agent": task.agent, "agent": agent, "mode": mode,
+            row = db.execute("SELECT mode, agent, llm, changed, changed_by FROM ai_tasks WHERE task = ?", (task_id,)).fetchone()
+        mode, agent, llm, changed, changed_by = row or ("person", task.agent, "", None, None)
+        return {**asdict(task), "default_agent": task.agent, "agent": agent, "mode": mode, "llm": llm or "",
                 "changed": changed, "changed_by": changed_by}
 
     def all(self) -> list[dict[str, Any]]:
         return [self.get(task_id) for task_id in self.tasks]
 
-    def set(self, task_id: str, mode: str | None, agent: str | None, now: str, who: str) -> dict[str, Any]:
+    def set(self, task_id: str, mode: str | None, agent: str | None, now: str, who: str,
+            llm: str | None = None) -> dict[str, Any]:
+        """A task's mode, agent and LLM profile; None keeps what is set, an empty llm is the agent's own."""
         if task_id not in self.tasks:
             raise HTTPException(status_code=404, detail=f"No AI task {task_id}")
         if mode is not None and mode not in MODES:
             raise HTTPException(status_code=422, detail=f"mode must be one of {', '.join(MODES)}")
         known = self.get(task_id)
         agent = (agent or "").strip() or known["agent"]
+        llm = known["llm"] if llm is None else llm.strip()
         with self._lock, connection(self.path) as db:
-            db.execute("INSERT INTO ai_tasks (task, mode, agent, changed, changed_by) VALUES (?, ?, ?, ?, ?) "
-                       "ON CONFLICT(task) DO UPDATE SET mode = excluded.mode, agent = excluded.agent, "
+            db.execute("INSERT INTO ai_tasks (task, mode, agent, llm, changed, changed_by) VALUES (?, ?, ?, ?, ?, ?) "
+                       "ON CONFLICT(task) DO UPDATE SET mode = excluded.mode, agent = excluded.agent, llm = excluded.llm, "
                        "changed = excluded.changed, changed_by = excluded.changed_by",
-                       (task_id, mode or known["mode"], agent, now, who))
+                       (task_id, mode or known["mode"], agent, llm, now, who))
         return self.get(task_id)
 
     def overview(self, person_only: tuple[PersonOnly, ...] = ()) -> dict[str, Any]:
@@ -242,7 +259,7 @@ async def report_end(reporter: RunReporter, run: dict[str, Any], review: bool = 
 async def launch(request: Request, agent: str, task: str, title: str, wait: float | None = None, *,
                  store: AiSettings | None = None, task_id: str = "", who: str = "",
                  session_id: str = "", record: dict[str, Any] | None = None, source: str = "",
-                 review: bool = False, check_in: str = "") -> dict[str, Any]:
+                 review: bool = False, check_in: str = "", llm_profile: str = "") -> dict[str, Any]:
     """Start ``agent`` on ``task`` as the person who asked -- in a new session, or going on in ``session_id`` -- and
     answer the session id.
 
@@ -250,7 +267,7 @@ async def launch(request: Request, agent: str, task: str, title: str, wait: floa
     refusal; one still running after that goes on in the background. With a ``store`` the run is kept there as it
     starts and as it ends, for the panel to follow (``record``: the run it goes on with). Either way it says what it
     does as run events (``source``: the plugin that started it); a ``review`` task ends waiting for its person to
-    check the work (``check_in``: where). The run has a request id of its own, so ``cancel_run`` can stop it.
+    check the work (``check_in``: where); ``llm_profile`` names the LLM it runs on (empty: the agent's own). The run has a request id of its own, so ``cancel_run`` can stop it.
     A session a run of this process is still working in is refused (409): one run per session at a time.
     """
     wait = START_WAIT if wait is None else wait
@@ -274,7 +291,7 @@ async def launch(request: Request, agent: str, task: str, title: str, wait: floa
     request_id = f"panel-{session_id}-{record['turns']}"
     _REQUESTS[session_id] = request_id
     body = {"task": task, "session_id": session_id, "agent_name": agent, "session_title": title[:120],
-            "request_id": request_id}
+            "request_id": request_id, **({"llm_profile": llm_profile} if llm_profile else {})}
 
     async def run() -> httpx.Response:
         transport = httpx.ASGITransport(app=request.app)
@@ -425,6 +442,7 @@ async def admin_of(request: Request) -> str:
 class AiChange(BaseModel):
     mode: str | None = None
     agent: str | None = Field(default=None, max_length=100)
+    llm: str | None = Field(default=None, max_length=100)  # an LLM profile; "" = the agent's own
 
 
 class AiRun(BaseModel):
@@ -444,14 +462,18 @@ class AiTaskRoutes:
 
     server: Any
 
-    async def get_ai(self) -> dict[str, Any]:
-        return await asyncio.to_thread(self.server.ai().overview, self.server.PERSON_ONLY)
+    async def get_ai(self, request: Request) -> dict[str, Any]:
+        overview = await asyncio.to_thread(self.server.ai().overview, self.server.PERSON_ONLY)
+        return {**overview, "llms": llm_profiles(request)}
 
     async def post_ai(self, task: str, body: AiChange, request: Request) -> dict[str, Any]:
-        """A task's mode and agent, for everyone who opens the panel: admins only -- whoever starts the task later
+        """A task's mode, agent and LLM, for everyone who opens the panel: admins only -- whoever starts the task later
         runs the agent chosen here under their own rights."""
         who = await admin_of(request)
-        return await asyncio.to_thread(self.server.ai().set, task, body.mode, body.agent, self.server.now(), who)
+        llm = body.llm.strip() if body.llm is not None else None
+        if llm and llm not in llm_profiles(request)["choices"]:
+            raise HTTPException(status_code=422, detail=f"No LLM profile {llm!r}")
+        return await asyncio.to_thread(self.server.ai().set, task, body.mode, body.agent, self.server.now(), who, llm)
 
     async def post_ai_run(self, task: str, body: AiRun, request: Request) -> dict[str, Any]:
         setting = await asyncio.to_thread(self.server.ai().ready, task)
@@ -463,7 +485,14 @@ class AiTaskRoutes:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return await launch(request, setting["agent"], text, title, store=self.server.ai(), task_id=task,
                             who=await user_of(request), source=str(getattr(self.server, "name", "") or ""),
-                            review=bool(setting.get("review")), check_in=setting["title"])
+                            review=bool(setting.get("review")), check_in=setting["title"],
+                            llm_profile=self._llm(setting, request))
+
+    @staticmethod
+    def _llm(setting: dict[str, Any], request: Request) -> str:
+        """The LLM profile chosen for a task while the app still has it: one a reload took away runs on the agent's own."""
+        chosen = str(setting.get("llm") or "")
+        return chosen if chosen and chosen in llm_profiles(request)["choices"] else ""
 
     async def _own_run(self, session_id: str, request: Request) -> dict[str, Any]:
         run = await asyncio.to_thread(self.server.ai().run, session_id)
@@ -491,4 +520,5 @@ class AiTaskRoutes:
         setting = await asyncio.to_thread(self.server.ai().ready, run["task"])
         return await launch(request, run["agent"], body.text.strip(), run["title"], store=self.server.ai(),
                             session_id=session_id, record=run, source=str(getattr(self.server, "name", "") or ""),
-                            review=bool(setting.get("review")), check_in=setting["title"])
+                            review=bool(setting.get("review")), check_in=setting["title"],
+                            llm_profile=self._llm(setting, request))

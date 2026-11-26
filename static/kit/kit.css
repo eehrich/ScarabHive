@@ -1211,6 +1211,8 @@ pk-guide .token:is(.deleted, .regex) { color: var(--danger); }
 .ai-dialog .ai-tasks > .pk-muted:first-child { margin-top: 0; }
 .ai-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(13rem, 17rem) auto; gap: var(--space-3); align-items: center; }
 .ai-row.ai-person-only { grid-template-columns: minmax(0, 1fr) auto; }
+/* with a choice of LLM: its select beside the agent's */
+.ai-rows--llm .ai-row:not(.ai-person-only) { grid-template-columns: minmax(0, 1fr) auto minmax(11rem, 15rem) minmax(9rem, 12rem) auto; }
 .ai-what .pk-muted { font-size: var(--text-xs); }
 .ai-note { font-size: var(--text-xs); margin: var(--space-3) 0 0; }
 .ai-mark { border: 0; cursor: pointer; }
@@ -1264,7 +1266,7 @@ pk-guide .token:is(.deleted, .regex) { color: var(--danger); }
 .ai-question-options { gap: var(--space-1); }
 .ai-question .pk-textarea { width: 100%; }
 .ai-run-stop { margin-top: calc(-1 * var(--space-1)); }
-@media (max-width: 760px) { .ai-row { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) { .ai-row, .ai-rows--llm .ai-row:not(.ai-person-only) { grid-template-columns: minmax(0, 1fr); } }
 
 /* ------------------------------------------------------------ style: apple */
 /* <html data-style="apple">: the viewer's choice (setStyle, the ui_style cookie). The same components, drawn after
