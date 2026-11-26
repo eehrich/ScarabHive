@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol
 
 import jsonschema
 
+from agent_system.core import turn_runs
 from plugins.stategraph.kinds import ActivityError
 
 if TYPE_CHECKING:
@@ -164,11 +165,12 @@ class ScarabHiveBackend:
                  token: Any = None, inject_params: Optional[dict[str, dict[str, Any]]] = None,
                  config_check: Optional[Any] = None, nesting: Optional[dict[str, Any]] = None,
                  workflow: Optional[dict[str, Any]] = None,
-                 ended: Optional[Callable[[str], Any]] = None):
+                 ended: Optional[Callable[[str], Any]] = None, caller_session: Optional[str] = None):
         """``workflow``: a dynamic workflow's terms (its row's column): its agents take one of the process's
         ``max_concurrent_agents`` places (agent_place, which the engine waits for before an activity starts).
         ``ended(status)``: called once the run ended, after its session got the answer -- the service wakes the
-        workflow's caller there."""
+        workflow's caller there. ``caller_session``: the session that started the run (its row's column), the one
+        its agents' turns are told below (core/turn_runs.telling_below); None for a run no session started."""
         self.runner = runner
         self.system_config = system_config
         self.session_id = session_id
@@ -180,6 +182,7 @@ class ScarabHiveBackend:
         self._busy: set[str] = set()  # instances with a run in flight: one conversation, one run at a time
         self.workflow = dict(workflow or {})
         self.ended = ended
+        self.caller_session = caller_session or ""
 
     # ------------------------------------------------------------ agents
     def _agent(self, name: str) -> Any:
@@ -291,8 +294,11 @@ class ScarabHiveBackend:
             if variables:
                 tracker.set_session_template_vars(instance_id, dict(variables))
             await self._show_call(act, agent.name, instance_id, message, request_id, new)
-            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend, *llm,
-                                                      tool_bindings=tool_bindings))
+            # Told below the session that started the run (core/turn_runs.py) -- also once its own run ended with the
+            # process that held it, and this one resumed the machine: the task copies the context as it is now.
+            with turn_runs.telling_below(self.caller_session):
+                work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend,
+                                                          *llm, tool_bindings=tool_bindings))
             try:
                 text = await self._guarded(act, agent.name, work)
             except asyncio.CancelledError:  # a timeout, a terminate, a failed parallel sibling

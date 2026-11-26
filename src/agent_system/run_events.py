@@ -40,6 +40,7 @@ from typing import Any
 
 import psutil
 
+from agent_system.core import keep_awake
 from agent_system.paths import data_path
 from agent_system.plugins.sqlite_guard import connection
 
@@ -617,7 +618,11 @@ class RunReporter:
         self.index, self.label, self.ended = 0, "", False
         if self.listed:
             _REPORTERS[self.run_id] = self
-        return await self._emit("run.started", tries=tries, payload={"plan": self.plan} if self.plan else None)
+        event = await self._emit("run.started", tries=tries, payload={"plan": self.plan} if self.plan else None)
+        if event is not None and not self.ended:
+            # the machine stays awake while the run works (core/keep_awake.py); its end lets go (_ending)
+            keep_awake.hold(self)
+        return event
 
     async def step(self, label: str, *, index: int | None = None, total: int | None = None, key: str = "",
                    labels: dict[str, str] | None = None, touching: Iterable[str] = (),
@@ -680,6 +685,7 @@ class RunReporter:
             return False
         self.ended = True
         self.stop_keep_alive()
+        keep_awake.release(self)
         if _REPORTERS.get(self.run_id) is self:
             del _REPORTERS[self.run_id]
         return True
