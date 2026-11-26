@@ -307,9 +307,13 @@ Sessions are automatically restored after page refresh via localStorage.
 A turn that is told as a run (`core/turn_runs.py`: one a person is at, and what runs below it) is written as it
 begins, before its first model call: the session holds the question from then on, and the session of a chat's
 first turn exists -- it can be opened and is listed -- while that call runs (minutes, where a coding CLI answers
-as the model). A state machine addressed as an agent keeps its turn the same way, before the machine runs. A
-run nobody is told of -- a program's -- is on disk first when its first round of tool calls is complete, at a
-checkpoint, or at its end.
+as the model). A state machine addressed as an agent keeps its turn the same way, before the machine runs. So
+does a panel's task (`plugins/agent_tasks.py`): it is told as a run by the panel, not as a turn, yet a person
+looks for it -- in its transcript and in the main chat -- and its turn may call a tool that works for hours (a
+state machine). `turn_runs.looked_for` names both kinds. Without this, such a task's session was written only at
+its end: neither the transcript nor the main chat found it while it ran, and a restart in between left no session
+at all, while the sessions the machine opened below it were kept. A run nobody is told of -- a program's -- is on
+disk first when its first round of tool calls is complete, at a checkpoint, or at its end.
 
 From there every run keeps each answer in its live state, writes each completed round of tool calls to disk,
 checkpoints every 30 s while a long tool runs (cut at the last answered call), and writes at the turn's end.

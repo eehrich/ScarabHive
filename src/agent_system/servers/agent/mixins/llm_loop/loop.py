@@ -114,9 +114,9 @@ class LLMLoopMixin(LLMCallMixin, StepLLMMixin, FallbackMixin, StepMixin, AnswerM
         # the session of a first turn is on disk. Nothing was kept until the first answer -- whoever looked
         # from elsewhere (another tab, a reload, what works now) found no such session for as long as that
         # call took, and a coding CLI answering as the model takes minutes over it. Where the turn is told as
-        # a run -- a person's, and each run it starts below it: there someone may look for it. A program's runs
-        # by the thousand, told nowhere, write as they did.
-        if turn_runs.told(session_id):
+        # a run -- a person's, and each run it starts below it, or a panel's task: there someone may look for it.
+        # A program's runs by the thousand, told nowhere, write as they did.
+        if turn_runs.looked_for(session_id):
             await self._persist_conversation(session_id, messages, to_disk=True, note="turn start")
 
         # A format nobody checked yet (a caller that built it itself; openai_api prepares its own):
