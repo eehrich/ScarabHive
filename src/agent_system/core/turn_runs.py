@@ -179,6 +179,13 @@ def told(session_id: str) -> bool:
     return (session_id or "") in _TURNS
 
 
+def looked_for(session_id: str) -> bool:
+    """Whether a person may look for the turn at work in ``session_id``: told as a run here, or a run somebody else
+    tells -- a panel's task (agent_tasks), whose transcript and main chat read this session while it works. Such a
+    turn may call a tool that works for hours (a state machine): its session is kept as it begins, not at its end."""
+    return told(session_id) or reporter_for(session_id) is not None
+
+
 def ending(session_id: str) -> bool:
     """Whether the turn that worked in ``session_id`` is writing its end: over, and not yet said so."""
     thread = _ENDING.get(session_id or "")

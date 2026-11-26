@@ -1,0 +1,25 @@
+# The users of the browser tests (tests/software): created in the data folder of the ScarabHive under test, a
+# temporary one -- never in a real installation. Their passwords open nothing else; a test signs in as one of them
+# by name (page_as("tester")), or types them on the login page (users["tester"].password).
+#
+#   name: {password, email, role: admin | user | guest, full_name}
+#
+# "tester" is the user a test is signed in as unless it names another (user_page).
+
+tester:
+  password: tester-only-4f9c2
+  email: tester@example.com
+  role: user
+  full_name: Testa Tester
+
+admin:
+  password: admin-only-7b21e
+  email: admin@example.com
+  role: admin
+  full_name: Ada Admin
+
+guest:
+  password: guest-only-1d8a3
+  email: guest@example.com
+  role: guest
+  full_name: Gustav Guest

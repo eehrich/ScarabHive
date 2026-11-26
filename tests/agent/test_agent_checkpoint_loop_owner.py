@@ -101,6 +101,44 @@ async def test_a_turn_is_kept_as_it_begins_before_the_first_model_call_answers(t
         run_events.use_run_events(None)
 
 
+async def test_a_panels_task_is_kept_as_it_begins_too(tmp_path):
+    """A panel's task (agent_tasks) is told by the panel, not as a turn -- and was written only at its end. Its turn
+    may call a state machine that works for hours: its transcript and the main chat found no session all along,
+    and a restart in between left none at all."""
+    from agent_system import run_events
+    from agent_system.core import turn_runs
+    from agent_system.run_events import RunEventBus, RunEventStore, RunReporter
+
+    agent, service = _agent_with_service(tmp_path)
+    kept = []
+
+    class _Looks(_Answers):
+        async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
+            try:
+                session = await service.session_manager.load_session("anonymous", "P")
+                kept.append([(m["role"], m["content"]) for m in session["messages"]])
+            except Exception as error:  # noqa: BLE001 - what the test reports
+                kept.append(type(error).__name__)
+            yield FINAL
+
+    run_events.use_run_events(RunEventStore(tmp_path / "run_events.db"), RunEventBus())
+    turn_runs.report_turns()
+    reporter = RunReporter("P", "panel_agent", who="anonymous", title="A panel's task", source="aspice_process",
+                           task="requirements")
+    await reporter.started()
+    try:
+        assert run_events.reporter_for("P") is reporter and not turn_runs.told("P"), "fixture: the panel tells it"
+        agent.llm = _Looks()
+        events = [event async for event in agent.run_events("write the code", session_id="P", request_id="panel-P-1")]
+        assert any(event.get("type") == "final" for event in events), f"fixture: no answer: {events}"
+        assert kept == [[("user", "write the code")]], f"the panel's task was not on disk as it began: {kept}"
+    finally:
+        await reporter.done()
+        turn_runs.settle()
+        turn_runs._ENDING.clear()
+        run_events.use_run_events(None)
+
+
 async def test_a_refused_request_neither_starts_nor_stops_a_loop():
     agent = _real_agent()
     agent.llm = _Answers()
