@@ -53,6 +53,19 @@ def test_filter_patterns():
     assert "datetime.get_time" in effective and "datetime.other" in effective
     assert "other" not in effective
 
+
+def test_a_glob_in_the_tool_part_lets_its_server_through_to_the_tool_filter():
+    """'cra_process/cra_inventory_*': discovery keeps cra_process, the tool filter then keeps only cra_inventory_*.
+    Dropped at discovery, such an agent got none of the server's tools (cra_sbom_keeper, the process agents)."""
+    from agent_system.servers.agent.tool_schema_builder import server_matches_patterns, tool_matches_patterns
+
+    patterns = ["cra_process/cra_inventory_*"]
+    assert server_matches_patterns("cra_process", patterns)
+    assert not server_matches_patterns("cra_processing", patterns) and not server_matches_patterns("sbom_scanner", patterns)
+    assert not server_matches_patterns("cra_process.cra_inventory_x", patterns)   # dotted externals stay strict
+    assert tool_matches_patterns("cra_inventory_version", "cra_process", patterns)
+    assert not tool_matches_patterns("cra_process_ready", "cra_process", patterns)
+
 @pytest.mark.asyncio
 async def test_is_tool_allowed_edge_cases():
     # Create minimal system config
