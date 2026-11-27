@@ -123,13 +123,24 @@ export class Workspace {
   }
 
   /** A panel asked for another (pk:open-panel): opened at that page where the asking one is, or to the front. */
-  openLinked(item, address) {
+  async openLinked(item, address) {
     let page = null;
     try { page = new URL(address, window.location.origin); } catch { /* no address at all: it names no panel either */ }
     const path = page?.origin === window.location.origin ? page.pathname + page.search : '';
     const panel = path && this.panelAt(path);
     if (!panel) {
       showToast(document, 'That panel is not available here', 'warn');
+      return;
+    }
+    if (panel.id === item.panelId) {
+      // a page of its own panel (CRA Ready's Inventory back to CRA Ready): it goes there, whatever page it shows
+      // now -- the shell does not know every page a panel went to by itself, so "as it is" would be no step at all
+      if (item.dirty && !(await this.mayDiscard(item))) return;
+      item.path = path === panel.url ? '' : path;
+      item.linked = Boolean(item.path);
+      this.mount(item);
+      this.save();
+      this.focus(item.key);
       return;
     }
     // its own URL: the panel comes as it is, a page it went to by itself kept
@@ -804,7 +815,7 @@ export class Workspace {
         this.onOpenSession(String(message.session_id));
         break;
       case 'pk:open-panel':
-        this.openLinked(item, String(message.path || ''));
+        await this.openLinked(item, String(message.path || ''));
         break;
       case 'pk:preferences':
         // Saved on the account by the panel; the chat lives in this document.

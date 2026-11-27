@@ -1954,6 +1954,7 @@ EXPECTED = [
     'an open settings panel shows the theme chosen in the account menu',
     'a style chosen in the settings panel reaches the shell and every panel',
     'a panel opens another panel beside it, by a call or a data-pk-panel link',
+    'a data-pk-panel link to its own panel goes there, whatever page the panel went to by itself',
     'the palette finds a panel and opens it',
     'Ctrl+K in the open palette starts its search afresh',
     'the palette does not open over an open question',
