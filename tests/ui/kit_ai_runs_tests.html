@@ -30,14 +30,20 @@
   }
 
   const TASK = { id: 'assess', title: 'Bewerten', what: 'Schlägt eine Bewertung vor.', agent: 'assessor',
-    default_agent: 'assessor', mode: 'ai', target: 'finding', batch: false };
-  const server = { runs: [], details: {}, started: 0, replies: [], events: {}, cancelled: [], acked: [], answers: [] };
+    default_agent: 'assessor', mode: 'ai', target: 'finding', batch: false, llm: '' };
+  const server = { runs: [], details: {}, started: 0, replies: [], events: {}, cancelled: [], acked: [], answers: [], changes: [] };
   const realFetch = window.fetch.bind(window);   // the results still go to the test server
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   window.fetch = async (path, init = {}) => {
     const url = String(path);
     if (url === '/agents') return json({ agents: ['assessor'] });
-    if (url === '/p/ai') return json({ tasks: [TASK], person_only: [] });
+    if (url === '/p/ai') return json({ tasks: [TASK], person_only: [], llms: { choices: ['fast', 'think'], default: 'fast' } });
+    if (url === '/p/ai/assess' && init.method === 'POST') {
+      const change = JSON.parse(init.body);
+      server.changes.push(change);
+      Object.assign(TASK, change);
+      return json(TASK);
+    }
     if (url === '/p/ai/assess/run' && init.method === 'POST') {
       server.started += 1;
       const id = `s${server.started}`;
@@ -107,6 +113,24 @@
     const seen = dialog.open && box.width > 0 && box.height > 0 && dialog.checkVisibility();
     dialog.querySelector('[data-ai-close]').click();
     return seen && !dialog.open;
+  });
+
+  await check('the LLM a task runs on is chosen beside its agent: the agent\'s own first, then the profiles', async () => {
+    const dialog = document.querySelector('dialog.ai-dialog');
+    document.querySelector('[data-ai-open]').click();
+    const select = () => dialog.querySelector('select[name="ai-llm"]');
+    const options = [...select().options].map((o) => `${o.value}=${o.textContent.trim()}`).join('|');
+    const beside = select().closest('.ai-row') === dialog.querySelector('select[name="ai-agent"]').closest('.ai-row');
+    select().value = 'think';
+    select().dispatchEvent(new Event('change', { bubbles: true }));
+    await until('the choice saved and shown', () => server.changes.length === 1 && select().value === 'think'
+      && toasts().includes('Bewerten: läuft mit think'));
+    select().value = '';
+    select().dispatchEvent(new Event('change', { bubbles: true }));
+    await until('back to the agent\'s own', () => server.changes.length === 2 && toasts().includes('läuft mit dem LLM des Agenten'));
+    dialog.querySelector('[data-ai-close]').click();
+    return options === '=Das des Agenten|fast=fast (Systemstandard)|think=think' && beside && !select().disabled
+      && JSON.stringify(server.changes) === '[{"llm":"think"},{"llm":""}]';
   });
 
   await check('a started agent is followed in a side sheet beside the panel, not in the chat', async () => {

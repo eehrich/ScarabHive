@@ -5656,6 +5656,21 @@
     return need(stayed, 'the link did not follow in the probe') && called === true;
   });
 
+  await check('a data-pk-panel link to its own panel goes there, whatever page the panel went to by itself', async () => {
+    // CRA Ready's Inventory is a page of CRA Ready: its tab back to CRA Ready names the panel's own start
+    probeFrame().contentWindow.location.assign('/tests/ui/shell_probe_panel.html?mark=away');
+    await until('the probe away', () => probeFrame().contentWindow.location.search === '?mark=away'
+      && probeFrame().contentDocument.readyState === 'complete' && probe()?.pk);
+    const panel = probeFrame().contentDocument;
+    const link = Object.assign(panel.createElement('a'), { href: '/tests/ui/shell_probe_panel.html', textContent: 'Start' });
+    link.dataset.pkPanel = '';
+    panel.body.append(link);
+    link.click();
+    await until('the probe at its start', () => probeFrame()?.contentWindow?.location.search === ''
+      && probeFrame().contentDocument.readyState === 'complete' && probe()?.pk);
+    return $$('iframe.panel-frame').filter((f) => f.src.includes('shell_probe_panel')).length === 1;
+  });
+
   await check('the palette finds a panel and opens it', async () => {
     const input = await openPalette('health status');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));

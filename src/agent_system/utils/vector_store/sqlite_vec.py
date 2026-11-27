@@ -170,10 +170,19 @@ class SqliteVecBackend(VectorBackend):
         self._ensure_table(collection)
         conn = self._get_conn()
         
-        placeholders = ",".join("?" * len(ids))
-        conn.execute(f"DELETE FROM vec_{collection} WHERE item_id IN ({placeholders})", ids)
-        conn.execute(f"DELETE FROM meta_{collection} WHERE item_id IN ({placeholders})", ids)
-        conn.commit()
+        # One statement per id, not one ``IN (?,?,...)``: that took a bound
+        # variable per id and raised "too many SQL variables" once a pass
+        # deleted more than SQLITE_MAX_VARIABLE_NUMBER (999 on older builds)
+        # ids at once — e.g. after a branch switch removed many files.
+        # item_id is the primary key of both tables, so each is a key lookup.
+        params = [(item_id,) for item_id in ids]
+        try:
+            conn.executemany(f"DELETE FROM vec_{collection} WHERE item_id = ?", params)
+            conn.executemany(f"DELETE FROM meta_{collection} WHERE item_id = ?", params)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
     def get_or_create_collection(self, name: str) -> Any:
         """Initialize the collection's tables; there is no handle to return."""

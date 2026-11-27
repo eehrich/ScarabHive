@@ -18,6 +18,7 @@ def results():
 EXPECTED = [
     "before any run the runs button stays hidden",
     "the AI choices open visibly and leave the panel usable, even with their host in a hidden tab",
+    "the LLM a task runs on is chosen beside its agent: the agent's own first, then the profiles",
     "a started agent is followed in a side sheet beside the panel, not in the chat",
     "what the agent says and calls appears while it runs, its words as text",
     "the panel stays at hand while the sheet is open",

@@ -17,18 +17,25 @@ worker's job, a call through the OpenAI API) and what runs below it tells nothin
 own view, and the run events are one file every process writes. ``AGENT_TURN_RUNS=0`` silences a process that
 would tell, ``=1`` makes any process tell every turn.
 
+Work that outlives the turn that started it (a state machine a panel's task started, resumed by a later process
+after a restart) has nobody above it told any more: the panel's run ended with the process that held it. Such work
+says whose it is with ``telling_below(session)`` -- the turns started in it are told below that session all the
+same, as they were before the restart, provided that session was told once (a worker's machine never was).
+
 A view, never the turn's master: whatever fails here is logged, and the turn goes on.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import os
 import threading
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from agent_system.core.background_runs import run_who
-from agent_system.run_events import TURN_SOURCES, RunReporter, reporter_for
+from agent_system.run_events import TURN_SOURCES, RunReporter, reporter_for, run_event_store
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,24 @@ _jobs: Any = None
 #: The end being written for a session's turn (RunReporter.end_detached): the session's next turn waits for it --
 #: begun before that end was written, the end would end the new turn.
 _ENDING: dict[str, threading.Thread] = {}
+#: The session the turns started in this context are told below, whether or not a run above them is told now
+#: (``telling_below``); "" for none.
+_BELOW: contextvars.ContextVar[str] = contextvars.ContextVar("turn_runs_below", default="")
+
+
+@contextlib.contextmanager
+def telling_below(session_id: Optional[str]) -> Iterator[None]:
+    """The turns started in this context (and the tasks it starts) are told below ``session_id`` -- work a person
+    started that goes on without the run that started it (a state machine resumed after a restart). Nothing for
+    an empty ``session_id``; in a process that tells nothing (``telling``) nothing is told all the same."""
+    if not session_id:
+        yield
+        return
+    mark = _BELOW.set(str(session_id))
+    try:
+        yield
+    finally:
+        _BELOW.reset(mark)
 
 
 def keep_jobs(manager: Any) -> None:
@@ -139,10 +164,20 @@ async def started(*, agent: str, system_config: Any, session_id: str, user_id: s
         return None
     if parent == session_id:
         parent = ""
-    if which != "all" and not ((parent in _TURNS or reporter_for(parent) is not None) if parent else attended):
+    below = _BELOW.get()
+    if below == session_id:
+        below = ""
+    above_told = (parent in _TURNS or reporter_for(parent) is not None) if parent else attended
+    if which != "all" and not above_told and not below:
         return None
     reporter: Optional[RunReporter] = None
     try:
+        if not above_told and below:
+            # Told for the work it belongs to, below the session that work names -- one that was told once (a
+            # panel's task, a chat's turn): a worker's machine was never told, and its agents stay untold too.
+            if which != "all" and await asyncio.to_thread(run_event_store().run, below) is None:
+                return None
+            parent = below
         before = _ENDING.get(session_id)
         if before is not None and before.is_alive():
             await asyncio.to_thread(before.join, 30.0)
@@ -177,6 +212,13 @@ async def started(*, agent: str, system_config: Any, session_id: str, user_id: s
 def told(session_id: str) -> bool:
     """Whether the turn at work in ``session_id`` is told as a run: one a person may look for."""
     return (session_id or "") in _TURNS
+
+
+def looked_for(session_id: str) -> bool:
+    """Whether a person may look for the turn at work in ``session_id``: told as a run here, or a run somebody else
+    tells -- a panel's task (agent_tasks), whose transcript and main chat read this session while it works. Such a
+    turn may call a tool that works for hours (a state machine): its session is kept as it begins, not at its end."""
+    return told(session_id) or reporter_for(session_id) is not None
 
 
 def ending(session_id: str) -> bool:

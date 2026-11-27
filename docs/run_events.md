@@ -13,7 +13,7 @@ reporter, and the places in the panels and the shell that draw them (see
 | `RunEventStore` | `agent_system/run_events.py` | `agent_runs` (each run as it stands) and `agent_run_events` (its timeline) in `data/run_events/run_events.db`. An event is kept before it is sent. The newest 500 runs are kept. |
 | `RunEventBus` | `agent_system/run_events.py` | Hands each event to every open stream. |
 | Turns | `agent_system/core/turn_runs.py` | Every turn of an agent is a run, under the id of the session it works in: a chat's turn (`source` `chat`) and, below it (`parent_session`), the sub-agents and machines it called (`sub_agent`). Its steps are the model thinking and the tools it calls; see "Turns" below. |
-| Panel runs | `agent_system/plugins/agent_tasks.py` | `launch()` reports `started`, keeps the run alive and reports its end from how `/run` answered. Every AI task of every panel gets this without changes. |
+| Panel runs | `agent_system/plugins/agent_tasks.py` | `launch()` reports `started`, keeps the run alive and reports its end from how `/run` answered. Every AI task of every panel gets this without changes. Its session is written as its turn begins (`turn_runs.looked_for`, see session_management.md "When a Turn Is Written"): the transcript and the main chat find it while it works, and a restart leaves it. |
 | Steps | a hook plugin | A `pre_tool_call` hook can turn a tool call into a step in plain words (`reporter_for(session_id).step(...)`). |
 | Routes | `api/run_event_routes.py` | See below. |
 

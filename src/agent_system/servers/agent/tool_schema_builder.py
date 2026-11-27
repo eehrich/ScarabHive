@@ -112,8 +112,10 @@ def server_matches_patterns(name: str, patterns: List[str]) -> bool:
         # "ext.*" (dot wildcard) → all dotted tools of an external server
         if pat.endswith(".*") and name.startswith(pat[:-2] + "."):
             return True
-        # "server/tool" → let the SERVER pass through for later tool-level filtering
-        if "/" in pat and "*" not in pat and name == pat.split("/", 1)[0]:
+        # "server/tool" and "server/prefix_*" → let the SERVER pass through for later tool-level filtering: a glob
+        # in the tool part ("cra_process/cra_inventory_*") is the tool filter's to judge, not a reason to drop the
+        # server here (it did, and such an agent got none of the server's tools)
+        if "/" in pat and name == pat.split("/", 1)[0]:
             return True
         # glob metachars → fnmatch on the full name ('?' and '[seq]' included,
         # matching the historical unconditional fnmatch in server.py's matcher)

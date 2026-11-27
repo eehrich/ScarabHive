@@ -868,3 +868,33 @@ async def test_a_decision_model_s_output_tokens_count_against_the_run_s_cap(monk
     assert answers["q"]["value"] == "yes", "fixture: the decision went through"
     assert RunContext.output_tokens_of(act.meta) == 7
 
+
+
+class _SeesWhomItIsToldBelow(FakeAgent):
+    """Notes the session its turns would be told below (core/turn_runs.telling_below) as each run begins."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.below: list[str] = []
+
+    async def run_events(self, *args: Any, **kwargs: Any):
+        from agent_system.core import turn_runs
+
+        self.below.append(turn_runs._BELOW.get())
+        async for event in super().run_events(*args, **kwargs):
+            yield event
+
+
+@pytest.mark.parametrize("caller, told_below", [("panel-s", "panel-s"), (None, "")])
+async def test_an_agent_is_told_below_the_session_that_started_the_run(tmp_path, caller, told_below):
+    """A run a panel's task started goes on after a restart without that task's run (it ended with the process
+    that held it): its agents are told below the session that started it all the same, else nobody sees them
+    work. A run no session started tells nothing more than before."""
+    agent = _SeesWhomItIsToldBelow("writer")
+    backend = ScarabHiveBackend(runner=AgentHost(tmp_path / "s", agent), system_config=None, session_id="sg_r1",
+                                user_id="ann", caller_session=caller)
+    await backend.agent_create(activity(), agent="writer", task="draft it", advanced=False, vars={})
+    from agent_system.core import turn_runs
+
+    assert agent.below == [told_below]
+    assert turn_runs._BELOW.get() == "", "the mark stays with the agent's run, not with whoever started it"
